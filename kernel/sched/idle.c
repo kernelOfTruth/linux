@@ -11,9 +11,9 @@
 #include <asm/tlb.h>
 
 #include <trace/events/power.h>
-
+#ifndef CONFIG_SCHED_BFS
 #include "sched.h"
-
+#endif
 static int __read_mostly cpu_idle_force_poll;
 
 void cpu_idle_poll_ctrl(bool enable)
@@ -245,8 +245,9 @@ static void cpu_idle_loop(void)
 		 * before doing these things.
 		 */
 		smp_mb__after_atomic();
-
+#ifndef CONFIG_SCHED_BFS
 		sched_ttwu_pending();
+#endif
 		schedule_preempt_disabled();
 	}
 }
