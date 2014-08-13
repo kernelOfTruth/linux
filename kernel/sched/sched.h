@@ -669,9 +669,9 @@ extern int migrate_swap(struct task_struct *, struct task_struct *);
 #endif /* CONFIG_NUMA_BALANCING */
 
 #ifdef CONFIG_SMP
-
+#ifndef CONFIG_SCHED_BFS
 extern void sched_ttwu_pending(void);
-
+#endif
 #define rcu_dereference_check_sched_domain(p) \
 	rcu_dereference_check((p), \
 			      lockdep_is_held(&sched_domains_mutex))
@@ -788,11 +788,11 @@ static inline unsigned int group_first_cpu(struct sched_group *group)
 }
 
 extern int group_balance_cpu(struct sched_group *sg);
-
+#ifndef CONFIG_SCHED_BFS
 #else
 
 static inline void sched_ttwu_pending(void) { }
-
+#endif
 #endif /* CONFIG_SMP */
 
 #include "stats.h"
