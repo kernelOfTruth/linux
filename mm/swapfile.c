@@ -816,9 +816,9 @@ static unsigned char swap_entry_free(struct swap_info_struct *p,
 		frontswap_invalidate_page(p->type, offset);
 		if (p->flags & SWP_BLKDEV) {
 			struct gendisk *disk = p->bdev->bd_disk;
-			if (disk->fops->swap_slot_free_notify)
-				disk->fops->swap_slot_free_notify(p->bdev,
-								  offset);
+			if (disk->fops->swap_hint)
+				disk->fops->swap_hint(p->bdev,
+						SWAP_FREE, (void *)offset);
 		}
 	}
 
