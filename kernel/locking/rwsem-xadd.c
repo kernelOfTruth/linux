@@ -304,6 +304,14 @@ static inline bool rwsem_try_write_lock(long count, struct rw_semaphore *sem)
 
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
 /*
+ * Thresholds for optimistic spinning on readers
+ *
+ * This is the threshold for the number of spins that happens before the
+ * spinner gives up when the owner field is NULL.
+ */
+#define SPIN_READ_THRESHOLD	64
+
+/*
  * Try to acquire write lock before the writer has been put on wait queue.
  */
 static inline bool rwsem_try_write_lock_unqueued(struct rw_semaphore *sem)
@@ -381,10 +389,20 @@ bool rwsem_spin_on_owner(struct rw_semaphore *sem, struct task_struct *owner)
 	return sem->owner == NULL;
 }
 
+/*
+ * With active writer, spinning is done by checking if that writer is on
+ * CPU. With active readers, there is no easy way to determine if all of
+ * them are active. So it falls back to spin a certain number of times
+ * (SPIN_READ_THRESHOLD) before giving up. The threshold is relatively
+ * small with the expectation that readers are quick. For slow readers,
+ * the spinners will still fall back to sleep. On the other hand, it won't
+ * waste too many cycles when the lock owning readers are not running.
+ */
 static bool rwsem_optimistic_spin(struct rw_semaphore *sem)
 {
 	struct task_struct *owner;
 	bool taken = false;
+	int  spincnt = 0;
 
 	preempt_disable();
 
@@ -397,8 +415,18 @@ static bool rwsem_optimistic_spin(struct rw_semaphore *sem)
 
 	while (true) {
 		owner = ACCESS_ONCE(sem->owner);
-		if (owner && !rwsem_spin_on_owner(sem, owner))
+		if (!owner) {
+			/*
+			 * Give up spinning if spincnt reaches the threshold.
+			 */
+			if (spincnt++ >= SPIN_READ_THRESHOLD)
+				break;
+		} else if (!rwsem_spin_on_owner(sem, owner)) {
 			break;
+		} else {
+			/* Reset count when owner is defined */
+			spincnt = 0;
+		}
 
 		/* wait_lock will be acquired if write_lock is obtained */
 		if (rwsem_try_write_lock_unqueued(sem)) {
