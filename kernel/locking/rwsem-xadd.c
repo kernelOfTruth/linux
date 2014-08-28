@@ -355,10 +355,15 @@ wake_readers:
 
 }
 
-static inline bool rwsem_can_spin_on_owner(struct rw_semaphore *sem)
+/*
+ * The defval argument controls whether true or false is returned
+ * when the owner field is NULL.
+ */
+static inline bool
+rwsem_can_spin_on_owner(struct rw_semaphore *sem, bool defval)
 {
 	struct task_struct *owner;
-	bool on_cpu = true;
+	bool on_cpu = defval;
 
 	if (need_resched())
 		return false;
@@ -431,7 +436,7 @@ static bool rwsem_optimistic_spin(struct rw_semaphore *sem,
 	int  spincnt = 0;
 
 	/* sem->wait_lock should not be held when doing optimistic spinning */
-	if (!rwsem_can_spin_on_owner(sem))
+	if (!rwsem_can_spin_on_owner(sem, true))
 		return false;
 
 	preempt_disable();
@@ -486,6 +491,12 @@ done:
 #else
 static bool rwsem_optimistic_spin(struct rw_semaphore *sem,
 				  enum rwsem_waiter_type type)
+{
+	return false;
+}
+
+static inline bool
+rwsem_can_spin_on_owner(struct rw_semaphore *sem, bool default)
 {
 	return false;
 }
@@ -558,12 +569,14 @@ __visible
 struct rw_semaphore __sched *rwsem_down_write_failed(struct rw_semaphore *sem)
 {
 	long count;
-	bool waiting = true; /* any queued threads before us */
+	bool waiting; /* any queued threads before us */
+	bool respin;
 	struct rwsem_waiter waiter;
 
 	/* undo write bias from down_write operation, stop active locking */
 	count = rwsem_atomic_update(-RWSEM_ACTIVE_WRITE_BIAS, sem);
 
+optspin:
 	/* do optimistic spinning and steal lock if possible */
 	if (rwsem_optimistic_spin(sem, RWSEM_WAITING_FOR_WRITE))
 		return sem;
@@ -578,8 +591,7 @@ struct rw_semaphore __sched *rwsem_down_write_failed(struct rw_semaphore *sem)
 	raw_spin_lock_irq(&sem->wait_lock);
 
 	/* account for this before adding a new element to the list */
-	if (list_empty(&sem->wait_list))
-		waiting = false;
+	waiting = !list_empty(&sem->wait_list);
 
 	list_add_tail(&waiter.list, &sem->wait_list);
 
@@ -600,23 +612,46 @@ struct rw_semaphore __sched *rwsem_down_write_failed(struct rw_semaphore *sem)
 
 	/* wait until we successfully acquire the lock */
 	set_current_state(TASK_UNINTERRUPTIBLE);
-	while (true) {
+	respin = false;
+	while (!respin) {
 		if (rwsem_try_write_lock(count, sem))
 			break;
 		raw_spin_unlock_irq(&sem->wait_lock);
 
-		/* Block until there are no active lockers. */
-		do {
+		/*
+		 * Block until there are no active lockers or optimistic
+		 * spinning is possible.
+		 */
+		while (true) {
 			schedule();
 			set_current_state(TASK_UNINTERRUPTIBLE);
-		} while ((count = sem->count) & RWSEM_ACTIVE_MASK);
+			count = ACCESS_ONCE(sem->count);
+			if (!(count & RWSEM_ACTIVE_MASK))
+				break;
+			/*
+			 * Go back to optimistic spinning if the lock
+			 * owner is really running and there are spinners.
+			 * If there is no spinner, the task is already at
+			 * the head of the queue or the lock owner (maybe
+			 * readers) may not be actually running.
+			 */
+			if (rwsem_has_spinner(sem) &&
+			    rwsem_can_spin_on_owner(sem, false)) {
+				respin = true;
+				break;
+			}
+		}
 
 		raw_spin_lock_irq(&sem->wait_lock);
 	}
 	__set_current_state(TASK_RUNNING);
 
 	list_del(&waiter.list);
+	if (respin && list_empty(&sem->wait_list))
+		rwsem_atomic_update(-RWSEM_WAITING_BIAS, sem);
 	raw_spin_unlock_irq(&sem->wait_lock);
+	if (respin)
+		goto optspin;
 
 	return sem;
 }
