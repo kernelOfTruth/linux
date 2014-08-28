@@ -404,11 +404,11 @@ static bool rwsem_optimistic_spin(struct rw_semaphore *sem)
 	bool taken = false;
 	int  spincnt = 0;
 
-	preempt_disable();
-
 	/* sem->wait_lock should not be held when doing optimistic spinning */
 	if (!rwsem_can_spin_on_owner(sem))
-		goto done;
+		return false;
+
+	preempt_disable();
 
 	if (!osq_lock(&sem->osq))
 		goto done;
