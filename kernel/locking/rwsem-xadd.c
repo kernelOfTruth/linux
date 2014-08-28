@@ -107,6 +107,37 @@ enum rwsem_wake_type {
 	RWSEM_WAKE_READ_OWNED	/* Waker thread holds the read lock */
 };
 
+#ifdef CONFIG_RWSEM_SPIN_ON_OWNER
+/*
+ * return true if there is an active writer by checking the owner field which
+ * should be set if there is one.
+ */
+static inline bool rwsem_has_active_writer(struct rw_semaphore *sem)
+{
+	struct task_struct *owner = ACCESS_ONCE(sem->owner);
+
+	return owner != NULL;
+}
+
+/*
+ * Return true if the rwsem has active spinner
+ */
+static inline bool rwsem_has_spinner(struct rw_semaphore *sem)
+{
+	return osq_is_locked(&sem->osq);
+}
+#else /* CONFIG_RWSEM_SPIN_ON_OWNER */
+static inline bool rwsem_has_active_writer(struct rw_semaphore *sem)
+{
+	return false;	/* Assume it has no active writer */
+}
+
+static inline bool rwsem_has_spinner(struct rw_semaphore *sem)
+{
+	return false;
+}
+#endif /* CONFIG_RWSEM_SPIN_ON_OWNER */
+
 /*
  * handle the lock release when processes blocked on it that can now run
  * - if we come here from up_xxxx(), then:
@@ -124,6 +155,15 @@ __rwsem_do_wake(struct rw_semaphore *sem, enum rwsem_wake_type wake_type)
 	struct task_struct *tsk;
 	struct list_head *next;
 	long oldcount, woken, loop, adjustment;
+
+	/*
+	 * Abort the wakeup operation if there is an active writer as the
+	 * lock was stolen. up_write() should have cleared the owner field
+	 * before calling this function. If that field is now set, there must
+	 * be an active writer present.
+	 */
+	if (rwsem_has_active_writer(sem))
+		goto out;
 
 	waiter = list_entry(sem->wait_list.next, struct rwsem_waiter, list);
 	if (waiter->type == RWSEM_WAITING_FOR_WRITE) {
@@ -475,7 +515,22 @@ struct rw_semaphore *rwsem_wake(struct rw_semaphore *sem)
 {
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&sem->wait_lock, flags);
+	/*
+	 * If a spinner is present, it is not necessary to do the wakeup.
+	 * Try to do wakeup when the trylock succeeds to avoid potential
+	 * spinlock contention which may introduce too much delay in the
+	 * unlock operation.
+	 *
+	 * In case the spinning writer is just going to break out of the loop,
+	 * it will still do a trylock in rwsem_down_write_failed() before
+	 * sleeping.
+	 */
+	if (rwsem_has_spinner(sem)) {
+		if (!raw_spin_trylock_irqsave(&sem->wait_lock, flags))
+			return sem;
+	} else {
+		raw_spin_lock_irqsave(&sem->wait_lock, flags);
+	}
 
 	/* do nothing if list empty */
 	if (!list_empty(&sem->wait_list))
