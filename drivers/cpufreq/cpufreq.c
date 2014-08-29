@@ -2205,12 +2205,8 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 	/* save old, working values */
 	old_gov = policy->governor;
 	/* end old governor */
-	if (old_gov) {
-		__cpufreq_governor(policy, CPUFREQ_GOV_STOP);
-		up_write(&policy->rwsem);
+	if (old_gov)
 		__cpufreq_governor(policy, CPUFREQ_GOV_POLICY_EXIT);
-		down_write(&policy->rwsem);
-	}
 
 	/* start new governor */
 	policy->governor = new_policy->governor;
@@ -2218,9 +2214,7 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 		if (!__cpufreq_governor(policy, CPUFREQ_GOV_START))
 			goto out;
 
-		up_write(&policy->rwsem);
 		__cpufreq_governor(policy, CPUFREQ_GOV_POLICY_EXIT);
-		down_write(&policy->rwsem);
 	}
 
 	/* new governor failed, so re-start old one */
