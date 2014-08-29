@@ -346,6 +346,7 @@ static inline int put_page_unless_one(struct page *page)
 }
 
 extern int page_is_ram(unsigned long pfn);
+extern int region_is_ram(resource_size_t phys_addr, unsigned long size);
 
 /* Support for virtually mapped pages */
 struct page *vmalloc_to_page(const void *addr);
@@ -1945,6 +1946,20 @@ static inline pgprot_t vm_get_page_prot(unsigned long vm_flags)
 	return __pgprot(0);
 }
 #endif
+
+/* Enable write notifications without blowing away special flags. */
+static inline void vma_enable_writenotify(struct vm_area_struct *vma)
+{
+	pgprot_t newprot = vm_get_page_prot(vma->vm_flags & ~VM_SHARED);
+	vma->vm_page_prot = pgprot_modify(vma->vm_page_prot, newprot);
+}
+
+/* Disable write notifications without blowing away special flags. */
+static inline void vma_disable_writenotify(struct vm_area_struct *vma)
+{
+	pgprot_t newprot = vm_get_page_prot(vma->vm_flags);
+	vma->vm_page_prot = pgprot_modify(vma->vm_page_prot, newprot);
+}
 
 #ifdef CONFIG_NUMA_BALANCING
 unsigned long change_prot_numa(struct vm_area_struct *vma,
