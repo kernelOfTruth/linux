@@ -827,8 +827,17 @@ static void fuse_readpages_end(struct fuse_conn *fc, struct fuse_req *req)
 		fuse_file_put(req->ff, false);
 }
 
-static void fuse_send_readpages(struct fuse_req *req, struct file *file)
+struct fuse_fill_data {
+	struct fuse_req *req;
+	struct file *file;
+	struct inode *inode;
+	unsigned nr_pages;
+};
+
+static void fuse_send_readpages(struct fuse_fill_data *data)
 {
+	struct fuse_req *req = data->req;
+	struct file *file = data->file;
 	struct fuse_file *ff = file->private_data;
 	struct fuse_conn *fc = ff->fc;
 	loff_t pos = page_offset(req->pages[0]);
@@ -850,13 +859,6 @@ static void fuse_send_readpages(struct fuse_req *req, struct file *file)
 	}
 }
 
-struct fuse_fill_data {
-	struct fuse_req *req;
-	struct file *file;
-	struct inode *inode;
-	unsigned nr_pages;
-};
-
 static int fuse_readpages_fill(void *_data, struct page *page)
 {
 	struct fuse_fill_data *data = _data;
@@ -872,7 +874,7 @@ static int fuse_readpages_fill(void *_data, struct page *page)
 	     req->pages[req->num_pages - 1]->index + 1 != page->index)) {
 		int nr_alloc = min_t(unsigned, data->nr_pages,
 				     FUSE_MAX_PAGES_PER_REQ);
-		fuse_send_readpages(req, data->file);
+		fuse_send_readpages(data);
 		if (fc->async_read)
 			req = fuse_get_req_for_background(fc, nr_alloc);
 		else
@@ -925,7 +927,7 @@ static int fuse_readpages(struct file *file, struct address_space *mapping,
 	err = read_cache_pages(mapping, pages, fuse_readpages_fill, &data);
 	if (!err) {
 		if (data.req->num_pages)
-			fuse_send_readpages(data.req, file);
+			fuse_send_readpages(&data);
 		else
 			fuse_put_request(fc, data.req);
 	}
