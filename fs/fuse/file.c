@@ -136,6 +136,10 @@ static void fuse_file_put(struct fuse_file *ff, bool sync)
 			path_put(&req->misc.release.path);
 			fuse_put_request(ff->fc, req);
 		} else if (sync) {
+			/* Must force. Otherwise request could be interrupted,
+			 * but file association in user space remains.
+			 */
+			req->force = 1;
 			req->background = 0;
 			fuse_request_send(ff->fc, req);
 			path_put(&req->misc.release.path);
