@@ -1465,6 +1465,10 @@ int vma_wants_writenotify(struct vm_area_struct *vma)
 	if (vma->vm_ops && vma->vm_ops->page_mkwrite)
 		return 1;
 
+	/* Do we need to track softdirty? */
+	if (IS_ENABLED(CONFIG_MEM_SOFT_DIRTY) && !(vm_flags & VM_SOFTDIRTY))
+		return 1;
+
 	/* The open routine did something to the protections already? */
 	if (pgprot_val(vma->vm_page_prot) !=
 	    pgprot_val(vm_get_page_prot(vm_flags)))
@@ -1594,21 +1598,6 @@ munmap_back:
 			goto free_vma;
 	}
 
-	if (vma_wants_writenotify(vma)) {
-		pgprot_t pprot = vma->vm_page_prot;
-
-		/* Can vma->vm_page_prot have changed??
-		 *
-		 * Answer: Yes, drivers may have changed it in their
-		 *         f_op->mmap method.
-		 *
-		 * Ensures that vmas marked as uncached stay that way.
-		 */
-		vma->vm_page_prot = vm_get_page_prot(vm_flags & ~VM_SHARED);
-		if (pgprot_val(pprot) == pgprot_val(pgprot_noncached(pprot)))
-			vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	}
-
 	vma_link(mm, vma, prev, rb_link, rb_parent);
 	/* Once vma denies write, undo our temporary denial count */
 	if (vm_flags & VM_DENYWRITE)
@@ -1637,6 +1626,11 @@ out:
 	 * a completely new data area).
 	 */
 	vma->vm_flags |= VM_SOFTDIRTY;
+
+	if (vma_wants_writenotify(vma))
+		vma_enable_writenotify(vma);
+	else
+		vma_disable_writenotify(vma);
 
 	return addr;
 
