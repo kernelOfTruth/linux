@@ -296,7 +296,8 @@ static void fuse_prepare_release(struct fuse_file *ff, int flags, int opcode)
 
 static bool must_release_synchronously(struct fuse_file *ff)
 {
-	return ff->open_flags & FOPEN_SYNC_RELEASE;
+	return ff->open_flags & FOPEN_SYNC_RELEASE &&
+		!(ff->fc->flags & FUSE_DISABLE_SYNC_RELEASE);
 }
 
 void fuse_release_common(struct file *file, int opcode)
