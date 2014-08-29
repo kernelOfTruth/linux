@@ -170,12 +170,19 @@ static int sysvipc_sem_proc_show(struct seq_file *s, void *it);
 #define sc_semopm	sem_ctls[2]
 #define sc_semmni	sem_ctls[3]
 
-void sem_init_ns(struct ipc_namespace *ns)
+void sem_init_ns(struct ipc_namespace *ns, struct ipc_namespace *old_ns)
 {
-	ns->sc_semmsl = SEMMSL;
-	ns->sc_semmns = SEMMNS;
-	ns->sc_semopm = SEMOPM;
-	ns->sc_semmni = SEMMNI;
+	if (old_ns != NULL) {
+		ns->sc_semmsl = old_ns->sc_semmsl;
+		ns->sc_semmns = old_ns->sc_semmns;
+		ns->sc_semopm = old_ns->sc_semopm;
+		ns->sc_semmni = old_ns->sc_semmni;
+	} else {
+		ns->sc_semmsl = SEMMSL;
+		ns->sc_semmns = SEMMNS;
+		ns->sc_semopm = SEMOPM;
+		ns->sc_semmni = SEMMNI;
+	}
 	ns->used_sems = 0;
 	ipc_init_ids(&ns->ids[IPC_SEM_IDS]);
 }
@@ -190,7 +197,7 @@ void sem_exit_ns(struct ipc_namespace *ns)
 
 void __init sem_init(void)
 {
-	sem_init_ns(&init_ipc_ns);
+	sem_init_ns(&init_ipc_ns, NULL);
 	ipc_init_proc_interface("sysvipc/sem",
 				"       key      semid perms      nsems   uid   gid  cuid  cgid      otime      ctime\n",
 				IPC_SEM_IDS, sysvipc_sem_proc_show);

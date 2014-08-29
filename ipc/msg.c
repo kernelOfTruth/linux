@@ -990,11 +990,17 @@ SYSCALL_DEFINE5(msgrcv, int, msqid, struct msgbuf __user *, msgp, size_t, msgsz,
 }
 
 
-void msg_init_ns(struct ipc_namespace *ns)
+void msg_init_ns(struct ipc_namespace *ns, struct ipc_namespace *old_ns)
 {
-	ns->msg_ctlmax = MSGMAX;
-	ns->msg_ctlmnb = MSGMNB;
-	ns->msg_ctlmni = MSGMNI;
+	if (old_ns != NULL) {
+		ns->msg_ctlmax = old_ns->msg_ctlmax;
+		ns->msg_ctlmnb = old_ns->msg_ctlmnb;
+		ns->msg_ctlmni = old_ns->msg_ctlmni;
+	} else {
+		ns->msg_ctlmax = MSGMAX;
+		ns->msg_ctlmnb = MSGMNB;
+		ns->msg_ctlmni = MSGMNI;
+	}
 
 	atomic_set(&ns->msg_bytes, 0);
 	atomic_set(&ns->msg_hdrs, 0);
@@ -1036,7 +1042,7 @@ static int sysvipc_msg_proc_show(struct seq_file *s, void *it)
 
 void __init msg_init(void)
 {
-	msg_init_ns(&init_ipc_ns);
+	msg_init_ns(&init_ipc_ns, NULL);
 
 	ipc_init_proc_interface("sysvipc/msg",
 				"       key      msqid perms      cbytes       qnum lspid lrpid   uid   gid  cuid  cgid      stime      rtime      ctime\n",
