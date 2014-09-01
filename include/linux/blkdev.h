@@ -1611,6 +1611,7 @@ static inline bool blk_integrity_is_initialized(struct gendisk *g)
 
 enum swap_blk_hint {
 	SWAP_SLOT_FREE,
+	SWAP_GET_FREE,
 };
 
 struct block_device_operations {
