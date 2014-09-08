@@ -1947,20 +1947,6 @@ static inline pgprot_t vm_get_page_prot(unsigned long vm_flags)
 }
 #endif
 
-/* Enable write notifications without blowing away special flags. */
-static inline void vma_enable_writenotify(struct vm_area_struct *vma)
-{
-	pgprot_t newprot = vm_get_page_prot(vma->vm_flags & ~VM_SHARED);
-	vma->vm_page_prot = pgprot_modify(vma->vm_page_prot, newprot);
-}
-
-/* Disable write notifications without blowing away special flags. */
-static inline void vma_disable_writenotify(struct vm_area_struct *vma)
-{
-	pgprot_t newprot = vm_get_page_prot(vma->vm_flags);
-	vma->vm_page_prot = pgprot_modify(vma->vm_page_prot, newprot);
-}
-
 #ifdef CONFIG_NUMA_BALANCING
 unsigned long change_prot_numa(struct vm_area_struct *vma,
 			unsigned long start, unsigned long end);

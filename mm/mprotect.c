@@ -320,12 +320,12 @@ success:
 	 * held in write mode.
 	 */
 	vma->vm_flags = newflags;
+	vma->vm_page_prot = pgprot_modify(vma->vm_page_prot,
+					  vm_get_page_prot(newflags));
 
 	if (vma_wants_writenotify(vma)) {
-		vma_enable_writenotify(vma);
+		vma->vm_page_prot = vm_get_page_prot(newflags & ~VM_SHARED);
 		dirty_accountable = 1;
-	} else {
-		vma_disable_writenotify(vma);
 	}
 
 	change_protection(vma, start, end, vma->vm_page_prot,
