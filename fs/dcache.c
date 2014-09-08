@@ -279,13 +279,16 @@ static void dentry_iput(struct dentry * dentry)
 	__releases(dentry->d_inode->i_lock)
 {
 	struct inode *inode = dentry->d_inode;
+	bool last_dentry;
+
 	if (inode) {
 		dentry->d_inode = NULL;
 		hlist_del_init(&dentry->d_alias);
+		last_dentry = hlist_empty(&inode->i_dentry);
 		spin_unlock(&dentry->d_lock);
 		spin_unlock(&inode->i_lock);
 		if (!inode->i_nlink)
-			fsnotify_inoderemove(inode);
+			fsnotify_inoderemove(inode, last_dentry);
 		if (dentry->d_op && dentry->d_op->d_iput)
 			dentry->d_op->d_iput(dentry, inode);
 		else
@@ -304,14 +307,17 @@ static void dentry_unlink_inode(struct dentry * dentry)
 	__releases(dentry->d_inode->i_lock)
 {
 	struct inode *inode = dentry->d_inode;
+	bool last_dentry;
+
 	__d_clear_type(dentry);
 	dentry->d_inode = NULL;
 	hlist_del_init(&dentry->d_alias);
 	dentry_rcuwalk_barrier(dentry);
+	last_dentry = hlist_empty(&inode->i_dentry);
 	spin_unlock(&dentry->d_lock);
 	spin_unlock(&inode->i_lock);
 	if (!inode->i_nlink)
-		fsnotify_inoderemove(inode);
+		fsnotify_inoderemove(inode, last_dentry);
 	if (dentry->d_op && dentry->d_op->d_iput)
 		dentry->d_op->d_iput(dentry, inode);
 	else

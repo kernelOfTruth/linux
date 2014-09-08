@@ -144,10 +144,11 @@ static inline void fsnotify_nameremove(struct dentry *dentry, int isdir)
 /*
  * fsnotify_inoderemove - an inode is going away
  */
-static inline void fsnotify_inoderemove(struct inode *inode)
+static inline void fsnotify_inoderemove(struct inode *inode, bool delete)
 {
 	fsnotify(inode, FS_DELETE_SELF, inode, FSNOTIFY_EVENT_INODE, NULL, 0);
-	__fsnotify_inode_delete(inode);
+	if (delete)
+		__fsnotify_inode_delete(inode);
 }
 
 /*
