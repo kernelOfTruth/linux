@@ -17,6 +17,13 @@ config DEBUG_PAGEALLOC
 	  that would result in incorrect warnings of memory corruption after
 	  a resume because free pages are not saved to the suspend image.
 
+config DEBUG_KMALLOC
+	bool "Kmalloc guard"
+	depends on DEBUG_KERNEL
+	---help---
+	  Verify that the kernel doesn't modify memory allocated with kmalloc
+	  beyond the requested size.
+
 config WANT_PAGE_DEBUG_FLAGS
 	bool
 

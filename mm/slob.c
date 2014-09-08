@@ -429,26 +429,27 @@ __do_kmalloc_node(size_t size, gfp_t gfp, int node, unsigned long caller)
 	unsigned int *m;
 	int align = max_t(size_t, ARCH_KMALLOC_MINALIGN, ARCH_SLAB_MINALIGN);
 	void *ret;
+	size_t real_size = kmalloc_guard_size(size);
 
 	gfp &= gfp_allowed_mask;
 
 	lockdep_trace_alloc(gfp);
 
-	if (size < PAGE_SIZE - align) {
-		if (!size)
+	if (real_size < PAGE_SIZE - align) {
+		if (!real_size)
 			return ZERO_SIZE_PTR;
 
-		m = slob_alloc(size + align, gfp, align, node);
+		m = slob_alloc(real_size + align, gfp, align, node);
 
 		if (!m)
 			return NULL;
-		*m = size;
+		*m = real_size;
 		ret = (void *)m + align;
 
 		trace_kmalloc_node(caller, ret,
-				   size, size + align, gfp, node);
+				   size, real_size + align, gfp, node);
 	} else {
-		unsigned int order = get_order(size);
+		unsigned int order = get_order(real_size);
 
 		if (likely(order))
 			gfp |= __GFP_COMP;
@@ -457,6 +458,8 @@ __do_kmalloc_node(size_t size, gfp_t gfp, int node, unsigned long caller)
 		trace_kmalloc_node(caller, ret,
 				   size, PAGE_SIZE << order, gfp, node);
 	}
+
+	kmalloc_guard_setup(ret, size);
 
 	kmemleak_alloc(ret, size, 1, gfp);
 	return ret;
@@ -489,6 +492,8 @@ void kfree(const void *block)
 
 	trace_kfree(_RET_IP_, block);
 
+	kmalloc_guard_verify(block);
+
 	if (unlikely(ZERO_OR_NULL_PTR(block)))
 		return;
 	kmemleak_free(block);
@@ -503,8 +508,8 @@ void kfree(const void *block)
 }
 EXPORT_SYMBOL(kfree);
 
-/* can't use ksize for kmem_cache_alloc memory, only kmalloc */
-size_t ksize(const void *block)
+/* can't use __ksize for kmem_cache_alloc memory, only kmalloc */
+size_t __ksize(const void *block)
 {
 	struct page *sp;
 	int align;
@@ -522,7 +527,7 @@ size_t ksize(const void *block)
 	m = (unsigned int *)(block - align);
 	return SLOB_UNITS(*m) * SLOB_UNIT;
 }
-EXPORT_SYMBOL(ksize);
+EXPORT_SYMBOL(__ksize);
 
 int __kmem_cache_create(struct kmem_cache *c, unsigned long flags)
 {
