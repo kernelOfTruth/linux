@@ -143,7 +143,6 @@ void * __must_check __krealloc(const void *, size_t, gfp_t);
 void * __must_check krealloc(const void *, size_t, gfp_t);
 void kfree(const void *);
 void kzfree(const void *);
-size_t ksize(const void *);
 
 /*
  * Some archs want to perform DMA into kmalloc caches and need a guaranteed
@@ -312,6 +311,37 @@ static __always_inline int kmalloc_index(size_t size)
 }
 #endif /* !CONFIG_SLOB */
 
+size_t __ksize(const void *ptr);
+
+#ifndef CONFIG_DEBUG_KMALLOC
+
+static inline size_t kmalloc_guard_size(size_t size)
+{
+	return size;
+}
+
+static inline void kmalloc_guard_setup(void *ptr, size_t size)
+{
+}
+
+static inline void kmalloc_guard_verify(const void *ptr)
+{
+}
+
+static inline size_t ksize(const void *ptr)
+{
+	return __ksize(ptr);
+}
+
+#else
+
+size_t kmalloc_guard_size(size_t size);
+void kmalloc_guard_setup(void *ptr, size_t size);
+void kmalloc_guard_verify(const void *ptr);
+size_t ksize(const void *ptr);
+
+#endif
+
 void *__kmalloc(size_t size, gfp_t flags);
 void *kmem_cache_alloc(struct kmem_cache *, gfp_t flags);
 
@@ -385,8 +415,11 @@ kmalloc_order_trace(size_t size, gfp_t flags, unsigned int order)
 
 static __always_inline void *kmalloc_large(size_t size, gfp_t flags)
 {
-	unsigned int order = get_order(size);
-	return kmalloc_order_trace(size, flags, order);
+	void *ret;
+	unsigned int order = get_order(kmalloc_guard_size(size));
+	ret = kmalloc_order_trace(size, flags, order);
+	kmalloc_guard_setup(ret, size);
+	return ret;
 }
 
 /**
@@ -444,6 +477,7 @@ static __always_inline void *kmalloc_large(size_t size, gfp_t flags)
  */
 static __always_inline void *kmalloc(size_t size, gfp_t flags)
 {
+#ifndef CONFIG_DEBUG_KMALLOC
 	if (__builtin_constant_p(size)) {
 		if (size > KMALLOC_MAX_CACHE_SIZE)
 			return kmalloc_large(size, flags);
@@ -459,6 +493,7 @@ static __always_inline void *kmalloc(size_t size, gfp_t flags)
 		}
 #endif
 	}
+#endif
 	return __kmalloc(size, flags);
 }
 
@@ -484,7 +519,7 @@ static __always_inline int kmalloc_size(int n)
 
 static __always_inline void *kmalloc_node(size_t size, gfp_t flags, int node)
 {
-#ifndef CONFIG_SLOB
+#if !defined(CONFIG_SLOB) && !defined(CONFIG_DEBUG_KMALLOC)
 	if (__builtin_constant_p(size) &&
 		size <= KMALLOC_MAX_CACHE_SIZE && !(flags & GFP_DMA)) {
 		int i = kmalloc_index(size);
