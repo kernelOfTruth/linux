@@ -707,7 +707,11 @@ static void end_workqueue_bio(struct bio *bio, int err)
 			func = btrfs_endio_write_helper;
 		}
 	} else {
-		if (end_io_wq->metadata == BTRFS_WQ_ENDIO_RAID56) {
+		if (unlikely(end_io_wq->metadata ==
+			     BTRFS_WQ_ENDIO_DIO_REPAIR)) {
+			wq = fs_info->endio_repair_workers;
+			func = btrfs_endio_repair_helper;
+		} else if (end_io_wq->metadata == BTRFS_WQ_ENDIO_RAID56) {
 			wq = fs_info->endio_raid56_workers;
 			func = btrfs_endio_raid56_helper;
 		} else if (end_io_wq->metadata) {
@@ -735,6 +739,7 @@ int btrfs_bio_wq_end_io(struct btrfs_fs_info *info, struct bio *bio,
 			int metadata)
 {
 	struct end_io_wq *end_io_wq;
+
 	end_io_wq = kmalloc(sizeof(*end_io_wq), GFP_NOFS);
 	if (!end_io_wq)
 		return -ENOMEM;
@@ -2050,6 +2055,7 @@ static void btrfs_stop_all_workers(struct btrfs_fs_info *fs_info)
 	btrfs_destroy_workqueue(fs_info->endio_workers);
 	btrfs_destroy_workqueue(fs_info->endio_meta_workers);
 	btrfs_destroy_workqueue(fs_info->endio_raid56_workers);
+	btrfs_destroy_workqueue(fs_info->endio_repair_workers);
 	btrfs_destroy_workqueue(fs_info->rmw_workers);
 	btrfs_destroy_workqueue(fs_info->endio_meta_write_workers);
 	btrfs_destroy_workqueue(fs_info->endio_write_workers);
@@ -2559,6 +2565,8 @@ int open_ctree(struct super_block *sb,
 		btrfs_alloc_workqueue("endio-meta-write", flags, max_active, 2);
 	fs_info->endio_raid56_workers =
 		btrfs_alloc_workqueue("endio-raid56", flags, max_active, 4);
+	fs_info->endio_repair_workers =
+		btrfs_alloc_workqueue("endio-repair", flags, 1, 0);
 	fs_info->rmw_workers =
 		btrfs_alloc_workqueue("rmw", flags, max_active, 2);
 	fs_info->endio_write_workers =
@@ -2580,6 +2588,7 @@ int open_ctree(struct super_block *sb,
 	      fs_info->submit_workers && fs_info->flush_workers &&
 	      fs_info->endio_workers && fs_info->endio_meta_workers &&
 	      fs_info->endio_meta_write_workers &&
+	      fs_info->endio_repair_workers &&
 	      fs_info->endio_write_workers && fs_info->endio_raid56_workers &&
 	      fs_info->endio_freespace_worker && fs_info->rmw_workers &&
 	      fs_info->caching_workers && fs_info->readahead_workers &&
