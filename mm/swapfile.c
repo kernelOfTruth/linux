@@ -484,6 +484,22 @@ new_cluster:
 	*scan_base = tmp;
 }
 
+static bool __swap_full(struct swap_info_struct *si)
+{
+	if (si->flags & SWP_BLKDEV) {
+		long free;
+		struct gendisk *disk = si->bdev->bd_disk;
+
+		if (disk->fops->swap_hint)
+			if (!disk->fops->swap_hint(si->bdev,
+						SWAP_GET_FREE,
+						&free))
+				return free <= 0;
+	}
+
+	return si->inuse_pages == si->pages;
+}
+
 static unsigned long scan_swap_map(struct swap_info_struct *si,
 				   unsigned char usage)
 {
@@ -583,11 +599,21 @@ checks:
 	if (offset == si->highest_bit)
 		si->highest_bit--;
 	si->inuse_pages++;
-	if (si->inuse_pages == si->pages) {
+	if (__swap_full(si)) {
+		struct gendisk *disk = si->bdev->bd_disk;
+
 		si->lowest_bit = si->max;
 		si->highest_bit = 0;
 		spin_lock(&swap_avail_lock);
 		plist_del(&si->avail_list, &swap_avail_head);
+		/*
+		 * If zram is full, it decreases nr_swap_pages
+		 * for stopping anonymous page reclaim until
+		 * zram has free space. Look at swap_entry_free
+		 */
+		if (disk->fops->swap_hint)
+			atomic_long_sub(si->pages - si->inuse_pages,
+				&nr_swap_pages);
 		spin_unlock(&swap_avail_lock);
 	}
 	si->swap_map[offset] = usage;
@@ -796,6 +822,7 @@ static unsigned char swap_entry_free(struct swap_info_struct *p,
 
 	/* free if no reference */
 	if (!usage) {
+		struct gendisk *disk = p->bdev->bd_disk;
 		dec_cluster_info_page(p, p->cluster_info, offset);
 		if (offset < p->lowest_bit)
 			p->lowest_bit = offset;
@@ -808,6 +835,21 @@ static unsigned char swap_entry_free(struct swap_info_struct *p,
 				if (plist_node_empty(&p->avail_list))
 					plist_add(&p->avail_list,
 						  &swap_avail_head);
+				if ((p->flags & SWP_BLKDEV) &&
+					disk->fops->swap_hint) {
+					atomic_long_add(p->pages -
+							p->inuse_pages,
+							&nr_swap_pages);
+					/*
+					 * reset [highest|lowest]_bit to avoid
+					 * scan_swap_map infinite looping if
+					 * cached free cluster's index by
+					 * scan_swap_map_try_ssd_cluster is
+					 * above p->highest_bit.
+					 */
+					p->highest_bit = p->max - 1;
+					p->lowest_bit = 1;
+				}
 				spin_unlock(&swap_avail_lock);
 			}
 		}
@@ -815,10 +857,10 @@ static unsigned char swap_entry_free(struct swap_info_struct *p,
 		p->inuse_pages--;
 		frontswap_invalidate_page(p->type, offset);
 		if (p->flags & SWP_BLKDEV) {
-			struct gendisk *disk = p->bdev->bd_disk;
-			if (disk->fops->swap_slot_free_notify)
-				disk->fops->swap_slot_free_notify(p->bdev,
-								  offset);
+			if (disk->fops->swap_hint)
+				disk->fops->swap_hint(p->bdev,
+						SWAP_SLOT_FREE,
+						(void *)offset);
 		}
 	}
 
