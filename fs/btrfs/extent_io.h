@@ -108,7 +108,6 @@ struct extent_state {
 	struct rb_node rb_node;
 
 	/* ADD NEW ELEMENTS AFTER THIS */
-	struct extent_io_tree *tree;
 	wait_queue_head_t wq;
 	atomic_t refs;
 	unsigned long state;
@@ -126,8 +125,6 @@ struct extent_state {
 struct extent_buffer {
 	u64 start;
 	unsigned long len;
-	unsigned long map_start;
-	unsigned long map_len;
 	unsigned long bflags;
 	struct btrfs_fs_info *fs_info;
 	spinlock_t refs_lock;

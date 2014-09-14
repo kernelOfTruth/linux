@@ -25,6 +25,11 @@ static struct kmem_cache *extent_state_cache;
 static struct kmem_cache *extent_buffer_cache;
 static struct bio_set *btrfs_bioset;
 
+static inline bool extent_state_in_tree(const struct extent_state *state)
+{
+	return !RB_EMPTY_NODE(&state->rb_node);
+}
+
 #ifdef CONFIG_BTRFS_DEBUG
 static LIST_HEAD(buffers);
 static LIST_HEAD(states);
@@ -59,9 +64,9 @@ void btrfs_leak_debug_check(void)
 
 	while (!list_empty(&states)) {
 		state = list_entry(states.next, struct extent_state, leak_list);
-		printk(KERN_ERR "BTRFS: state leak: start %llu end %llu "
-		       "state %lu in tree %p refs %d\n",
-		       state->start, state->end, state->state, state->tree,
+		pr_err("BTRFS: state leak: start %llu end %llu state %lu in tree %d refs %d\n",
+		       state->start, state->end, state->state,
+		       extent_state_in_tree(state),
 		       atomic_read(&state->refs));
 		list_del(&state->leak_list);
 		kmem_cache_free(extent_state_cache, state);
@@ -209,7 +214,7 @@ static struct extent_state *alloc_extent_state(gfp_t mask)
 		return state;
 	state->state = 0;
 	state->private = 0;
-	state->tree = NULL;
+	RB_CLEAR_NODE(&state->rb_node);
 	btrfs_leak_debug_add(&state->leak_list, &states);
 	atomic_set(&state->refs, 1);
 	init_waitqueue_head(&state->wq);
@@ -222,7 +227,7 @@ void free_extent_state(struct extent_state *state)
 	if (!state)
 		return;
 	if (atomic_dec_and_test(&state->refs)) {
-		WARN_ON(state->tree);
+		WARN_ON(extent_state_in_tree(state));
 		btrfs_leak_debug_del(&state->leak_list);
 		trace_free_extent_state(state, _RET_IP_);
 		kmem_cache_free(extent_state_cache, state);
@@ -371,8 +376,8 @@ static void merge_state(struct extent_io_tree *tree,
 		    other->state == state->state) {
 			merge_cb(tree, state, other);
 			state->start = other->start;
-			other->tree = NULL;
 			rb_erase(&other->rb_node, &tree->state);
+			RB_CLEAR_NODE(&other->rb_node);
 			free_extent_state(other);
 		}
 	}
@@ -383,8 +388,8 @@ static void merge_state(struct extent_io_tree *tree,
 		    other->state == state->state) {
 			merge_cb(tree, state, other);
 			state->end = other->end;
-			other->tree = NULL;
 			rb_erase(&other->rb_node, &tree->state);
+			RB_CLEAR_NODE(&other->rb_node);
 			free_extent_state(other);
 		}
 	}
@@ -442,7 +447,6 @@ static int insert_state(struct extent_io_tree *tree,
 		       found->start, found->end, start, end);
 		return -EEXIST;
 	}
-	state->tree = tree;
 	merge_state(tree, state);
 	return 0;
 }
@@ -486,7 +490,6 @@ static int split_state(struct extent_io_tree *tree, struct extent_state *orig,
 		free_extent_state(prealloc);
 		return -EEXIST;
 	}
-	prealloc->tree = tree;
 	return 0;
 }
 
@@ -524,9 +527,9 @@ static struct extent_state *clear_state_bit(struct extent_io_tree *tree,
 		wake_up(&state->wq);
 	if (state->state == 0) {
 		next = next_state(state);
-		if (state->tree) {
+		if (extent_state_in_tree(state)) {
 			rb_erase(&state->rb_node, &tree->state);
-			state->tree = NULL;
+			RB_CLEAR_NODE(&state->rb_node);
 			free_extent_state(state);
 		} else {
 			WARN_ON(1);
@@ -606,8 +609,8 @@ again:
 			cached_state = NULL;
 		}
 
-		if (cached && cached->tree && cached->start <= start &&
-		    cached->end > start) {
+		if (cached && extent_state_in_tree(cached) &&
+		    cached->start <= start && cached->end > start) {
 			if (clear)
 				atomic_dec(&cached->refs);
 			state = cached;
@@ -843,7 +846,7 @@ again:
 	if (cached_state && *cached_state) {
 		state = *cached_state;
 		if (state->start <= start && state->end > start &&
-		    state->tree) {
+		    extent_state_in_tree(state)) {
 			node = &state->rb_node;
 			goto hit_next;
 		}
@@ -1069,7 +1072,7 @@ again:
 	if (cached_state && *cached_state) {
 		state = *cached_state;
 		if (state->start <= start && state->end > start &&
-		    state->tree) {
+		    extent_state_in_tree(state)) {
 			node = &state->rb_node;
 			goto hit_next;
 		}
@@ -1459,7 +1462,7 @@ int find_first_extent_bit(struct extent_io_tree *tree, u64 start,
 	spin_lock(&tree->lock);
 	if (cached_state && *cached_state) {
 		state = *cached_state;
-		if (state->end == start - 1 && state->tree) {
+		if (state->end == start - 1 && extent_state_in_tree(state)) {
 			n = rb_next(&state->rb_node);
 			while (n) {
 				state = rb_entry(n, struct extent_state,
@@ -1905,7 +1908,7 @@ int test_range_bit(struct extent_io_tree *tree, u64 start, u64 end,
 	int bitset = 0;
 
 	spin_lock(&tree->lock);
-	if (cached && cached->tree && cached->start <= start &&
+	if (cached && extent_state_in_tree(cached) && cached->start <= start &&
 	    cached->end > start)
 		node = &cached->rb_node;
 	else
@@ -2540,12 +2543,12 @@ readpage_ok:
 		if (likely(uptodate)) {
 			loff_t i_size = i_size_read(inode);
 			pgoff_t end_index = i_size >> PAGE_CACHE_SHIFT;
-			unsigned offset;
+			unsigned off;
 
 			/* Zero out the end if this page straddles i_size */
-			offset = i_size & (PAGE_CACHE_SIZE-1);
-			if (page->index == end_index && offset)
-				zero_user_segment(page, offset, PAGE_CACHE_SIZE);
+			off = i_size & (PAGE_CACHE_SIZE-1);
+			if (page->index == end_index && off)
+				zero_user_segment(page, off, PAGE_CACHE_SIZE);
 			SetPageUptodate(page);
 		} else {
 			ClearPageUptodate(page);
@@ -4172,19 +4175,6 @@ static struct extent_map *get_extent_skip_holes(struct inode *inode,
 	return NULL;
 }
 
-static noinline int count_ext_ref(u64 inum, u64 offset, u64 root_id, void *ctx)
-{
-	unsigned long cnt = *((unsigned long *)ctx);
-
-	cnt++;
-	*((unsigned long *)ctx) = cnt;
-
-	/* Now we're sure that the extent is shared. */
-	if (cnt > 1)
-		return 1;
-	return 0;
-}
-
 int extent_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 		__u64 start, __u64 len, get_extent_t *get_extent)
 {
@@ -4201,6 +4191,7 @@ int extent_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 	struct extent_map *em = NULL;
 	struct extent_state *cached_state = NULL;
 	struct btrfs_path *path;
+	struct btrfs_root *root = BTRFS_I(inode)->root;
 	int end = 0;
 	u64 em_start = 0;
 	u64 em_len = 0;
@@ -4214,15 +4205,15 @@ int extent_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 		return -ENOMEM;
 	path->leave_spinning = 1;
 
-	start = ALIGN(start, BTRFS_I(inode)->root->sectorsize);
-	len = ALIGN(len, BTRFS_I(inode)->root->sectorsize);
+	start = round_down(start, BTRFS_I(inode)->root->sectorsize);
+	len = round_up(max, BTRFS_I(inode)->root->sectorsize) - start;
 
 	/*
 	 * lookup the last file extent.  We're not using i_size here
 	 * because there might be preallocation past i_size
 	 */
-	ret = btrfs_lookup_file_extent(NULL, BTRFS_I(inode)->root,
-				       path, btrfs_ino(inode), -1, 0);
+	ret = btrfs_lookup_file_extent(NULL, root, path, btrfs_ino(inode), -1,
+				       0);
 	if (ret < 0) {
 		btrfs_free_path(path);
 		return ret;
@@ -4230,7 +4221,7 @@ int extent_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 	WARN_ON(!ret);
 	path->slots[0]--;
 	btrfs_item_key_to_cpu(path->nodes[0], &found_key, path->slots[0]);
-	found_type = btrfs_key_type(&found_key);
+	found_type = found_key.type;
 
 	/* No extents, but there might be delalloc bits */
 	if (found_key.objectid != btrfs_ino(inode) ||
@@ -4315,25 +4306,27 @@ int extent_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 		} else if (em->block_start == EXTENT_MAP_DELALLOC) {
 			flags |= (FIEMAP_EXTENT_DELALLOC |
 				  FIEMAP_EXTENT_UNKNOWN);
-		} else {
-			unsigned long ref_cnt = 0;
+		} else if (fieinfo->fi_extents_max) {
+			u64 bytenr = em->block_start -
+				(em->start - em->orig_start);
 
 			disko = em->block_start + offset_in_extent;
 
 			/*
 			 * As btrfs supports shared space, this information
 			 * can be exported to userspace tools via
-			 * flag FIEMAP_EXTENT_SHARED.
+			 * flag FIEMAP_EXTENT_SHARED.  If fi_extents_max == 0
+			 * then we're just getting a count and we can skip the
+			 * lookup stuff.
 			 */
-			ret = iterate_inodes_from_logical(
-					em->block_start,
-					BTRFS_I(inode)->root->fs_info,
-					path, count_ext_ref, &ref_cnt);
-			if (ret < 0 && ret != -ENOENT)
+			ret = btrfs_check_shared(NULL, root->fs_info,
+						 root->objectid,
+						 btrfs_ino(inode), bytenr);
+			if (ret < 0)
 				goto out_free;
-
-			if (ref_cnt > 1)
+			if (ret)
 				flags |= FIEMAP_EXTENT_SHARED;
+			ret = 0;
 		}
 		if (test_bit(EXTENT_FLAG_COMPRESSED, &em->flags))
 			flags |= FIEMAP_EXTENT_ENCODED;

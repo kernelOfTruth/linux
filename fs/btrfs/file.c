@@ -299,7 +299,7 @@ static int __btrfs_run_defrag_inode(struct btrfs_fs_info *fs_info,
 
 	/* get the inode */
 	key.objectid = defrag->root;
-	btrfs_set_key_type(&key, BTRFS_ROOT_ITEM_KEY);
+	key.type = BTRFS_ROOT_ITEM_KEY;
 	key.offset = (u64)-1;
 
 	index = srcu_read_lock(&fs_info->subvol_srcu);
@@ -311,7 +311,7 @@ static int __btrfs_run_defrag_inode(struct btrfs_fs_info *fs_info,
 	}
 
 	key.objectid = defrag->ino;
-	btrfs_set_key_type(&key, BTRFS_INODE_ITEM_KEY);
+	key.type = BTRFS_INODE_ITEM_KEY;
 	key.offset = 0;
 	inode = btrfs_iget(fs_info->sb, &key, inode_root, NULL);
 	if (IS_ERR(inode)) {
@@ -1481,9 +1481,8 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 	bool force_page_uptodate = false;
 	bool need_unlock;
 
-	nrptrs = min((iov_iter_count(i) + PAGE_CACHE_SIZE - 1) /
-		     PAGE_CACHE_SIZE, PAGE_CACHE_SIZE /
-		     (sizeof(struct page *)));
+	nrptrs = min(DIV_ROUND_UP(iov_iter_count(i), PAGE_CACHE_SIZE),
+			PAGE_CACHE_SIZE / (sizeof(struct page *)));
 	nrptrs = min(nrptrs, current->nr_dirtied_pause - current->nr_dirtied);
 	nrptrs = max(nrptrs, 8);
 	pages = kmalloc(nrptrs * sizeof(struct page *), GFP_KERNEL);
@@ -1497,8 +1496,8 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 		size_t write_bytes = min(iov_iter_count(i),
 					 nrptrs * (size_t)PAGE_CACHE_SIZE -
 					 offset);
-		size_t num_pages = (write_bytes + offset +
-				    PAGE_CACHE_SIZE - 1) >> PAGE_CACHE_SHIFT;
+		size_t num_pages = DIV_ROUND_UP(write_bytes + offset,
+						PAGE_CACHE_SIZE);
 		size_t reserve_bytes;
 		size_t dirty_pages;
 		size_t copied;
@@ -1526,9 +1525,8 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 				 * our prealloc extent may be smaller than
 				 * write_bytes, so scale down.
 				 */
-				num_pages = (write_bytes + offset +
-					     PAGE_CACHE_SIZE - 1) >>
-					PAGE_CACHE_SHIFT;
+				num_pages = DIV_ROUND_UP(write_bytes + offset,
+							 PAGE_CACHE_SIZE);
 				reserve_bytes = num_pages << PAGE_CACHE_SHIFT;
 				ret = 0;
 			} else {
@@ -1590,9 +1588,8 @@ again:
 			dirty_pages = 0;
 		} else {
 			force_page_uptodate = false;
-			dirty_pages = (copied + offset +
-				       PAGE_CACHE_SIZE - 1) >>
-				       PAGE_CACHE_SHIFT;
+			dirty_pages = DIV_ROUND_UP(copied + offset,
+						   PAGE_CACHE_SIZE);
 		}
 
 		/*
@@ -1653,7 +1650,7 @@ again:
 		cond_resched();
 
 		balance_dirty_pages_ratelimited(inode->i_mapping);
-		if (dirty_pages < (root->leafsize >> PAGE_CACHE_SHIFT) + 1)
+		if (dirty_pages < (root->nodesize >> PAGE_CACHE_SHIFT) + 1)
 			btrfs_btree_balance_dirty(root);
 
 		pos += copied;
@@ -1966,7 +1963,7 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 
 	btrfs_init_log_ctx(&ctx);
 
-	ret = btrfs_log_dentry_safe(trans, root, dentry, &ctx);
+	ret = btrfs_log_dentry_safe(trans, root, dentry, start, end, &ctx);
 	if (ret < 0) {
 		/* Fallthrough and commit/free transaction. */
 		ret = 1;
@@ -2096,10 +2093,9 @@ static int fill_holes(struct btrfs_trans_handle *trans, struct inode *inode,
 		goto out;
 	}
 
-	if (hole_mergeable(inode, leaf, path->slots[0]+1, offset, end)) {
+	if (hole_mergeable(inode, leaf, path->slots[0], offset, end)) {
 		u64 num_bytes;
 
-		path->slots[0]++;
 		key.offset = offset;
 		btrfs_set_item_key_safe(root, path, &key);
 		fi = btrfs_item_ptr(leaf, path->slots[0],
@@ -2224,7 +2220,7 @@ static int btrfs_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 		goto out_only_mutex;
 	}
 
-	lockstart = round_up(offset , BTRFS_I(inode)->root->sectorsize);
+	lockstart = round_up(offset, BTRFS_I(inode)->root->sectorsize);
 	lockend = round_down(offset + len,
 			     BTRFS_I(inode)->root->sectorsize) - 1;
 	same_page = ((offset >> PAGE_CACHE_SHIFT) ==
@@ -2285,7 +2281,7 @@ static int btrfs_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 						tail_start + tail_len, 0, 1);
 				if (ret)
 					goto out_only_mutex;
-				}
+			}
 		}
 	}
 
