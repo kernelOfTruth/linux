@@ -1397,14 +1397,23 @@ static struct file_system_type mqueue_fs_type = {
 	.fs_flags = FS_USERNS_MOUNT,
 };
 
-int mq_init_ns(struct ipc_namespace *ns)
+int mq_init_ns(struct ipc_namespace *ns, struct ipc_namespace *old_ns)
 {
+	if (old_ns != NULL) {
+		ns->mq_queues_max    = old_ns->mq_queues_max;
+		ns->mq_msg_max       = old_ns->mq_msg_max;
+		ns->mq_msgsize_max   = old_ns->mq_msgsize_max;
+		ns->mq_msg_default   = old_ns->mq_msg_default;
+		ns->mq_msgsize_default  = old_ns->mq_msgsize_default;
+	} else {
+		ns->mq_queues_max    = DFLT_QUEUESMAX;
+		ns->mq_msg_max       = DFLT_MSGMAX;
+		ns->mq_msgsize_max   = DFLT_MSGSIZEMAX;
+		ns->mq_msg_default   = DFLT_MSG;
+		ns->mq_msgsize_default  = DFLT_MSGSIZE;
+	}
+
 	ns->mq_queues_count  = 0;
-	ns->mq_queues_max    = DFLT_QUEUESMAX;
-	ns->mq_msg_max       = DFLT_MSGMAX;
-	ns->mq_msgsize_max   = DFLT_MSGSIZEMAX;
-	ns->mq_msg_default   = DFLT_MSG;
-	ns->mq_msgsize_default  = DFLT_MSGSIZE;
 
 	ns->mq_mnt = kern_mount_data(&mqueue_fs_type, ns);
 	if (IS_ERR(ns->mq_mnt)) {
@@ -1444,7 +1453,7 @@ static int __init init_mqueue_fs(void)
 
 	spin_lock_init(&mq_lock);
 
-	error = mq_init_ns(&init_ipc_ns);
+	error = mq_init_ns(&init_ipc_ns, NULL);
 	if (error)
 		goto out_filesystem;
 
