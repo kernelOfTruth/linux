@@ -398,12 +398,6 @@ static int btrfs_check_super_csum(char *raw_disk_sb)
 
 		if (memcmp(raw_disk_sb, result, csum_size))
 			ret = 1;
-
-		if (ret && btrfs_super_generation(disk_sb) < 10) {
-			printk(KERN_WARNING
-				"BTRFS: super block crcs don't match, older mkfs detected\n");
-			ret = 0;
-		}
 	}
 
 	if (csum_type >= ARRAY_SIZE(btrfs_csum_sizes)) {
@@ -1764,6 +1758,7 @@ static int cleaner_kthread(void *arg)
 		}
 
 		btrfs_run_delayed_iputs(root);
+		btrfs_delete_unused_bgs(root->fs_info);
 		again = btrfs_clean_one_deleted_snapshot(root);
 		mutex_unlock(&root->fs_info->cleaner_mutex);
 
@@ -2224,6 +2219,7 @@ int open_ctree(struct super_block *sb,
 	spin_lock_init(&fs_info->super_lock);
 	spin_lock_init(&fs_info->qgroup_op_lock);
 	spin_lock_init(&fs_info->buffer_lock);
+	spin_lock_init(&fs_info->unused_bgs_lock);
 	rwlock_init(&fs_info->tree_mod_log_lock);
 	mutex_init(&fs_info->reloc_mutex);
 	mutex_init(&fs_info->delalloc_root_mutex);
@@ -2233,6 +2229,7 @@ int open_ctree(struct super_block *sb,
 	INIT_LIST_HEAD(&fs_info->dirty_cowonly_roots);
 	INIT_LIST_HEAD(&fs_info->space_info);
 	INIT_LIST_HEAD(&fs_info->tree_mod_seq_list);
+	INIT_LIST_HEAD(&fs_info->unused_bgs);
 	btrfs_mapping_init(&fs_info->mapping_tree);
 	btrfs_init_block_rsv(&fs_info->global_block_rsv,
 			     BTRFS_BLOCK_RSV_GLOBAL);
@@ -2390,16 +2387,6 @@ int open_ctree(struct super_block *sb,
 	 */
 	bh = btrfs_read_dev_super(fs_devices->latest_bdev);
 	if (!bh) {
-		err = -EINVAL;
-		goto fail_alloc;
-	}
-
-	/*
-	 * We want to check superblock checksum, the type is stored inside.
-	 * Pass the whole disk block of size BTRFS_SUPER_INFO_SIZE (4k).
-	 */
-	if (btrfs_check_super_csum(bh->b_data)) {
-		printk(KERN_ERR "BTRFS: superblock checksum mismatch\n");
 		err = -EINVAL;
 		goto fail_alloc;
 	}
@@ -3067,12 +3054,14 @@ struct buffer_head *btrfs_read_dev_super(struct block_device *bdev)
 	u64 transid = 0;
 	u64 bytenr;
 
-	/* we would like to check all the supers, but that would make
-	 * a btrfs mount succeed after a mkfs from a different FS.
-	 * So, we need to add a special mount option to scan for
-	 * later supers, using BTRFS_SUPER_MIRROR_MAX instead
+	/*
+	 * We check the first superblock first.
+	 * 1) If first superblock's magic is not btrfs magic
+	 *    This means this is not a btrfs fs, just exit.
+	 * 2) If first superblock's magic is good but csum mismatch
+	 *    This means first superblock is corrupted, use backup if possible
 	 */
-	for (i = 0; i < 1; i++) {
+	for (i = 0; i < BTRFS_SUPER_MIRROR_MAX; i++) {
 		bytenr = btrfs_sb_offset(i);
 		if (bytenr + BTRFS_SUPER_INFO_SIZE >=
 					i_size_read(bdev->bd_inode))
@@ -3083,6 +3072,22 @@ struct buffer_head *btrfs_read_dev_super(struct block_device *bdev)
 			continue;
 
 		super = (struct btrfs_super_block *)bh->b_data;
+		/*
+		 * First superblock needs special check routine,
+		 * to avoid btrfs mount succeeding after a mkfs from a
+		 * different FS.
+		 */
+		if (i == 0) {
+			if (btrfs_super_magic(super) != BTRFS_MAGIC) {
+				brelse(bh);
+				break;
+			}
+		}
+		if (btrfs_check_super_csum(bh->b_data)) {
+			pr_warn("BTRFS: superblock %d checksum mismatch\n", i);
+			brelse(bh);
+			continue;
+		}
 		if (btrfs_super_bytenr(super) != bytenr ||
 		    btrfs_super_magic(super) != BTRFS_MAGIC) {
 			brelse(bh);
@@ -3097,6 +3102,8 @@ struct buffer_head *btrfs_read_dev_super(struct block_device *bdev)
 			brelse(bh);
 		}
 	}
+	if (!latest)
+		pr_err("BTRFS: No valid btrfs superblock found or all superblocks are corrupted\n");
 	return latest;
 }
 
