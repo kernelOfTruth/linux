@@ -209,6 +209,27 @@ static inline int __migrate_balloon_page(struct address_space *mapping,
 	return page->mapping->a_ops->migratepage(mapping, newpage, page, mode);
 }
 
+static inline bool __is_balloon_page_isolated(struct page *page)
+{
+	/*
+	 * A ballooned page, by default, holds just one refcount that
+	 * get increased by balloon_page_isolate() upon compaction demand.
+	 * We can prevent concurrent compaction threads from (re)isolating
+	 * an already isolated balloon page by refcount check.
+	 */
+	if (balloon_page_movable(page) && page_count(page) == 2) {
+		struct address_space *mapping = page_mapping(page);
+		if (likely(mapping_balloon(mapping))) {
+			__isolate_balloon_page(page);
+			return true;
+		} else {
+			dump_page(page, "not movable balloon page");
+			WARN_ON(1);
+		}
+	}
+	return false;
+}
+
 /* __isolate_lru_page() counterpart for a ballooned page */
 bool balloon_page_isolate(struct page *page)
 {
@@ -221,27 +242,17 @@ bool balloon_page_isolate(struct page *page)
 	 * the put_page() at the end of this block will take care of
 	 * release this page, thus avoiding a nasty leakage.
 	 */
-	if (likely(get_page_unless_zero(page))) {
+	if (get_page_unless_zero(page)) {
 		/*
 		 * As balloon pages are not isolated from LRU lists, concurrent
 		 * compaction threads can race against page migration functions
 		 * as well as race against the balloon driver releasing a page.
-		 *
-		 * In order to avoid having an already isolated balloon page
-		 * being (wrongly) re-isolated while it is under migration,
-		 * or to avoid attempting to isolate pages being released by
-		 * the balloon driver, lets be sure we have the page lock
-		 * before proceeding with the balloon page isolation steps.
+		 * The aforementioned operations are done under the safety of
+		 * page lock, so lets be sure we hold it before proceeding the
+		 * isolation steps here.
 		 */
-		if (likely(trylock_page(page))) {
-			/*
-			 * A ballooned page, by default, has just one refcount.
-			 * Prevent concurrent compaction threads from isolating
-			 * an already isolated balloon page by refcount check.
-			 */
-			if (__is_movable_balloon_page(page) &&
-			    page_count(page) == 2) {
-				__isolate_balloon_page(page);
+		if (trylock_page(page)) {
+			if (__is_balloon_page_isolated(page)) {
 				unlock_page(page);
 				return true;
 			}
@@ -255,19 +266,21 @@ bool balloon_page_isolate(struct page *page)
 /* putback_lru_page() counterpart for a ballooned page */
 void balloon_page_putback(struct page *page)
 {
+	struct address_space *mapping;
 	/*
 	 * 'lock_page()' stabilizes the page and prevents races against
 	 * concurrent isolation threads attempting to re-isolate it.
 	 */
 	lock_page(page);
 
-	if (__is_movable_balloon_page(page)) {
+	mapping = page_mapping(page);
+	if (balloon_page_movable(page) && mapping_balloon(mapping)) {
 		__putback_balloon_page(page);
 		/* drop the extra ref count taken for page isolation */
 		put_page(page);
 	} else {
-		WARN_ON(1);
 		dump_page(page, "not movable balloon page");
+		WARN_ON(1);
 	}
 	unlock_page(page);
 }
@@ -286,16 +299,16 @@ int balloon_page_migrate(struct page *newpage,
 	 */
 	BUG_ON(!trylock_page(newpage));
 
-	if (WARN_ON(!__is_movable_balloon_page(page))) {
+	mapping = page_mapping(page);
+	if (!(balloon_page_movable(page) && mapping_balloon(mapping))) {
 		dump_page(page, "not movable balloon page");
-		unlock_page(newpage);
-		return rc;
+		WARN_ON(1);
+		goto out;
 	}
 
-	mapping = page->mapping;
 	if (mapping)
 		rc = __migrate_balloon_page(mapping, newpage, page, mode);
-
+out:
 	unlock_page(newpage);
 	return rc;
 }

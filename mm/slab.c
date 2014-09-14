@@ -248,8 +248,8 @@ static void cache_reap(struct work_struct *unused);
 
 static int slab_early_init = 1;
 
-#define INDEX_AC kmalloc_index(sizeof(struct arraycache_init))
-#define INDEX_NODE kmalloc_index(sizeof(struct kmem_cache_node))
+#define INDEX_AC kmalloc_index(kmalloc_guard_size(sizeof(struct arraycache_init)))
+#define INDEX_NODE kmalloc_index(kmalloc_guard_size(sizeof(struct kmem_cache_node)))
 
 static void kmem_cache_node_init(struct kmem_cache_node *parent)
 {
@@ -3617,11 +3617,16 @@ static __always_inline void *
 __do_kmalloc_node(size_t size, gfp_t flags, int node, unsigned long caller)
 {
 	struct kmem_cache *cachep;
+	void *ret;
 
-	cachep = kmalloc_slab(size, flags);
+	cachep = kmalloc_slab(kmalloc_guard_size(size), flags);
 	if (unlikely(ZERO_OR_NULL_PTR(cachep)))
 		return cachep;
-	return kmem_cache_alloc_node_trace(cachep, flags, node, size);
+	ret = kmem_cache_alloc_node_trace(cachep, flags, node, size);
+
+	kmalloc_guard_setup(ret, size);
+
+	return ret;
 }
 
 #if defined(CONFIG_DEBUG_SLAB) || defined(CONFIG_TRACING)
@@ -3658,13 +3663,15 @@ static __always_inline void *__do_kmalloc(size_t size, gfp_t flags,
 	struct kmem_cache *cachep;
 	void *ret;
 
-	cachep = kmalloc_slab(size, flags);
+	cachep = kmalloc_slab(kmalloc_guard_size(size), flags);
 	if (unlikely(ZERO_OR_NULL_PTR(cachep)))
 		return cachep;
 	ret = slab_alloc(cachep, flags, caller);
 
 	trace_kmalloc(caller, ret,
 		      size, cachep->size, flags);
+
+	kmalloc_guard_setup(ret, size);
 
 	return ret;
 }
@@ -3732,6 +3739,8 @@ void kfree(const void *objp)
 	unsigned long flags;
 
 	trace_kfree(_RET_IP_, objp);
+
+	kmalloc_guard_verify(objp);
 
 	if (unlikely(ZERO_OR_NULL_PTR(objp)))
 		return;
@@ -4412,18 +4421,18 @@ module_init(slab_proc_init);
 #endif
 
 /**
- * ksize - get the actual amount of memory allocated for a given object
+ * __ksize - get the actual amount of memory allocated for a given object
  * @objp: Pointer to the object
  *
  * kmalloc may internally round up allocations and return more memory
- * than requested. ksize() can be used to determine the actual amount of
+ * than requested. __ksize() can be used to determine the actual amount of
  * memory allocated. The caller may use this additional memory, even though
  * a smaller amount of memory was initially specified with the kmalloc call.
  * The caller must guarantee that objp points to a valid object previously
  * allocated with either kmalloc() or kmem_cache_alloc(). The object
  * must not be freed during the duration of the call.
  */
-size_t ksize(const void *objp)
+size_t __ksize(const void *objp)
 {
 	BUG_ON(!objp);
 	if (unlikely(objp == ZERO_SIZE_PTR))
@@ -4431,4 +4440,4 @@ size_t ksize(const void *objp)
 
 	return virt_to_cache(objp)->object_size;
 }
-EXPORT_SYMBOL(ksize);
+EXPORT_SYMBOL(__ksize);

@@ -108,54 +108,29 @@ static inline void balloon_mapping_free(struct address_space *balloon_mapping)
 }
 
 /*
- * page_flags_cleared - helper to perform balloon @page ->flags tests.
+ * balloon_page_movable - identify balloon pages that can be moved by
+ *			  compaction / migration.
  *
- * As balloon pages are obtained from buddy and we do not play with page->flags
- * at driver level (exception made when we get the page lock for compaction),
- * we can safely identify a ballooned page by checking if the
- * PAGE_FLAGS_CHECK_AT_PREP page->flags are all cleared.  This approach also
- * helps us skip ballooned pages that are locked for compaction or release, thus
- * mitigating their racy check at balloon_page_movable()
+ * BALLOON_PAGE_MAPCOUNT_VALUE must be <= -2 but better not too close to
+ * -2 so that an underflow of the page_mapcount() won't be mistaken
+ * for a genuine BALLOON_PAGE_MAPCOUNT_VALUE.
  */
-static inline bool page_flags_cleared(struct page *page)
-{
-	return !(page->flags & PAGE_FLAGS_CHECK_AT_PREP);
-}
-
-/*
- * __is_movable_balloon_page - helper to perform @page mapping->flags tests
- */
-static inline bool __is_movable_balloon_page(struct page *page)
-{
-	struct address_space *mapping = page->mapping;
-	return mapping_balloon(mapping);
-}
-
-/*
- * balloon_page_movable - test page->mapping->flags to identify balloon pages
- *			  that can be moved by compaction/migration.
- *
- * This function is used at core compaction's page isolation scheme, therefore
- * most pages exposed to it are not enlisted as balloon pages and so, to avoid
- * undesired side effects like racing against __free_pages(), we cannot afford
- * holding the page locked while testing page->mapping->flags here.
- *
- * As we might return false positives in the case of a balloon page being just
- * released under us, the page->mapping->flags need to be re-tested later,
- * under the proper page lock, at the functions that will be coping with the
- * balloon page case.
- */
+#define BALLOON_PAGE_MAPCOUNT_VALUE (-256)
 static inline bool balloon_page_movable(struct page *page)
 {
-	/*
-	 * Before dereferencing and testing mapping->flags, let's make sure
-	 * this is not a page that uses ->mapping in a different way
-	 */
-	if (page_flags_cleared(page) && !page_mapped(page) &&
-	    page_count(page) == 1)
-		return __is_movable_balloon_page(page);
+	return atomic_read(&page->_mapcount) == BALLOON_PAGE_MAPCOUNT_VALUE;
+}
 
-	return false;
+static inline void __balloon_page_set(struct page *page)
+{
+	VM_BUG_ON_PAGE(atomic_read(&page->_mapcount) != -1, page);
+	atomic_set(&page->_mapcount, BALLOON_PAGE_MAPCOUNT_VALUE);
+}
+
+static inline void __balloon_page_clear(struct page *page)
+{
+	VM_BUG_ON_PAGE(!balloon_page_movable(page), page);
+	atomic_set(&page->_mapcount, -1);
 }
 
 /*
@@ -170,10 +145,8 @@ static inline bool balloon_page_movable(struct page *page)
  */
 static inline bool isolated_balloon_page(struct page *page)
 {
-	/* Already isolated balloon pages, by default, have a raised refcount */
-	if (page_flags_cleared(page) && !page_mapped(page) &&
-	    page_count(page) >= 2)
-		return __is_movable_balloon_page(page);
+	if (balloon_page_movable(page) && page_count(page) > 1)
+		return true;
 
 	return false;
 }
@@ -193,6 +166,7 @@ static inline void balloon_page_insert(struct page *page,
 				       struct list_head *head)
 {
 	page->mapping = mapping;
+	__balloon_page_set(page);
 	list_add(&page->lru, head);
 }
 
@@ -207,6 +181,7 @@ static inline void balloon_page_insert(struct page *page,
 static inline void balloon_page_delete(struct page *page)
 {
 	page->mapping = NULL;
+	__balloon_page_clear(page);
 	list_del(&page->lru);
 }
 
