@@ -327,7 +327,7 @@ static inline int sem_lock(struct sem_array *sma, struct sembuf *sops,
 		/* Then check that the global lock is free */
 		if (!spin_is_locked(&sma->sem_perm.lock)) {
 			/* spin_is_locked() is not a memory barrier */
-			smp_mb();
+			smp_rmb();
 
 			/* Now repeat the test of complex_count:
 			 * It can't change anymore until we drop sem->lock.
