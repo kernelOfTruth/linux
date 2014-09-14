@@ -463,6 +463,7 @@ enum {
 	OPT_ALLOW_OTHER,
 	OPT_MAX_READ,
 	OPT_BLKSIZE,
+	OPT_DISABLE_SYNC_RELEASE,
 	OPT_ERR
 };
 
@@ -475,6 +476,7 @@ static const match_table_t tokens = {
 	{OPT_ALLOW_OTHER,		"allow_other"},
 	{OPT_MAX_READ,			"max_read=%u"},
 	{OPT_BLKSIZE,			"blksize=%u"},
+	{OPT_DISABLE_SYNC_RELEASE,	"disable_sync_release"},
 	{OPT_ERR,			NULL}
 };
 
@@ -560,6 +562,10 @@ static int parse_fuse_opt(char *opt, struct fuse_mount_data *d, int is_bdev)
 			d->blksize = value;
 			break;
 
+		case OPT_DISABLE_SYNC_RELEASE:
+			d->flags |= FUSE_DISABLE_SYNC_RELEASE;
+			break;
+
 		default:
 			return 0;
 		}
@@ -583,6 +589,8 @@ static int fuse_show_options(struct seq_file *m, struct dentry *root)
 		seq_puts(m, ",default_permissions");
 	if (fc->flags & FUSE_ALLOW_OTHER)
 		seq_puts(m, ",allow_other");
+	if (fc->flags & FUSE_DISABLE_SYNC_RELEASE)
+		seq_puts(m, ",disable_sync_release");
 	if (fc->max_read != ~0)
 		seq_printf(m, ",max_read=%u", fc->max_read);
 	if (sb->s_bdev && sb->s_blocksize != FUSE_DEFAULT_BLKSIZE)
