@@ -4518,7 +4518,7 @@ again:
 		 * which means we won't have fs_info->fs_root set, so don't do
 		 * the async reclaim as we will panic.
 		 */
-		if (root->fs_info->fs_root &&
+		if (!root->fs_info->log_root_recovering &&
 		    need_do_async_reclaim(space_info, root->fs_info, used) &&
 		    !work_busy(&root->fs_info->async_reclaim_work))
 			queue_work(system_unbound_wq,
@@ -8875,6 +8875,16 @@ int btrfs_free_block_groups(struct btrfs_fs_info *info)
 	}
 	up_write(&info->commit_root_sem);
 
+	spin_lock(&info->unused_bgs_lock);
+	while (!list_empty(&info->unused_bgs)) {
+		block_group = list_first_entry(&info->unused_bgs,
+					       struct btrfs_block_group_cache,
+					       bg_list);
+		list_del_init(&block_group->bg_list);
+		btrfs_put_block_group(block_group);
+	}
+	spin_unlock(&info->unused_bgs_lock);
+
 	spin_lock(&info->block_group_cache_lock);
 	while ((n = rb_last(&info->block_group_cache_tree)) != NULL) {
 		block_group = rb_entry(n, struct btrfs_block_group_cache,
@@ -9469,6 +9479,9 @@ void btrfs_delete_unused_bgs(struct btrfs_fs_info *fs_info)
 	struct btrfs_root *root = fs_info->extent_root;
 	struct btrfs_trans_handle *trans;
 	int ret = 0;
+
+	if (!fs_info->open)
+		return;
 
 	spin_lock(&fs_info->unused_bgs_lock);
 	while (!list_empty(&fs_info->unused_bgs)) {
