@@ -535,7 +535,7 @@ int sb_prepare_remount_readonly(struct super_block *sb)
 	int err = 0;
 
 	/* Racy optimization.  Recheck the counter under MNT_WRITE_HOLD */
-	if (atomic_long_read(&sb->s_remove_count))
+	if (percpu_counter_sum(&sb->s_remove_counters) != 0)
 		return -EBUSY;
 
 	lock_mount_hash();
@@ -549,7 +549,7 @@ int sb_prepare_remount_readonly(struct super_block *sb)
 			}
 		}
 	}
-	if (!err && atomic_long_read(&sb->s_remove_count))
+	if (!err && percpu_counter_sum(&sb->s_remove_counters) != 0)
 		err = -EBUSY;
 
 	if (!err) {

@@ -146,6 +146,7 @@ static void destroy_super(struct super_block *s)
 	list_lru_destroy(&s->s_inode_lru);
 	for (i = 0; i < SB_FREEZE_LEVELS; i++)
 		percpu_counter_destroy(&s->s_writers.counter[i]);
+	percpu_counter_destroy(&s->s_remove_counters);
 	security_sb_free(s);
 	WARN_ON(!list_empty(&s->s_mounts));
 	kfree(s->s_subtype);
@@ -175,6 +176,8 @@ static struct super_block *alloc_super(struct file_system_type *type, int flags)
 	if (security_sb_alloc(s))
 		goto fail;
 
+	if (percpu_counter_init(&s->s_remove_counters, 0) < 0)
+		goto fail;
 	for (i = 0; i < SB_FREEZE_LEVELS; i++) {
 		if (percpu_counter_init(&s->s_writers.counter[i], 0) < 0)
 			goto fail;
