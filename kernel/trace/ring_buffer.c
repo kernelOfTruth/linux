@@ -2523,21 +2523,6 @@ rb_reserve_next_event(struct ring_buffer *buffer,
 
 	rb_start_commit(cpu_buffer);
 
-#ifdef CONFIG_RING_BUFFER_ALLOW_SWAP
-	/*
-	 * Due to the ability to swap a cpu buffer from a buffer
-	 * it is possible it was swapped before we committed.
-	 * (committing stops a swap). We check for it here and
-	 * if it happened, we have to fail the write.
-	 */
-	barrier();
-	if (unlikely(ACCESS_ONCE(cpu_buffer->buffer) != buffer)) {
-		local_dec(&cpu_buffer->committing);
-		local_dec(&cpu_buffer->commits);
-		return NULL;
-	}
-#endif
-
 	length = rb_calculate_event_length(length);
  again:
 	add_timestamp = 0;
@@ -4273,23 +4258,35 @@ int ring_buffer_empty_cpu(struct ring_buffer *buffer, int cpu)
 EXPORT_SYMBOL_GPL(ring_buffer_empty_cpu);
 
 #ifdef CONFIG_RING_BUFFER_ALLOW_SWAP
+struct ring_buffer_swap_info {
+	struct ring_buffer *buffer_a;	/* One buffer to swap with */
+	struct ring_buffer *buffer_b;	/* The other buffer to swap with */
+	int ret;			/* Return value from the swap op. */
+};
+
 /**
- * ring_buffer_swap_cpu - swap a CPU buffer between two ring buffers
- * @buffer_a: One buffer to swap with
- * @buffer_b: The other buffer to swap with
+ * ring_buffer_swap_this_cpu - swap CPU buffer, related to this CPU,
+ *	between two ring buffers.
+ * @arg: arguments and return value is passed via struct ring_buffer_swap_info.
+ *	The function is called via smp_call_function_single()
  *
- * This function is useful for tracers that want to take a "snapshot"
- * of a CPU buffer and has another back up buffer lying around.
- * it is expected that the tracer handles the cpu buffer not being
- * used at the moment.
+ * The swapping of a CPU buffer is done on the same CPU. It helps to avoid
+ * memory barriers and keep writing fast. We can't use synchronize_sched
+ * here because this function can be called in atomic context.
  */
-int ring_buffer_swap_cpu(struct ring_buffer *buffer_a,
-			 struct ring_buffer *buffer_b, int cpu)
+static void ring_buffer_swap_this_cpu(void *arg)
 {
+	struct ring_buffer_swap_info *rb_swap_info = arg;
+	struct ring_buffer *buffer_a;
+	struct ring_buffer *buffer_b;
 	struct ring_buffer_per_cpu *cpu_buffer_a;
 	struct ring_buffer_per_cpu *cpu_buffer_b;
-	int ret = -EINVAL;
+	int cpu = smp_processor_id();
 
+	buffer_a = rb_swap_info->buffer_a;
+	buffer_b = rb_swap_info->buffer_b;
+
+	rb_swap_info->ret = -EINVAL;
 	if (!cpumask_test_cpu(cpu, buffer_a->cpumask) ||
 	    !cpumask_test_cpu(cpu, buffer_b->cpumask))
 		goto out;
@@ -4301,7 +4298,8 @@ int ring_buffer_swap_cpu(struct ring_buffer *buffer_a,
 	if (cpu_buffer_a->nr_pages != cpu_buffer_b->nr_pages)
 		goto out;
 
-	ret = -EAGAIN;
+	/* Also check if the buffers can be manipulated */
+	rb_swap_info->ret = -EAGAIN;
 
 	if (ring_buffer_flags != RB_BUFFERS_ON)
 		goto out;
@@ -4319,15 +4317,19 @@ int ring_buffer_swap_cpu(struct ring_buffer *buffer_a,
 		goto out;
 
 	/*
-	 * We can't do a synchronize_sched here because this
-	 * function can be called in atomic context.
-	 * Normally this will be called from the same CPU as cpu.
-	 * If not it's up to the caller to protect this.
+	 * Recording has to be disabled. Otherwise, ring_buffer_lock_reserve()
+	 * and ring_buffer_unlock_commit() might operate with different
+	 * cpu buffers.
+	 *
+	 * All other operations are safe. Read gets the CPU buffer only once
+	 * and then works with it. Resize does the critical operation on the
+	 * same CPU with disabled interrupts.
 	 */
 	atomic_inc(&cpu_buffer_a->record_disabled);
 	atomic_inc(&cpu_buffer_b->record_disabled);
 
-	ret = -EBUSY;
+	/* Bail out if we interrupted some recording */
+	rb_swap_info->ret = -EBUSY;
 	if (local_read(&cpu_buffer_a->committing))
 		goto out_dec;
 	if (local_read(&cpu_buffer_b->committing))
@@ -4339,13 +4341,43 @@ int ring_buffer_swap_cpu(struct ring_buffer *buffer_a,
 	cpu_buffer_b->buffer = buffer_a;
 	cpu_buffer_a->buffer = buffer_b;
 
-	ret = 0;
-
+	rb_swap_info->ret = 0;
 out_dec:
 	atomic_dec(&cpu_buffer_a->record_disabled);
 	atomic_dec(&cpu_buffer_b->record_disabled);
 out:
-	return ret;
+	return;
+}
+
+/**
+ * ring_buffer_swap_cpu - swap a CPU buffer between two ring buffers
+ * @buffer_a: One buffer to swap with
+ * @buffer_b: The other buffer to swap with
+ *
+ * This function is useful for tracers that want to take a "snapshot"
+ * of a CPU buffer and has another back up buffer lying around.
+ * It is expected that the tracer handles the cpu buffer not being
+ * used at the moment.
+ */
+int ring_buffer_swap_cpu(struct ring_buffer *buffer_a,
+			 struct ring_buffer *buffer_b, int cpu)
+{
+	struct ring_buffer_swap_info rb_swap_info = {
+		.buffer_a = buffer_a,
+		.buffer_b = buffer_b,
+	};
+	int ret;
+
+	/*
+	 * Swap the CPU buffer on the same CPU. Recording has to be fast
+	 * and and this helps to avoid memory barriers.
+	 */
+	ret = smp_call_function_single(cpu, ring_buffer_swap_this_cpu,
+				       (void *)&rb_swap_info, 1);
+	if (ret)
+		return ret;
+
+	return rb_swap_info.ret;
 }
 EXPORT_SYMBOL_GPL(ring_buffer_swap_cpu);
 #endif /* CONFIG_RING_BUFFER_ALLOW_SWAP */
