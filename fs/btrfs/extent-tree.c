@@ -4518,7 +4518,7 @@ again:
 		 * which means we won't have fs_info->fs_root set, so don't do
 		 * the async reclaim as we will panic.
 		 */
-		if (root->fs_info->fs_root &&
+		if (!root->fs_info->log_root_recovering &&
 		    need_do_async_reclaim(space_info, root->fs_info, used) &&
 		    !work_busy(&root->fs_info->async_reclaim_work))
 			queue_work(system_unbound_wq,
