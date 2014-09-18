@@ -54,12 +54,17 @@ EXPORT_SYMBOL(freezing_slow_path);
 
 static bool should_thaw_current(bool check_kthr_stop)
 {
-	if (!freezing(current) ||
-	    (check_kthr_stop && kthread_should_stop()) ||
-	    test_thread_flag(TIF_MEMDIE))
+	if (!freezing(current))
 		return true;
-	else
-		return false;
+
+	if (check_kthr_stop && kthread_should_stop())
+		return true;
+
+	/* It might not be safe to check TIF_MEMDIE for pm freeze. */
+	if (cgroup_freezing(current) && test_thread_flag(TIF_MEMDIE))
+		return true;
+
+	return false;
 }
 
 /* Refrigerator is place where frozen processes are stored :-). */
