@@ -919,17 +919,12 @@ static void acpi_device_notify(acpi_handle handle, u32 event, void *data)
 	device->driver->ops.notify(device, event);
 }
 
-static void acpi_device_notify_fixed_run(void *data)
+static acpi_status acpi_device_notify_fixed(void *data)
 {
 	struct acpi_device *device = data;
 
-	acpi_device_notify(NULL, ACPI_FIXED_HARDWARE_EVENT, device);
-}
-
-static acpi_status acpi_device_notify_fixed(void *data)
-{
 	/* Fixed hardware devices have no handles */
-	acpi_os_execute(OSL_NOTIFY_HANDLER, acpi_device_notify_fixed_run, data);
+	acpi_device_notify(NULL, ACPI_FIXED_HARDWARE_EVENT, device);
 	return AE_OK;
 }
 
