@@ -1218,7 +1218,7 @@ static int ext2_freeze(struct super_block *sb)
 	 * because we have unattached inodes and thus filesystem is not fully
 	 * consistent.
 	 */
-	if (atomic_long_read(&sb->s_remove_count)) {
+	if (percpu_counter_sum(&sb->s_remove_counters)) {
 		ext2_sync_fs(sb, 1);
 		return 0;
 	}
