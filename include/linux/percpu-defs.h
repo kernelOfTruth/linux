@@ -1,6 +1,8 @@
 #ifndef _LINUX_PERCPU_DEFS_H
 #define _LINUX_PERCPU_DEFS_H
 
+#include <asm/barrier.h>
+
 /*
  * Base implementations of per-CPU variable declarations and definitions, where
  * the section in which the variable is to be placed is provided by the
@@ -19,9 +21,15 @@
 	__attribute__((section(".discard"), unused))
 
 /*
- * Macro which verifies @ptr is a percpu pointer without evaluating
- * @ptr.  This is to be used in percpu accessors to verify that the
- * input parameter is a percpu pointer.
+ * This macro serves two purposes.  It verifies @ptr is a percpu pointer
+ * without evaluating @ptr and provides the data dependency barrier paired
+ * with smp_wmb() at the end of the allocation path so that the memory
+ * clearing in the allocation path is visible to all percpu accsses.
+ *
+ * The existence of the data dependency barrier is guaranteed and percpu
+ * users can take advantage of it - e.g. percpu area updates followed by
+ * smp_wmb() and then a percpu pointer assignment are guaranteed to be
+ * visible to accessors which access through the assigned percpu pointer.
  *
  * + 0 is required in order to convert the pointer type from a
  * potential array type to a pointer to a single item of the array.
@@ -29,6 +37,7 @@
 #define __verify_pcpu_ptr(ptr)	do {					\
 	const void __percpu *__vpp_verify = (typeof((ptr) + 0))NULL;	\
 	(void)__vpp_verify;						\
+	smp_read_barrier_depends();					\
 } while (0)
 
 /*
