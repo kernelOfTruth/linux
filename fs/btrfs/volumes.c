@@ -535,7 +535,7 @@ static noinline int device_list_add(const char *path,
 		 * the btrfs dev scan cli, after FS has been mounted.
 		 */
 		if (fs_devices->opened) {
-			goto out;
+			return -EBUSY;
 		} else {
 			/*
 			 * That is if the FS is _not_ mounted and if you
@@ -568,7 +568,6 @@ static noinline int device_list_add(const char *path,
 	if (!fs_devices->opened)
 		device->generation = found_transid;
 
-out:
 	*fs_devices_ret = fs_devices;
 
 	return ret;
