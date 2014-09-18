@@ -113,6 +113,7 @@ struct zram {
 	u64 disksize;	/* bytes */
 	int max_comp_streams;
 	struct zram_stats stats;
+	atomic_t alloc_fail;
 	/*
 	 * the number of pages zram can consume for storing compressed data
 	 */

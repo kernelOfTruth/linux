@@ -43,6 +43,20 @@ static const char *default_compressor = "lzo";
 /* Module params (documentation at end) */
 static unsigned int num_devices = 1;
 
+/*
+ * If (100 * used_pages / total_pages) >= ZRAM_FULLNESS_PERCENT),
+ * we regards it as zram-full. It means that the higher
+ * ZRAM_FULLNESS_PERCENT is, the slower we reach zram full.
+ */
+#define ZRAM_FULLNESS_PERCENT 80
+
+/*
+ * If zram fails to allocate memory consecutively up to this,
+ * we regard it as zram-full. It's safe guard to prevent too
+ * many swap write fail due to lack of fragmentation uncertainty.
+ */
+#define ALLOC_FAIL_MAX	32
+
 #define ZRAM_ATTR_RO(name)						\
 static ssize_t zram_attr_##name##_show(struct device *d,		\
 				struct device_attribute *attr, char *b)	\
@@ -148,6 +162,7 @@ static ssize_t mem_limit_store(struct device *dev,
 
 	down_write(&zram->init_lock);
 	zram->limit_pages = PAGE_ALIGN(limit) >> PAGE_SHIFT;
+	atomic_set(&zram->alloc_fail, 0);
 	up_write(&zram->init_lock);
 
 	return len;
@@ -410,6 +425,7 @@ static void zram_free_page(struct zram *zram, size_t index)
 	atomic64_sub(zram_get_obj_size(meta, index),
 			&zram->stats.compr_data_size);
 	atomic64_dec(&zram->stats.pages_stored);
+	atomic_set(&zram->alloc_fail, 0);
 
 	meta->table[index].handle = 0;
 	zram_set_obj_size(meta, index, 0);
@@ -597,10 +613,15 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec, u32 index,
 	}
 
 	alloced_pages = zs_get_total_pages(meta->mem_pool);
-	if (zram->limit_pages && alloced_pages > zram->limit_pages) {
-		zs_free(meta->mem_pool, handle);
-		ret = -ENOMEM;
-		goto out;
+	if (zram->limit_pages) {
+		if (alloced_pages > zram->limit_pages) {
+			zs_free(meta->mem_pool, handle);
+			atomic_inc(&zram->alloc_fail);
+			ret = -ENOMEM;
+			goto out;
+		} else {
+			atomic_set(&zram->alloc_fail, 0);
+		}
 	}
 
 	update_used_max(zram, alloced_pages);
@@ -711,6 +732,7 @@ static void zram_reset_device(struct zram *zram, bool reset_capacity)
 	down_write(&zram->init_lock);
 
 	zram->limit_pages = 0;
+	atomic_set(&zram->alloc_fail, 0);
 
 	if (!init_done(zram)) {
 		up_write(&zram->init_lock);
@@ -944,6 +966,34 @@ static int zram_slot_free_notify(struct block_device *bdev,
 	return 0;
 }
 
+static int zram_full(struct block_device *bdev, void *arg)
+{
+	struct zram *zram;
+	struct zram_meta *meta;
+	unsigned long total_pages, compr_pages;
+
+	zram = bdev->bd_disk->private_data;
+	if (!zram->limit_pages)
+		return 0;
+
+	meta = zram->meta;
+	total_pages = zs_get_total_pages(meta->mem_pool);
+
+	if (total_pages >= zram->limit_pages) {
+
+		compr_pages = atomic64_read(&zram->stats.compr_data_size)
+					>> PAGE_SHIFT;
+		if ((100 * compr_pages / total_pages)
+			>= ZRAM_FULLNESS_PERCENT)
+			return 1;
+	}
+
+	if (atomic_read(&zram->alloc_fail) > ALLOC_FAIL_MAX)
+		return 1;
+
+	return 0;
+}
+
 static int zram_swap_hint(struct block_device *bdev,
 				unsigned int hint, void *arg)
 {
@@ -951,6 +1001,8 @@ static int zram_swap_hint(struct block_device *bdev,
 
 	if (hint == SWAP_FREE)
 		ret = zram_slot_free_notify(bdev, (unsigned long)arg);
+	else if (hint == SWAP_FULL)
+		ret = zram_full(bdev, arg);
 
 	return ret;
 }
