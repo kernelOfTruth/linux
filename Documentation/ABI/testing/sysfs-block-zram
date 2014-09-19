@@ -138,3 +138,13 @@ Description:
 		amount of memory ZRAM can use to store the compressed data.  The
 		limit could be changed in run time and "0" means disable the
 		limit.  No limit is the initial state.  Unit: bytes
+
+What:		/sys/block/zram<id>/fullness
+Date:		August 2014
+Contact:	Minchan Kim <minchan@kernel.org>
+Description:
+		The fullness file is read/write and specifies how easily
+		zram become full state so if you set it to lower value,
+		zram can reach full state easily compared to higher value.
+		Curretnly, initial value is 80% but it could be changed.
+		Unit: Percentage

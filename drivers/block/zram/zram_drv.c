@@ -136,6 +136,37 @@ static ssize_t max_comp_streams_show(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%d\n", val);
 }
 
+static ssize_t fullness_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int val;
+	struct zram *zram = dev_to_zram(dev);
+
+	down_read(&zram->init_lock);
+	val = zram->fullness;
+	up_read(&zram->init_lock);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", val);
+}
+
+static ssize_t fullness_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t len)
+{
+	int err;
+	unsigned long val;
+	struct zram *zram = dev_to_zram(dev);
+
+	err = kstrtoul(buf, 10, &val);
+	if (err || val > 100)
+		return -EINVAL;
+
+	down_write(&zram->init_lock);
+	zram->fullness = val;
+	up_write(&zram->init_lock);
+
+	return len;
+}
+
 static ssize_t mem_limit_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -733,6 +764,7 @@ static void zram_reset_device(struct zram *zram, bool reset_capacity)
 
 	zram->limit_pages = 0;
 	atomic_set(&zram->alloc_fail, 0);
+	zram->fullness = ZRAM_FULLNESS_PERCENT;
 
 	if (!init_done(zram)) {
 		up_write(&zram->init_lock);
@@ -984,7 +1016,7 @@ static int zram_full(struct block_device *bdev, void *arg)
 		compr_pages = atomic64_read(&zram->stats.compr_data_size)
 					>> PAGE_SHIFT;
 		if ((100 * compr_pages / total_pages)
-			>= ZRAM_FULLNESS_PERCENT)
+			>= zram->fullness)
 			return 1;
 	}
 
@@ -1020,6 +1052,8 @@ static DEVICE_ATTR(orig_data_size, S_IRUGO, orig_data_size_show, NULL);
 static DEVICE_ATTR(mem_used_total, S_IRUGO, mem_used_total_show, NULL);
 static DEVICE_ATTR(mem_limit, S_IRUGO | S_IWUSR, mem_limit_show,
 		mem_limit_store);
+static DEVICE_ATTR(fullness, S_IRUGO | S_IWUSR, fullness_show,
+		fullness_store);
 static DEVICE_ATTR(mem_used_max, S_IRUGO | S_IWUSR, mem_used_max_show,
 		mem_used_max_store);
 static DEVICE_ATTR(max_comp_streams, S_IRUGO | S_IWUSR,
@@ -1051,6 +1085,7 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_compr_data_size.attr,
 	&dev_attr_mem_used_total.attr,
 	&dev_attr_mem_limit.attr,
+	&dev_attr_fullness.attr,
 	&dev_attr_mem_used_max.attr,
 	&dev_attr_max_comp_streams.attr,
 	&dev_attr_comp_algorithm.attr,
@@ -1132,6 +1167,7 @@ static int create_device(struct zram *zram, int device_id)
 	strlcpy(zram->compressor, default_compressor, sizeof(zram->compressor));
 	zram->meta = NULL;
 	zram->max_comp_streams = 1;
+	zram->fullness = ZRAM_FULLNESS_PERCENT;
 	return 0;
 
 out_free_disk:
