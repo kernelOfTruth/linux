@@ -119,6 +119,7 @@ struct zram {
 	 */
 	unsigned long limit_pages;
 
+	int fullness;
 	char compressor[10];
 };
 #endif
