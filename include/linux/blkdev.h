@@ -1609,6 +1609,7 @@ static inline bool blk_integrity_is_initialized(struct gendisk *g)
 
 enum swap_blk_hint {
 	SWAP_FREE,
+	SWAP_FULL,
 };
 
 struct block_device_operations {
