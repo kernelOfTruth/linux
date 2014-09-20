@@ -951,22 +951,6 @@ static int zram_slot_free_notify(struct block_device *bdev,
 	return 0;
 }
 
-static int zram_get_free_pages(struct block_device *bdev, long *free)
-{
-	struct zram *zram;
-	struct zram_meta *meta;
-
-	zram = bdev->bd_disk->private_data;
-	meta = zram->meta;
-
-	if (!zram->limit_pages)
-		return 1;
-
-	*free = zram->limit_pages - zs_get_total_pages(meta->mem_pool);
-
-	return 0;
-}
-
 static int zram_swap_hint(struct block_device *bdev,
 				unsigned int hint, void *arg)
 {
@@ -974,8 +958,6 @@ static int zram_swap_hint(struct block_device *bdev,
 
 	if (hint == SWAP_SLOT_FREE)
 		ret = zram_slot_free_notify(bdev, (unsigned long)arg);
-	else if (hint == SWAP_GET_FREE)
-		ret = zram_get_free_pages(bdev, arg);
 
 	return ret;
 }
