@@ -933,8 +933,7 @@ error:
 	bio_io_error(bio);
 }
 
-/* this callback is with swap_lock and sometimes page table lock held */
-static int zram_slot_free_notify(struct block_device *bdev,
+static void zram_slot_free_notify(struct block_device *bdev,
 				unsigned long index)
 {
 	struct zram *zram;
@@ -947,23 +946,10 @@ static int zram_slot_free_notify(struct block_device *bdev,
 	zram_free_page(zram, index);
 	bit_spin_unlock(ZRAM_ACCESS, &meta->table[index].value);
 	atomic64_inc(&zram->stats.notify_free);
-
-	return 0;
-}
-
-static int zram_swap_hint(struct block_device *bdev,
-				unsigned int hint, void *arg)
-{
-	int ret = -EINVAL;
-
-	if (hint == SWAP_SLOT_FREE)
-		ret = zram_slot_free_notify(bdev, (unsigned long)arg);
-
-	return ret;
 }
 
 static const struct block_device_operations zram_devops = {
-	.swap_hint = zram_swap_hint,
+	.swap_slot_free_notify = zram_slot_free_notify,
 	.owner = THIS_MODULE
 };
 

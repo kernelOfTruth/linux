@@ -114,7 +114,7 @@ void end_swap_bio_read(struct bio *bio, int err)
 			 * we again wish to reclaim it.
 			 */
 			struct gendisk *disk = sis->bdev->bd_disk;
-			if (disk->fops->swap_hint) {
+			if (disk->fops->swap_slot_free_notify) {
 				swp_entry_t entry;
 				unsigned long offset;
 
@@ -122,9 +122,8 @@ void end_swap_bio_read(struct bio *bio, int err)
 				offset = swp_offset(entry);
 
 				SetPageDirty(page);
-				disk->fops->swap_hint(sis->bdev,
-						SWAP_SLOT_FREE,
-						(void *)offset);
+				disk->fops->swap_slot_free_notify(sis->bdev,
+						offset);
 			}
 		}
 	}
