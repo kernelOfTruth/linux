@@ -123,8 +123,7 @@ void end_swap_bio_read(struct bio *bio, int err)
 
 				SetPageDirty(page);
 				disk->fops->swap_hint(sis->bdev,
-						SWAP_SLOT_FREE,
-						(void *)offset);
+						SWAP_FREE, (void *)offset);
 			}
 		}
 	}

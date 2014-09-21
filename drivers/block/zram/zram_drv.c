@@ -43,6 +43,20 @@ static const char *default_compressor = "lzo";
 /* Module params (documentation at end) */
 static unsigned int num_devices = 1;
 
+/*
+ * If (100 * used_pages / total_pages) >= ZRAM_FULLNESS_PERCENT),
+ * we regards it as zram-full. It means that the higher
+ * ZRAM_FULLNESS_PERCENT is, the slower we reach zram full.
+ */
+#define ZRAM_FULLNESS_PERCENT 80
+
+/*
+ * If zram fails to allocate memory consecutively up to this,
+ * we regard it as zram-full. It's safe guard to prevent too
+ * many swap write fail due to lack of fragmentation uncertainty.
+ */
+#define ALLOC_FAIL_MAX	32
+
 #define ZRAM_ATTR_RO(name)						\
 static ssize_t zram_attr_##name##_show(struct device *d,		\
 				struct device_attribute *attr, char *b)	\
@@ -122,6 +136,37 @@ static ssize_t max_comp_streams_show(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%d\n", val);
 }
 
+static ssize_t fullness_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int val;
+	struct zram *zram = dev_to_zram(dev);
+
+	down_read(&zram->init_lock);
+	val = zram->fullness;
+	up_read(&zram->init_lock);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", val);
+}
+
+static ssize_t fullness_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t len)
+{
+	int err;
+	unsigned long val;
+	struct zram *zram = dev_to_zram(dev);
+
+	err = kstrtoul(buf, 10, &val);
+	if (err || val > 100)
+		return -EINVAL;
+
+	down_write(&zram->init_lock);
+	zram->fullness = val;
+	up_write(&zram->init_lock);
+
+	return len;
+}
+
 static ssize_t mem_limit_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -148,6 +193,7 @@ static ssize_t mem_limit_store(struct device *dev,
 
 	down_write(&zram->init_lock);
 	zram->limit_pages = PAGE_ALIGN(limit) >> PAGE_SHIFT;
+	atomic_set(&zram->alloc_fail, 0);
 	up_write(&zram->init_lock);
 
 	return len;
@@ -388,7 +434,7 @@ static void handle_zero_page(struct bio_vec *bvec)
  * caller should hold this table index entry's bit_spinlock to
  * indicate this index entry is accessing.
  */
-static bool zram_free_page(struct zram *zram, size_t index)
+static void zram_free_page(struct zram *zram, size_t index)
 {
 	struct zram_meta *meta = zram->meta;
 	unsigned long handle = meta->table[index].handle;
@@ -402,7 +448,7 @@ static bool zram_free_page(struct zram *zram, size_t index)
 			zram_clear_flag(meta, index, ZRAM_ZERO);
 			atomic64_dec(&zram->stats.zero_pages);
 		}
-		return false;
+		return;
 	}
 
 	zs_free(meta->mem_pool, handle);
@@ -410,10 +456,10 @@ static bool zram_free_page(struct zram *zram, size_t index)
 	atomic64_sub(zram_get_obj_size(meta, index),
 			&zram->stats.compr_data_size);
 	atomic64_dec(&zram->stats.pages_stored);
+	atomic_set(&zram->alloc_fail, 0);
 
 	meta->table[index].handle = 0;
 	zram_set_obj_size(meta, index, 0);
-	return true;
 }
 
 static int zram_decompress_page(struct zram *zram, char *mem, u32 index)
@@ -598,10 +644,15 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec, u32 index,
 	}
 
 	alloced_pages = zs_get_total_pages(meta->mem_pool);
-	if (zram->limit_pages && alloced_pages > zram->limit_pages) {
-		zs_free(meta->mem_pool, handle);
-		ret = -ENOMEM;
-		goto out;
+	if (zram->limit_pages) {
+		if (alloced_pages > zram->limit_pages) {
+			zs_free(meta->mem_pool, handle);
+			atomic_inc(&zram->alloc_fail);
+			ret = -ENOMEM;
+			goto out;
+		} else {
+			atomic_set(&zram->alloc_fail, 0);
+		}
 	}
 
 	update_used_max(zram, alloced_pages);
@@ -696,18 +747,12 @@ static void zram_bio_discard(struct zram *zram, u32 index,
 	}
 
 	while (n >= PAGE_SIZE) {
-		bool discarded;
-
 		bit_spin_lock(ZRAM_ACCESS, &meta->table[index].value);
-		discarded = zram_free_page(zram, index);
+		zram_free_page(zram, index);
 		bit_spin_unlock(ZRAM_ACCESS, &meta->table[index].value);
-		if (discarded)
-			atomic64_inc(&zram->stats.num_discarded);
 		index++;
 		n -= PAGE_SIZE;
 	}
-
-	atomic64_inc(&zram->stats.num_discard_req);
 }
 
 static void zram_reset_device(struct zram *zram, bool reset_capacity)
@@ -718,6 +763,8 @@ static void zram_reset_device(struct zram *zram, bool reset_capacity)
 	down_write(&zram->init_lock);
 
 	zram->limit_pages = 0;
+	atomic_set(&zram->alloc_fail, 0);
+	zram->fullness = ZRAM_FULLNESS_PERCENT;
 
 	if (!init_done(zram)) {
 		up_write(&zram->init_lock);
@@ -951,18 +998,30 @@ static int zram_slot_free_notify(struct block_device *bdev,
 	return 0;
 }
 
-static int zram_get_free_pages(struct block_device *bdev, long *free)
+static int zram_full(struct block_device *bdev, void *arg)
 {
 	struct zram *zram;
 	struct zram_meta *meta;
+	unsigned long total_pages, compr_pages;
 
 	zram = bdev->bd_disk->private_data;
-	meta = zram->meta;
-
 	if (!zram->limit_pages)
-		return 1;
+		return 0;
 
-	*free = zram->limit_pages - zs_get_total_pages(meta->mem_pool);
+	meta = zram->meta;
+	total_pages = zs_get_total_pages(meta->mem_pool);
+
+	if (total_pages >= zram->limit_pages) {
+
+		compr_pages = atomic64_read(&zram->stats.compr_data_size)
+					>> PAGE_SHIFT;
+		if ((100 * compr_pages / total_pages)
+			>= zram->fullness)
+			return 1;
+	}
+
+	if (atomic_read(&zram->alloc_fail) > ALLOC_FAIL_MAX)
+		return 1;
 
 	return 0;
 }
@@ -972,10 +1031,10 @@ static int zram_swap_hint(struct block_device *bdev,
 {
 	int ret = -EINVAL;
 
-	if (hint == SWAP_SLOT_FREE)
+	if (hint == SWAP_FREE)
 		ret = zram_slot_free_notify(bdev, (unsigned long)arg);
-	else if (hint == SWAP_GET_FREE)
-		ret = zram_get_free_pages(bdev, arg);
+	else if (hint == SWAP_FULL)
+		ret = zram_full(bdev, arg);
 
 	return ret;
 }
@@ -993,6 +1052,8 @@ static DEVICE_ATTR(orig_data_size, S_IRUGO, orig_data_size_show, NULL);
 static DEVICE_ATTR(mem_used_total, S_IRUGO, mem_used_total_show, NULL);
 static DEVICE_ATTR(mem_limit, S_IRUGO | S_IWUSR, mem_limit_show,
 		mem_limit_store);
+static DEVICE_ATTR(fullness, S_IRUGO | S_IWUSR, fullness_show,
+		fullness_store);
 static DEVICE_ATTR(mem_used_max, S_IRUGO | S_IWUSR, mem_used_max_show,
 		mem_used_max_store);
 static DEVICE_ATTR(max_comp_streams, S_IRUGO | S_IWUSR,
@@ -1004,8 +1065,6 @@ ZRAM_ATTR_RO(num_reads);
 ZRAM_ATTR_RO(num_writes);
 ZRAM_ATTR_RO(failed_reads);
 ZRAM_ATTR_RO(failed_writes);
-ZRAM_ATTR_RO(num_discard_req);
-ZRAM_ATTR_RO(num_discarded);
 ZRAM_ATTR_RO(invalid_io);
 ZRAM_ATTR_RO(notify_free);
 ZRAM_ATTR_RO(zero_pages);
@@ -1019,8 +1078,6 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_num_writes.attr,
 	&dev_attr_failed_reads.attr,
 	&dev_attr_failed_writes.attr,
-	&dev_attr_num_discard_req.attr,
-	&dev_attr_num_discarded.attr,
 	&dev_attr_invalid_io.attr,
 	&dev_attr_notify_free.attr,
 	&dev_attr_zero_pages.attr,
@@ -1028,6 +1085,7 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_compr_data_size.attr,
 	&dev_attr_mem_used_total.attr,
 	&dev_attr_mem_limit.attr,
+	&dev_attr_fullness.attr,
 	&dev_attr_mem_used_max.attr,
 	&dev_attr_max_comp_streams.attr,
 	&dev_attr_comp_algorithm.attr,
@@ -1109,6 +1167,7 @@ static int create_device(struct zram *zram, int device_id)
 	strlcpy(zram->compressor, default_compressor, sizeof(zram->compressor));
 	zram->meta = NULL;
 	zram->max_comp_streams = 1;
+	zram->fullness = ZRAM_FULLNESS_PERCENT;
 	return 0;
 
 out_free_disk:

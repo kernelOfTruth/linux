@@ -484,22 +484,6 @@ new_cluster:
 	*scan_base = tmp;
 }
 
-static bool __swap_full(struct swap_info_struct *si)
-{
-	if (si->flags & SWP_BLKDEV) {
-		long free;
-		struct gendisk *disk = si->bdev->bd_disk;
-
-		if (disk->fops->swap_hint)
-			if (!disk->fops->swap_hint(si->bdev,
-						SWAP_GET_FREE,
-						&free))
-				return free <= 0;
-	}
-
-	return si->inuse_pages == si->pages;
-}
-
 static unsigned long scan_swap_map(struct swap_info_struct *si,
 				   unsigned char usage)
 {
@@ -507,6 +491,29 @@ static unsigned long scan_swap_map(struct swap_info_struct *si,
 	unsigned long scan_base;
 	unsigned long last_in_cluster = 0;
 	int latency_ration = LATENCY_LIMIT;
+
+	/*
+	 * If zram is full, we don't need to scan and want to stop swap.
+	 * For it, we removes si from swap_avail_head and decreases
+	 * nr_swap_pages to prevent further anonymous reclaim so that
+	 * VM can restart swap out if zram has a free space.
+	 * Look at swap_entry_free.
+	 */
+	if (si->flags & SWP_BLKDEV) {
+		struct gendisk *disk = si->bdev->bd_disk;
+
+		if (disk->fops->swap_hint && disk->fops->swap_hint(
+				si->bdev, SWAP_FULL, NULL)) {
+			spin_lock(&swap_avail_lock);
+			WARN_ON(plist_node_empty(&si->avail_list));
+			plist_del(&si->avail_list, &swap_avail_head);
+			spin_unlock(&swap_avail_lock);
+			atomic_long_sub(si->pages - si->inuse_pages,
+						&nr_swap_pages);
+			si->full = true;
+			return 0;
+		}
+	}
 
 	/*
 	 * We try to cluster swap pages by allocating them sequentially
@@ -574,7 +581,7 @@ checks:
 	}
 	if (!(si->flags & SWP_WRITEOK))
 		goto no_page;
-	if (!si->highest_bit)
+	if (si->full)
 		goto no_page;
 	if (offset > si->highest_bit)
 		scan_base = offset = si->lowest_bit;
@@ -599,22 +606,13 @@ checks:
 	if (offset == si->highest_bit)
 		si->highest_bit--;
 	si->inuse_pages++;
-	if (__swap_full(si)) {
-		struct gendisk *disk = si->bdev->bd_disk;
-
+	if (si->inuse_pages == si->pages) {
 		si->lowest_bit = si->max;
 		si->highest_bit = 0;
 		spin_lock(&swap_avail_lock);
 		plist_del(&si->avail_list, &swap_avail_head);
-		/*
-		 * If zram is full, it decreases nr_swap_pages
-		 * for stopping anonymous page reclaim until
-		 * zram has free space. Look at swap_entry_free
-		 */
-		if (disk->fops->swap_hint)
-			atomic_long_sub(si->pages - si->inuse_pages,
-				&nr_swap_pages);
 		spin_unlock(&swap_avail_lock);
+		si->full = true;
 	}
 	si->swap_map[offset] = usage;
 	inc_cluster_info_page(si, si->cluster_info, offset);
@@ -679,14 +677,14 @@ start_over:
 		plist_requeue(&si->avail_list, &swap_avail_head);
 		spin_unlock(&swap_avail_lock);
 		spin_lock(&si->lock);
-		if (!si->highest_bit || !(si->flags & SWP_WRITEOK)) {
+		if (si->full || !(si->flags & SWP_WRITEOK)) {
 			spin_lock(&swap_avail_lock);
 			if (plist_node_empty(&si->avail_list)) {
 				spin_unlock(&si->lock);
 				goto nextsi;
 			}
-			WARN(!si->highest_bit,
-			     "swap_info %d in list but !highest_bit\n",
+			WARN(si->full,
+			     "swap_info %d in list but swap is full\n",
 			     si->type);
 			WARN(!(si->flags & SWP_WRITEOK),
 			     "swap_info %d in list but !SWP_WRITEOK\n",
@@ -822,46 +820,43 @@ static unsigned char swap_entry_free(struct swap_info_struct *p,
 
 	/* free if no reference */
 	if (!usage) {
-		struct gendisk *disk = p->bdev->bd_disk;
+		bool was_full;
+		struct gendisk *virt_swap = NULL;
+
+		/* Check virtual swap */
+		if (p->flags & SWP_BLKDEV) {
+			virt_swap = p->bdev->bd_disk;
+			if (!virt_swap->fops->swap_hint)
+				virt_swap = NULL;
+		}
+
 		dec_cluster_info_page(p, p->cluster_info, offset);
 		if (offset < p->lowest_bit)
 			p->lowest_bit = offset;
-		if (offset > p->highest_bit) {
-			bool was_full = !p->highest_bit;
+		if (offset > p->highest_bit)
 			p->highest_bit = offset;
-			if (was_full && (p->flags & SWP_WRITEOK)) {
-				spin_lock(&swap_avail_lock);
-				WARN_ON(!plist_node_empty(&p->avail_list));
-				if (plist_node_empty(&p->avail_list))
-					plist_add(&p->avail_list,
-						  &swap_avail_head);
-				if ((p->flags & SWP_BLKDEV) &&
-					disk->fops->swap_hint) {
-					atomic_long_add(p->pages -
-							p->inuse_pages,
-							&nr_swap_pages);
-					/*
-					 * reset [highest|lowest]_bit to avoid
-					 * scan_swap_map infinite looping if
-					 * cached free cluster's index by
-					 * scan_swap_map_try_ssd_cluster is
-					 * above p->highest_bit.
-					 */
-					p->highest_bit = p->max - 1;
-					p->lowest_bit = 1;
-				}
-				spin_unlock(&swap_avail_lock);
-			}
+		was_full = p->full;
+
+		if (was_full && (p->flags & SWP_WRITEOK)) {
+			spin_lock(&swap_avail_lock);
+			WARN_ON(!plist_node_empty(&p->avail_list));
+			if (plist_node_empty(&p->avail_list))
+				plist_add(&p->avail_list,
+					  &swap_avail_head);
+			spin_unlock(&swap_avail_lock);
+			p->full = false;
+			if (virt_swap)
+				atomic_long_add(p->pages -
+						p->inuse_pages,
+						&nr_swap_pages);
 		}
+
 		atomic_long_inc(&nr_swap_pages);
 		p->inuse_pages--;
 		frontswap_invalidate_page(p->type, offset);
-		if (p->flags & SWP_BLKDEV) {
-			if (disk->fops->swap_hint)
-				disk->fops->swap_hint(p->bdev,
-						SWAP_SLOT_FREE,
-						(void *)offset);
-		}
+		if (virt_swap)
+			virt_swap->fops->swap_hint(p->bdev,
+					SWAP_FREE, (void *)offset);
 	}
 
 	return usage;

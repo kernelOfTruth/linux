@@ -224,6 +224,7 @@ struct swap_info_struct {
 	struct swap_cluster_info free_cluster_tail; /* free cluster list tail */
 	unsigned int lowest_bit;	/* index of first free in swap_map */
 	unsigned int highest_bit;	/* index of last free in swap_map */
+	bool	full;			/* whether swap is full or not */
 	unsigned int pages;		/* total of usable pages of swap */
 	unsigned int inuse_pages;	/* number of those currently in use */
 	unsigned int cluster_next;	/* likely index for next allocation */

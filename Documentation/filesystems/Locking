@@ -414,10 +414,13 @@ media_changed:		no
 unlock_native_capacity:	no
 revalidate_disk:	no
 getgeo:			no
-swap_hint:		no
+swap_hint:		no	(see below)
 
 media_changed, unlock_native_capacity and revalidate_disk are called only from
 check_disk_change().
+
+swap_slot_free_notify is called with swap_lock and sometimes the page lock
+held.
 
 
 --------------------------- file_operations -------------------------------
