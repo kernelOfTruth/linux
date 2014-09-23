@@ -20,6 +20,7 @@
 #include "locking.h"
 #include "rcu-string.h"
 #include "backref.h"
+#include "transaction.h"
 
 static struct kmem_cache *extent_state_cache;
 static struct kmem_cache *extent_buffer_cache;
@@ -3607,6 +3608,68 @@ static void end_extent_buffer_writeback(struct extent_buffer *eb)
 	wake_up_bit(&eb->bflags, EXTENT_BUFFER_WRITEBACK);
 }
 
+static void set_btree_ioerr(struct page *page, int err)
+{
+	struct extent_buffer *eb = (struct extent_buffer *)page->private;
+	const u64 start = eb->start;
+	const u64 end = eb->start + eb->len - 1;
+	struct btrfs_fs_info *fs_info = eb->fs_info;
+	int ret;
+
+	set_bit(EXTENT_BUFFER_IOERR, &eb->bflags);
+	SetPageError(page);
+
+	/*
+	 * If writeback for a btree extent that doesn't belong to a log tree
+	 * failed, set the bit BTRFS_INODE_BTREE_IO_ERR in the inode btree.
+	 * We do this because while the transaction is running and before it's
+	 * committing (when we call filemap_fdata[write|wait]_range against
+	 * the btree inode), we might have
+	 * btree_inode->i_mapping->a_ops->writepages() called by the VM - if it
+	 * returns an error or an error happens during writeback, when we're
+	 * committing the transaction we wouldn't know about it, since the pages
+	 * can be no longer dirty nor marked anymore for writeback (if a
+	 * subsequent modification to the extent buffer didn't happen before the
+	 * transaction commit), which makes filemap_fdata[write|wait]_range not
+	 * able to find the pages tagged with SetPageError at transaction
+	 * commit time. So if this happens we must abort the transaction,
+	 * otherwise we commit a super block with btree roots that point to
+	 * btree nodes/leafs whose content on disk is invalid - either garbage
+	 * or the content of some node/leaf from a past generation that got
+	 * cowed or deleted and is no longer valid.
+	 *
+	 * Note: setting AS_EIO/AS_ENOSPC in the btree inode's i_mapping would
+	 * not be enough - we need to distinguish between log tree extents vs
+	 * non-log tree extents, and the next filemap_fdatawait_range() call
+	 * will catch and clear such errors in the mapping - and that call might
+	 * be from a log sync and not from a transaction commit. Also, checking
+	 * for the eb flag EXTENT_BUFFER_IOERR at transaction commit time isn't
+	 * done and would not be completely reliable, as the eb might be removed
+	 * from memory and read back when trying to get it, which clears that
+	 * flag right before reading the eb's pages from disk, making us not
+	 * know about the previous write error.
+	 *
+	 * Using the BTRFS_INODE_BTREE_IO_ERR and BTRFS_INODE_BTREE_LOG_IO_ERR
+	 * inode flags also makes us achieve the goal of AS_EIO/AS_ENOSPC when
+	 * writepages() returns success, started writeback for all dirty pages
+	 * and before filemap_fdatawait_range() is called, the writeback for
+	 * all dirty pages had already finished with errors - because we were
+	 * not using AS_EIO/AS_ENOSPC, filemap_fdatawait_range() would return
+	 * success, as it could not know that writeback errors happened (the
+	 * pages were no longer tagged for writeback).
+	 */
+	ASSERT(fs_info->running_transaction);
+	ret = test_range_bit(&fs_info->running_transaction->dirty_pages,
+			     start, end, EXTENT_NEED_WAIT | EXTENT_DIRTY,
+			     1, NULL);
+	if (ret)
+		set_bit(BTRFS_INODE_BTREE_IO_ERR,
+			&BTRFS_I(fs_info->btree_inode)->runtime_flags);
+	else
+		set_bit(BTRFS_INODE_BTREE_LOG_IO_ERR,
+			&BTRFS_I(fs_info->btree_inode)->runtime_flags);
+}
+
 static void end_bio_extent_buffer_writepage(struct bio *bio, int err)
 {
 	struct bio_vec *bvec;
@@ -3621,9 +3684,8 @@ static void end_bio_extent_buffer_writepage(struct bio *bio, int err)
 		done = atomic_dec_and_test(&eb->io_pages);
 
 		if (err || test_bit(EXTENT_BUFFER_IOERR, &eb->bflags)) {
-			set_bit(EXTENT_BUFFER_IOERR, &eb->bflags);
 			ClearPageUptodate(page);
-			SetPageError(page);
+			set_btree_ioerr(page, err < 0 ? err : -EIO);
 		}
 
 		end_page_writeback(page);
@@ -3667,8 +3729,7 @@ static noinline_for_stack int write_one_eb(struct extent_buffer *eb,
 					 0, epd->bio_flags, bio_flags);
 		epd->bio_flags = bio_flags;
 		if (ret) {
-			set_bit(EXTENT_BUFFER_IOERR, &eb->bflags);
-			SetPageError(p);
+			set_btree_ioerr(p, ret);
 			end_page_writeback(p);
 			if (atomic_sub_and_test(num_pages - i, &eb->io_pages))
 				end_extent_buffer_writeback(eb);
