@@ -851,6 +851,7 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
 	struct extent_state *cached_state = NULL;
 	u64 start = 0;
 	u64 end;
+	int errors;
 
 	while (!find_first_extent_bit(dirty_pages, start, &start, &end,
 				      EXTENT_NEED_WAIT, &cached_state)) {
@@ -864,6 +865,23 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
 	}
 	if (err)
 		werr = err;
+
+	if (root->root_key.objectid == BTRFS_TREE_LOG_OBJECTID) {
+		atomic_t *log_errors = root->fs_info->log_eb_write_errors;
+
+		errors = 0;
+		if (mark & EXTENT_DIRTY)
+			errors += atomic_xchg(&log_errors[0], 0);
+		if (mark & EXTENT_NEW)
+			errors += atomic_xchg(&log_errors[1], 0);
+	} else {
+		errors = atomic_xchg(&root->fs_info->eb_write_errors, 0);
+	}
+
+	ASSERT(errors >= 0);
+	if (errors > 0 && !werr)
+		werr = -EIO;
+
 	return werr;
 }
 

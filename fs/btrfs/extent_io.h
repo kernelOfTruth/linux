@@ -41,9 +41,10 @@
 #define EXTENT_BUFFER_TREE_REF 5
 #define EXTENT_BUFFER_STALE 6
 #define EXTENT_BUFFER_WRITEBACK 7
-#define EXTENT_BUFFER_IOERR 8
+#define EXTENT_BUFFER_READ_ERR 8        /* read IO error */
 #define EXTENT_BUFFER_DUMMY 9
 #define EXTENT_BUFFER_IN_TREE 10
+#define EXTENT_BUFFER_WRITE_ERR 11    /* write IO error */
 
 /* these are flags for extent_clear_unlock_delalloc */
 #define PAGE_UNLOCK		(1 << 0)
@@ -142,6 +143,8 @@ struct extent_buffer {
 	atomic_t spinning_readers;
 	atomic_t spinning_writers;
 	int lock_nested;
+	/* meaningful only if the owner root is from a log tree */
+	int log_index;
 
 	/* protects write locks */
 	rwlock_t lock;
@@ -314,6 +317,7 @@ void memmove_extent_buffer(struct extent_buffer *dst, unsigned long dst_offset,
 			   unsigned long src_offset, unsigned long len);
 void memset_extent_buffer(struct extent_buffer *eb, char c,
 			  unsigned long start, unsigned long len);
+void clear_extent_buffer_write_err(struct extent_buffer *eb);
 void clear_extent_buffer_dirty(struct extent_buffer *eb);
 int set_extent_buffer_dirty(struct extent_buffer *eb);
 int set_extent_buffer_uptodate(struct extent_buffer *eb);
