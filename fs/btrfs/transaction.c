@@ -843,7 +843,6 @@ int btrfs_write_marked_extents(struct btrfs_root *root,
  * on all the pages and clear them from the dirty pages state tree
  */
 int btrfs_wait_marked_extents(struct btrfs_root *root,
-			      struct btrfs_trans_handle *trans,
 			      struct extent_io_tree *dirty_pages, int mark)
 {
 	int err = 0;
@@ -852,7 +851,6 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
 	struct extent_state *cached_state = NULL;
 	u64 start = 0;
 	u64 end;
-	struct inode *btree_inode = root->fs_info->btree_inode;
 
 	while (!find_first_extent_bit(dirty_pages, start, &start, &end,
 				      EXTENT_NEED_WAIT, &cached_state)) {
@@ -866,17 +864,6 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
 	}
 	if (err)
 		werr = err;
-
-	if (dirty_pages == &trans->transaction->dirty_pages) {
-		if (test_and_clear_bit(BTRFS_INODE_BTREE_IO_ERR,
-				       &BTRFS_I(btree_inode)->runtime_flags))
-			werr = werr ? werr : -EIO;
-	} else {
-		if (test_and_clear_bit(BTRFS_INODE_BTREE_LOG_IO_ERR,
-				       &BTRFS_I(btree_inode)->runtime_flags))
-			werr = werr ? werr : -EIO;
-	}
-
 	return werr;
 }
 
@@ -886,7 +873,6 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
  * those extents are on disk for transaction or log commit
  */
 static int btrfs_write_and_wait_marked_extents(struct btrfs_root *root,
-				struct btrfs_trans_handle *trans,
 				struct extent_io_tree *dirty_pages, int mark)
 {
 	int ret;
@@ -896,7 +882,7 @@ static int btrfs_write_and_wait_marked_extents(struct btrfs_root *root,
 	blk_start_plug(&plug);
 	ret = btrfs_write_marked_extents(root, dirty_pages, mark);
 	blk_finish_plug(&plug);
-	ret2 = btrfs_wait_marked_extents(root, trans, dirty_pages, mark);
+	ret2 = btrfs_wait_marked_extents(root, dirty_pages, mark);
 
 	if (ret)
 		return ret;
@@ -905,7 +891,7 @@ static int btrfs_write_and_wait_marked_extents(struct btrfs_root *root,
 	return 0;
 }
 
-static int btrfs_write_and_wait_transaction(struct btrfs_trans_handle *trans,
+int btrfs_write_and_wait_transaction(struct btrfs_trans_handle *trans,
 				     struct btrfs_root *root)
 {
 	if (!trans || !trans->transaction) {
@@ -913,7 +899,7 @@ static int btrfs_write_and_wait_transaction(struct btrfs_trans_handle *trans,
 		btree_inode = root->fs_info->btree_inode;
 		return filemap_write_and_wait(btree_inode->i_mapping);
 	}
-	return btrfs_write_and_wait_marked_extents(root, trans,
+	return btrfs_write_and_wait_marked_extents(root,
 					   &trans->transaction->dirty_pages,
 					   EXTENT_DIRTY);
 }

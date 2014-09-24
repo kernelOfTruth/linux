@@ -2583,8 +2583,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 			mutex_unlock(&log_root_tree->log_mutex);
 			goto out;
 		}
-		btrfs_wait_marked_extents(log, trans, &log->dirty_log_pages,
-					  mark);
+		btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
 		btrfs_free_logged_extents(log, log_transid);
 		mutex_unlock(&log_root_tree->log_mutex);
 		ret = -EAGAIN;
@@ -2600,8 +2599,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 	index2 = root_log_ctx.log_transid % 2;
 	if (atomic_read(&log_root_tree->log_commit[index2])) {
 		blk_finish_plug(&plug);
-		btrfs_wait_marked_extents(log, trans, &log->dirty_log_pages,
-					  mark);
+		btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
 		wait_log_commit(trans, log_root_tree,
 				root_log_ctx.log_transid);
 		btrfs_free_logged_extents(log, log_transid);
@@ -2625,8 +2623,7 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 	 */
 	if (btrfs_need_log_full_commit(root->fs_info, trans)) {
 		blk_finish_plug(&plug);
-		btrfs_wait_marked_extents(log, trans, &log->dirty_log_pages,
-					  mark);
+		btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
 		btrfs_free_logged_extents(log, log_transid);
 		mutex_unlock(&log_root_tree->log_mutex);
 		ret = -EAGAIN;
@@ -2644,8 +2641,8 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 		mutex_unlock(&log_root_tree->log_mutex);
 		goto out_wake_log_root;
 	}
-	btrfs_wait_marked_extents(log, trans, &log->dirty_log_pages, mark);
-	btrfs_wait_marked_extents(log_root_tree, trans,
+	btrfs_wait_marked_extents(log, &log->dirty_log_pages, mark);
+	btrfs_wait_marked_extents(log_root_tree,
 				  &log_root_tree->dirty_log_pages,
 				  EXTENT_NEW | EXTENT_DIRTY);
 	btrfs_wait_logged_extents(log, log_transid);
