@@ -44,8 +44,6 @@
 #define BTRFS_INODE_IN_DELALLOC_LIST		9
 #define BTRFS_INODE_READDIO_NEED_LOCK		10
 #define BTRFS_INODE_HAS_PROPS		        11
-#define BTRFS_INODE_BTREE_IO_ERR		12
-#define BTRFS_INODE_BTREE_LOG_IO_ERR		13
 
 /* in memory btrfs inode */
 struct btrfs_inode {

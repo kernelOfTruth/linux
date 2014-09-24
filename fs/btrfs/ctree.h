@@ -1504,6 +1504,9 @@ struct btrfs_fs_info {
 	atomic_t async_delalloc_pages;
 	atomic_t open_ioctl_trans;
 
+	atomic_t eb_write_errors;
+	atomic_t log_eb_write_errors[2];
+
 	/*
 	 * this is used to protect the following list -- ordered_roots.
 	 */

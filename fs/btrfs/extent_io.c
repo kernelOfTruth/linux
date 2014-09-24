@@ -3608,20 +3608,18 @@ static void end_extent_buffer_writeback(struct extent_buffer *eb)
 	wake_up_bit(&eb->bflags, EXTENT_BUFFER_WRITEBACK);
 }
 
-static void set_btree_ioerr(struct page *page, int err)
+static void set_btree_ioerr(struct page *page)
 {
 	struct extent_buffer *eb = (struct extent_buffer *)page->private;
-	const u64 start = eb->start;
-	const u64 end = eb->start + eb->len - 1;
-	struct btrfs_fs_info *fs_info = eb->fs_info;
-	int ret;
+	struct btrfs_root *root = BTRFS_I(page->mapping->host)->root;
 
-	set_bit(EXTENT_BUFFER_IOERR, &eb->bflags);
 	SetPageError(page);
+	if (test_and_set_bit(EXTENT_BUFFER_WRITE_ERR, &eb->bflags))
+		return;
 
 	/*
 	 * If writeback for a btree extent that doesn't belong to a log tree
-	 * failed, set the bit BTRFS_INODE_BTREE_IO_ERR in the inode btree.
+	 * failed, increment the counter transaction->eb_write_errors.
 	 * We do this because while the transaction is running and before it's
 	 * committing (when we call filemap_fdata[write|wait]_range against
 	 * the btree inode), we might have
@@ -3643,31 +3641,25 @@ static void set_btree_ioerr(struct page *page, int err)
 	 * non-log tree extents, and the next filemap_fdatawait_range() call
 	 * will catch and clear such errors in the mapping - and that call might
 	 * be from a log sync and not from a transaction commit. Also, checking
-	 * for the eb flag EXTENT_BUFFER_IOERR at transaction commit time isn't
-	 * done and would not be completely reliable, as the eb might be removed
-	 * from memory and read back when trying to get it, which clears that
-	 * flag right before reading the eb's pages from disk, making us not
-	 * know about the previous write error.
+	 * for the eb flag EXTENT_BUFFER_WRITE_ERR at transaction commit time is
+	 * not done and would not be completely reliable, as the eb might be
+	 * removed from memory and read back when trying to get it, which clears
+	 * that flag right before reading the eb's pages from disk, making us
+	 * not know about the previous write error.
 	 *
-	 * Using the BTRFS_INODE_BTREE_IO_ERR and BTRFS_INODE_BTREE_LOG_IO_ERR
-	 * inode flags also makes us achieve the goal of AS_EIO/AS_ENOSPC when
-	 * writepages() returns success, started writeback for all dirty pages
-	 * and before filemap_fdatawait_range() is called, the writeback for
-	 * all dirty pages had already finished with errors - because we were
-	 * not using AS_EIO/AS_ENOSPC, filemap_fdatawait_range() would return
-	 * success, as it could not know that writeback errors happened (the
-	 * pages were no longer tagged for writeback).
+	 * Using transaction counters eb_write_errors and log_eb_write_errors
+	 * also makes us achieve the goal of AS_EIO/AS_ENOSPC when writepages()
+	 * returns success, started writeback for all dirty pages and before
+	 * filemap_fdatawait_range() is called, the writeback for all dirty
+	 * pages had already finished with errors - because we were not using
+	 * AS_EIO/AS_ENOSPC, filemap_fdatawait_range() would return success, as
+	 * it could not know that writeback errors happened (the pages were no
+	 * longer tagged for writeback).
 	 */
-	ASSERT(fs_info->running_transaction);
-	ret = test_range_bit(&fs_info->running_transaction->dirty_pages,
-			     start, end, EXTENT_NEED_WAIT | EXTENT_DIRTY,
-			     1, NULL);
-	if (ret)
-		set_bit(BTRFS_INODE_BTREE_IO_ERR,
-			&BTRFS_I(fs_info->btree_inode)->runtime_flags);
+	if (root->root_key.objectid == BTRFS_TREE_LOG_OBJECTID)
+		atomic_inc(&eb->fs_info->log_eb_write_errors[eb->log_index]);
 	else
-		set_bit(BTRFS_INODE_BTREE_LOG_IO_ERR,
-			&BTRFS_I(fs_info->btree_inode)->runtime_flags);
+		atomic_inc(&eb->fs_info->eb_write_errors);
 }
 
 static void end_bio_extent_buffer_writepage(struct bio *bio, int err)
@@ -3683,9 +3675,9 @@ static void end_bio_extent_buffer_writepage(struct bio *bio, int err)
 		BUG_ON(!eb);
 		done = atomic_dec_and_test(&eb->io_pages);
 
-		if (err || test_bit(EXTENT_BUFFER_IOERR, &eb->bflags)) {
+		if (err || test_bit(EXTENT_BUFFER_WRITE_ERR, &eb->bflags)) {
 			ClearPageUptodate(page);
-			set_btree_ioerr(page, err < 0 ? err : -EIO);
+			set_btree_ioerr(page);
 		}
 
 		end_page_writeback(page);
@@ -3712,7 +3704,7 @@ static noinline_for_stack int write_one_eb(struct extent_buffer *eb,
 	int rw = (epd->sync_io ? WRITE_SYNC : WRITE) | REQ_META;
 	int ret = 0;
 
-	clear_bit(EXTENT_BUFFER_IOERR, &eb->bflags);
+	clear_extent_buffer_write_err(eb);
 	num_pages = num_extent_pages(eb->start, eb->len);
 	atomic_set(&eb->io_pages, num_pages);
 	if (btrfs_header_owner(eb) == BTRFS_TREE_LOG_OBJECTID)
@@ -3729,7 +3721,7 @@ static noinline_for_stack int write_one_eb(struct extent_buffer *eb,
 					 0, epd->bio_flags, bio_flags);
 		epd->bio_flags = bio_flags;
 		if (ret) {
-			set_btree_ioerr(p, ret);
+			set_btree_ioerr(p);
 			end_page_writeback(p);
 			if (atomic_sub_and_test(num_pages - i, &eb->io_pages))
 				end_extent_buffer_writeback(eb);
@@ -3744,6 +3736,7 @@ static noinline_for_stack int write_one_eb(struct extent_buffer *eb,
 	if (unlikely(ret)) {
 		for (; i < num_pages; i++) {
 			struct page *p = extent_buffer_page(eb, i);
+			clear_page_dirty_for_io(p);
 			unlock_page(p);
 		}
 	}
@@ -5121,7 +5114,7 @@ int read_extent_buffer_pages(struct extent_io_tree *tree,
 		goto unlock_exit;
 	}
 
-	clear_bit(EXTENT_BUFFER_IOERR, &eb->bflags);
+	clear_bit(EXTENT_BUFFER_READ_ERR, &eb->bflags);
 	eb->read_mirror = 0;
 	atomic_set(&eb->io_pages, num_reads);
 	for (i = start_i; i < num_pages; i++) {
@@ -5565,4 +5558,38 @@ int try_release_extent_buffer(struct page *page)
 	}
 
 	return release_extent_buffer(eb);
+}
+
+void clear_extent_buffer_write_err(struct extent_buffer *eb)
+{
+	/*
+	 * Ignore/discard a write IO error when:
+	 *
+	 * 1) The unwritten node/leaf isn't pointed to by any other node in
+	 * a tree because it was deleted - so it's safe to forget about the
+	 * write error and avoid a transaction abort;
+	 *
+	 * 2) The same eb was marked dirty again, so we will attempt to write
+	 * it to disk again, which might succeed this time.
+	 */
+	if (test_and_clear_bit(EXTENT_BUFFER_WRITE_ERR, &eb->bflags)) {
+		struct btrfs_root *root;
+
+		root = BTRFS_I(eb->pages[0]->mapping->host)->root;
+
+		if (root->root_key.objectid == BTRFS_TREE_LOG_OBJECTID) {
+			const int i = eb->log_index;
+
+			atomic_dec(&eb->fs_info->log_eb_write_errors[i]);
+		} else {
+			/*
+			 * The counter can be 0 here, because the previous
+			 * current transaction (fs_info->running_transaction)
+			 * just called btrfs_wait_marked_extents() and is about
+			 * to set the fs to read-only mode and abort.
+			 */
+			atomic_add_unless(&eb->fs_info->eb_write_errors, -1, 0);
+		}
+	}
+
 }
