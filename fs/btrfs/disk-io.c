@@ -2252,9 +2252,6 @@ int open_ctree(struct super_block *sb,
 	atomic_set(&fs_info->nr_async_bios, 0);
 	atomic_set(&fs_info->defrag_running, 0);
 	atomic_set(&fs_info->qgroup_op_seq, 0);
-	atomic_set(&fs_info->eb_write_errors, 0);
-	atomic_set(&fs_info->log_eb_write_errors[0], 0);
-	atomic_set(&fs_info->log_eb_write_errors[1], 0);
 	atomic64_set(&fs_info->tree_mod_seq, 0);
 	fs_info->sb = sb;
 	fs_info->max_inline = 8192 * 1024;

@@ -851,7 +851,8 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
 	struct extent_state *cached_state = NULL;
 	u64 start = 0;
 	u64 end;
-	int errors;
+	struct btrfs_inode *btree_ino = BTRFS_I(root->fs_info->btree_inode);
+	bool errors = false;
 
 	while (!find_first_extent_bit(dirty_pages, start, &start, &end,
 				      EXTENT_NEED_WAIT, &cached_state)) {
@@ -867,19 +868,22 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
 		werr = err;
 
 	if (root->root_key.objectid == BTRFS_TREE_LOG_OBJECTID) {
-		atomic_t *log_errors = root->fs_info->log_eb_write_errors;
+		if ((mark & EXTENT_DIRTY) &&
+		    test_and_clear_bit(BTRFS_INODE_BTREE_LOG1_ERR,
+				       &btree_ino->runtime_flags))
+			errors = true;
 
-		errors = 0;
-		if (mark & EXTENT_DIRTY)
-			errors += atomic_xchg(&log_errors[0], 0);
-		if (mark & EXTENT_NEW)
-			errors += atomic_xchg(&log_errors[1], 0);
+		if ((mark & EXTENT_NEW) &&
+		    test_and_clear_bit(BTRFS_INODE_BTREE_LOG2_ERR,
+				       &btree_ino->runtime_flags))
+			errors = true;
 	} else {
-		errors = atomic_xchg(&root->fs_info->eb_write_errors, 0);
+		if (test_and_clear_bit(BTRFS_INODE_BTREE_ERR,
+				       &btree_ino->runtime_flags))
+			errors = true;
 	}
 
-	ASSERT(errors >= 0);
-	if (errors > 0 && !werr)
+	if (errors && !werr)
 		werr = -EIO;
 
 	return werr;
@@ -1647,6 +1651,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 {
 	struct btrfs_transaction *cur_trans = trans->transaction;
 	struct btrfs_transaction *prev_trans = NULL;
+	struct btrfs_inode *btree_ino = BTRFS_I(root->fs_info->btree_inode);
 	int ret;
 
 	/* Stop the commit early if ->aborted is set */
@@ -1888,6 +1893,9 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 
 	btrfs_update_commit_device_size(root->fs_info);
 	btrfs_update_commit_device_bytes_used(root, cur_trans);
+
+	clear_bit(BTRFS_INODE_BTREE_LOG1_ERR, &btree_ino->runtime_flags);
+	clear_bit(BTRFS_INODE_BTREE_LOG2_ERR, &btree_ino->runtime_flags);
 
 	spin_lock(&root->fs_info->trans_lock);
 	cur_trans->state = TRANS_STATE_UNBLOCKED;

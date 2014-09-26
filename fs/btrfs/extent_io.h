@@ -142,9 +142,9 @@ struct extent_buffer {
 	atomic_t blocking_readers;
 	atomic_t spinning_readers;
 	atomic_t spinning_writers;
-	int lock_nested;
-	/* meaningful only if the owner root is from a log tree */
-	int log_index;
+	short lock_nested;
+	/* >= 0 if eb belongs to a log tree, -1 otherwise */
+	short log_index;
 
 	/* protects write locks */
 	rwlock_t lock;

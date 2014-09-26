@@ -3611,7 +3611,7 @@ static void end_extent_buffer_writeback(struct extent_buffer *eb)
 static void set_btree_ioerr(struct page *page)
 {
 	struct extent_buffer *eb = (struct extent_buffer *)page->private;
-	struct btrfs_root *root = BTRFS_I(page->mapping->host)->root;
+	struct btrfs_inode *btree_ino = BTRFS_I(eb->fs_info->btree_inode);
 
 	SetPageError(page);
 	if (test_and_set_bit(EXTENT_BUFFER_WRITE_ERR, &eb->bflags))
@@ -3647,19 +3647,28 @@ static void set_btree_ioerr(struct page *page)
 	 * that flag right before reading the eb's pages from disk, making us
 	 * not know about the previous write error.
 	 *
-	 * Using transaction counters eb_write_errors and log_eb_write_errors
-	 * also makes us achieve the goal of AS_EIO/AS_ENOSPC when writepages()
-	 * returns success, started writeback for all dirty pages and before
-	 * filemap_fdatawait_range() is called, the writeback for all dirty
-	 * pages had already finished with errors - because we were not using
-	 * AS_EIO/AS_ENOSPC, filemap_fdatawait_range() would return success, as
-	 * it could not know that writeback errors happened (the pages were no
-	 * longer tagged for writeback).
+	 * Using the flags below in the btree inode also makes us achieve the
+	 * goal of AS_EIO/AS_ENOSPC when writepages() returns success, started
+	 * writeback for all dirty pages and before filemap_fdatawait_range()
+	 * is called, the writeback for all dirty pages had already finished
+	 * with errors - because we were not using AS_EIO/AS_ENOSPC,
+	 * filemap_fdatawait_range() would return success, as it could not know
+	 * that writeback errors happened (the pages were no longer tagged for
+	 * writeback).
 	 */
-	if (root->root_key.objectid == BTRFS_TREE_LOG_OBJECTID)
-		atomic_inc(&eb->fs_info->log_eb_write_errors[eb->log_index]);
-	else
-		atomic_inc(&eb->fs_info->eb_write_errors);
+	switch (eb->log_index) {
+	case -1:
+		set_bit(BTRFS_INODE_BTREE_ERR, &btree_ino->runtime_flags);
+		break;
+	case 0:
+		set_bit(BTRFS_INODE_BTREE_LOG1_ERR, &btree_ino->runtime_flags);
+		break;
+	case 1:
+		set_bit(BTRFS_INODE_BTREE_LOG2_ERR, &btree_ino->runtime_flags);
+		break;
+	default:
+		BUG(); /* unexpected, logic error */
+	}
 }
 
 static void end_bio_extent_buffer_writepage(struct bio *bio, int err)
@@ -3704,7 +3713,7 @@ static noinline_for_stack int write_one_eb(struct extent_buffer *eb,
 	int rw = (epd->sync_io ? WRITE_SYNC : WRITE) | REQ_META;
 	int ret = 0;
 
-	clear_extent_buffer_write_err(eb);
+	clear_bit(EXTENT_BUFFER_WRITE_ERR, &eb->bflags);
 	num_pages = num_extent_pages(eb->start, eb->len);
 	atomic_set(&eb->io_pages, num_pages);
 	if (btrfs_header_owner(eb) == BTRFS_TREE_LOG_OBJECTID)
@@ -5558,38 +5567,4 @@ int try_release_extent_buffer(struct page *page)
 	}
 
 	return release_extent_buffer(eb);
-}
-
-void clear_extent_buffer_write_err(struct extent_buffer *eb)
-{
-	/*
-	 * Ignore/discard a write IO error when:
-	 *
-	 * 1) The unwritten node/leaf isn't pointed to by any other node in
-	 * a tree because it was deleted - so it's safe to forget about the
-	 * write error and avoid a transaction abort;
-	 *
-	 * 2) The same eb was marked dirty again, so we will attempt to write
-	 * it to disk again, which might succeed this time.
-	 */
-	if (test_and_clear_bit(EXTENT_BUFFER_WRITE_ERR, &eb->bflags)) {
-		struct btrfs_root *root;
-
-		root = BTRFS_I(eb->pages[0]->mapping->host)->root;
-
-		if (root->root_key.objectid == BTRFS_TREE_LOG_OBJECTID) {
-			const int i = eb->log_index;
-
-			atomic_dec(&eb->fs_info->log_eb_write_errors[i]);
-		} else {
-			/*
-			 * The counter can be 0 here, because the previous
-			 * current transaction (fs_info->running_transaction)
-			 * just called btrfs_wait_marked_extents() and is about
-			 * to set the fs to read-only mode and abort.
-			 */
-			atomic_add_unless(&eb->fs_info->eb_write_errors, -1, 0);
-		}
-	}
-
 }
