@@ -1538,6 +1538,16 @@ static inline int accountable_mapping(struct file *file, vm_flags_t vm_flags)
 	return (vm_flags & (VM_NORESERVE | VM_SHARED | VM_WRITE)) == VM_WRITE;
 }
 
+static bool anon_may_duplicate(struct vm_area_struct *vma)
+{
+	return vma->vm_flags & VM_WRITE && !(vma->vm_flags & VM_SHARED);
+}
+
+static const struct vm_operations_struct anon_vmops = {
+	.may_duplicate = anon_may_duplicate,
+	.allow_huge_pages = true
+};
+
 unsigned long mmap_region(struct file *file, unsigned long addr,
 		unsigned long len, vm_flags_t vm_flags, unsigned long pgoff)
 {
@@ -1607,6 +1617,8 @@ munmap_back:
 	vma->vm_flags = vm_flags;
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
 	vma->vm_pgoff = pgoff;
+	if (!file)
+		vma->vm_ops = &anon_vmops;
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
 
 	if (file) {
