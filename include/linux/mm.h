@@ -273,6 +273,12 @@ struct vm_operations_struct {
 	/* called by sys_remap_file_pages() to populate non-linear mapping */
 	int (*remap_pages)(struct vm_area_struct *vma, unsigned long addr,
 			   unsigned long size, pgoff_t pgoff);
+
+	/* Check if the mapping may be duplicated by MREMAP_RETAIN */
+	bool (*may_duplicate)(struct vm_area_struct *vma);
+
+	/* if there is no vm_ops table, this is considered true */
+	bool allow_huge_pages;
 };
 
 struct mmu_gather;
