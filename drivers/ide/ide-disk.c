@@ -686,7 +686,7 @@ static void ide_disk_setup(ide_drive_t *drive)
 	       queue_max_sectors(q) / 2);
 
 	if (ata_id_is_ssd(id))
-		queue_flag_set_unlocked(QUEUE_FLAG_NONROT, q);
+		queue_flags_set_nonrot_clear_add_random(q);
 
 	/* calculate drive capacity, and select LBA if possible */
 	ide_disk_get_capacity(drive);
