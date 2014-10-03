@@ -506,7 +506,7 @@ static int null_add_dev(void)
 	}
 
 	nullb->q->queuedata = nullb;
-	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, nullb->q);
+	queue_flags_set_nonrot_clear_add_random(nullb->q);
 
 	disk = nullb->disk = alloc_disk_node(1, home_node);
 	if (!disk)

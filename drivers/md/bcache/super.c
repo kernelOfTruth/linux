@@ -843,8 +843,8 @@ static int bcache_device_init(struct bcache_device *d, unsigned block_size,
 	q->limits.io_min		= block_size;
 	q->limits.logical_block_size	= block_size;
 	q->limits.physical_block_size	= block_size;
-	set_bit(QUEUE_FLAG_NONROT,	&d->disk->queue->queue_flags);
 	set_bit(QUEUE_FLAG_DISCARD,	&d->disk->queue->queue_flags);
+	queue_flags_set_nonrot_clear_add_random(d->disk->queue);
 
 	blk_queue_flush(q, REQ_FLUSH|REQ_FUA);
 
