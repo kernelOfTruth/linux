@@ -2080,7 +2080,7 @@ int khugepaged_enter_vma_merge(struct vm_area_struct *vma)
 		 * page fault if needed.
 		 */
 		return 0;
-	if (vma->vm_ops)
+	if ((vma->vm_ops && !vma->vm_ops->allow_huge_pages))
 		/* khugepaged not yet working on file or special mappings */
 		return 0;
 	VM_BUG_ON(vma->vm_flags & VM_NO_THP);
@@ -2408,7 +2408,7 @@ static bool hugepage_vma_check(struct vm_area_struct *vma)
 	    (vma->vm_flags & VM_NOHUGEPAGE))
 		return false;
 
-	if (!vma->anon_vma || vma->vm_ops)
+	if (!vma->anon_vma || (vma->vm_ops && !vma->vm_ops->allow_huge_pages))
 		return false;
 	if (is_vma_temporary_stack(vma))
 		return false;
