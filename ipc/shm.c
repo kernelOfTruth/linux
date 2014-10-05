@@ -72,12 +72,19 @@ static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp);
 static int sysvipc_shm_proc_show(struct seq_file *s, void *it);
 #endif
 
-void shm_init_ns(struct ipc_namespace *ns)
+void shm_init_ns(struct ipc_namespace *ns, struct ipc_namespace *old_ns)
 {
-	ns->shm_ctlmax = SHMMAX;
-	ns->shm_ctlall = SHMALL;
-	ns->shm_ctlmni = SHMMNI;
-	ns->shm_rmid_forced = 0;
+	if (old_ns != NULL) {
+		ns->shm_ctlmax = old_ns->shm_ctlmax;
+		ns->shm_ctlall = old_ns->shm_ctlall;
+		ns->shm_ctlmni = old_ns->shm_ctlmni;
+		ns->shm_rmid_forced = old_ns->shm_rmid_forced;
+	} else {
+		ns->shm_ctlmax = SHMMAX;
+		ns->shm_ctlall = SHMALL;
+		ns->shm_ctlmni = SHMMNI;
+		ns->shm_rmid_forced = 0;
+	}
 	ns->shm_tot = 0;
 	ipc_init_ids(&shm_ids(ns));
 }
@@ -110,7 +117,7 @@ void shm_exit_ns(struct ipc_namespace *ns)
 
 static int __init ipc_ns_init(void)
 {
-	shm_init_ns(&init_ipc_ns);
+	shm_init_ns(&init_ipc_ns, NULL);
 	return 0;
 }
 
