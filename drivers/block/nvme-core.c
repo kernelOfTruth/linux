@@ -1915,7 +1915,7 @@ static struct nvme_ns *nvme_alloc_ns(struct nvme_dev *dev, unsigned nsid,
 		goto out_free_ns;
 	ns->queue->queue_flags = QUEUE_FLAG_DEFAULT;
 	queue_flag_set_unlocked(QUEUE_FLAG_NOMERGES, ns->queue);
-	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, ns->queue);
+	queue_flags_set_nonrot_clear_add_random(ns->queue);
 	blk_queue_make_request(ns->queue, nvme_make_request);
 	ns->dev = dev;
 	ns->queue->queuedata = ns;

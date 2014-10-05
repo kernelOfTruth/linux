@@ -816,6 +816,15 @@ area_found:
 	/* return address relative to base address */
 	ptr = __addr_to_pcpu_ptr(chunk->base_addr + off);
 	kmemleak_alloc_percpu(ptr, size);
+
+	/*
+	 * The following wmb is paired with the data dependency barrier in
+	 * the percpu accessors and guarantees that the zeroing of the
+	 * percpu areas in pcpu_populate_chunk() is visible to all percpu
+	 * accesses through the returned percpu pointer.  The accessors get
+	 * their data dependency barrier from __verify_pcpu_ptr().
+	 */
+	smp_wmb();
 	return ptr;
 
 fail_unlock:

@@ -545,8 +545,9 @@ static void mix_pool_bytes(struct entropy_store *r, const void *in,
 {
 	unsigned long flags;
 
+	if (!spin_trylock_irqsave(&r->lock, flags))
+		return;
 	trace_mix_pool_bytes(r->name, nbytes, _RET_IP_);
-	spin_lock_irqsave(&r->lock, flags);
 	_mix_pool_bytes(r, in, nbytes, out);
 	spin_unlock_irqrestore(&r->lock, flags);
 }

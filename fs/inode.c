@@ -234,10 +234,8 @@ void __destroy_inode(struct inode *inode)
 	BUG_ON(inode_has_buffers(inode));
 	security_inode_free(inode);
 	fsnotify_inode_delete(inode);
-	if (!inode->i_nlink) {
-		WARN_ON(atomic_long_read(&inode->i_sb->s_remove_count) == 0);
-		atomic_long_dec(&inode->i_sb->s_remove_count);
-	}
+	if (!inode->i_nlink)
+		percpu_counter_dec(&inode->i_sb->s_remove_counters);
 
 #ifdef CONFIG_FS_POSIX_ACL
 	if (inode->i_acl && inode->i_acl != ACL_NOT_CACHED)
@@ -281,7 +279,7 @@ void drop_nlink(struct inode *inode)
 	WARN_ON(inode->i_nlink == 0);
 	inode->__i_nlink--;
 	if (!inode->i_nlink)
-		atomic_long_inc(&inode->i_sb->s_remove_count);
+		percpu_counter_inc(&inode->i_sb->s_remove_counters);
 }
 EXPORT_SYMBOL(drop_nlink);
 
@@ -297,7 +295,7 @@ void clear_nlink(struct inode *inode)
 {
 	if (inode->i_nlink) {
 		inode->__i_nlink = 0;
-		atomic_long_inc(&inode->i_sb->s_remove_count);
+		percpu_counter_inc(&inode->i_sb->s_remove_counters);
 	}
 }
 EXPORT_SYMBOL(clear_nlink);
@@ -317,7 +315,7 @@ void set_nlink(struct inode *inode, unsigned int nlink)
 	} else {
 		/* Yes, some filesystems do change nlink from zero to one */
 		if (inode->i_nlink == 0)
-			atomic_long_dec(&inode->i_sb->s_remove_count);
+			percpu_counter_dec(&inode->i_sb->s_remove_counters);
 
 		inode->__i_nlink = nlink;
 	}
@@ -336,7 +334,7 @@ void inc_nlink(struct inode *inode)
 {
 	if (unlikely(inode->i_nlink == 0)) {
 		WARN_ON(!(inode->i_state & I_LINKABLE));
-		atomic_long_dec(&inode->i_sb->s_remove_count);
+		percpu_counter_dec(&inode->i_sb->s_remove_counters);
 	}
 
 	inode->__i_nlink++;

@@ -1243,7 +1243,7 @@ struct super_block {
 	struct shrinker s_shrink;	/* per-sb shrinker handle */
 
 	/* Number of inodes with nlink == 0 but still referenced */
-	atomic_long_t s_remove_count;
+	struct percpu_counter s_remove_counters;
 
 	/* Being remounted read-only */
 	int s_readonly_remount;

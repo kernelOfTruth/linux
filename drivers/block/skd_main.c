@@ -4432,7 +4432,7 @@ static int skd_cons_disk(struct skd_device *skdev)
 	q->limits.max_discard_sectors = UINT_MAX >> 9;
 	q->limits.discard_zeroes_data = 1;
 	queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, q);
-	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, q);
+	queue_flags_set_nonrot_clear_add_random(q);
 
 	spin_lock_irqsave(&skdev->lock, flags);
 	pr_debug("%s:%s:%d stopping %s queue\n",

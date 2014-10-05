@@ -209,7 +209,7 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card,
 	mq->queue->queuedata = mq;
 
 	blk_queue_prep_rq(mq->queue, mmc_prep_request);
-	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, mq->queue);
+	queue_flags_set_nonrot_clear_add_random(mq->queue);
 	if (mmc_can_erase(card))
 		mmc_queue_setup_discard(mq->queue, card);
 
