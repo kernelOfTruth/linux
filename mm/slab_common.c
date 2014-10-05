@@ -18,6 +18,7 @@
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
 #include <asm/page.h>
+#include <asm/unaligned.h>
 #include <linux/memcontrol.h>
 #include <trace/events/kmem.h>
 
@@ -635,6 +636,107 @@ void *kmalloc_order_trace(size_t size, gfp_t flags, unsigned int order)
 	return ret;
 }
 EXPORT_SYMBOL(kmalloc_order_trace);
+#endif
+
+#ifdef CONFIG_DEBUG_KMALLOC
+
+#define KMALLOC_GUARD_MAGIC1	0x1abe11d0d295d462ULL
+#define KMALLOC_GUARD_MAGIC2	0xefa7d205787335f6ULL
+
+struct kmalloc_guard {
+	size_t size;
+	unsigned long long magic2;
+};
+
+#define KMALLOC_GUARD_OVERHEAD	(sizeof(unsigned long long) + sizeof(struct kmalloc_guard))
+
+#define guard_location(ptr, real_size)	((struct kmalloc_guard *)((char *)(ptr) + (real_size)) - 1)
+
+size_t kmalloc_guard_size(size_t size)
+{
+	size_t new;
+	if (unlikely((size - 1) >= KMALLOC_MAX_SIZE))
+		return size;
+	new = size + KMALLOC_GUARD_OVERHEAD;
+	if (unlikely(new > KMALLOC_MAX_SIZE))
+		return KMALLOC_MAX_SIZE;
+	return new;
+}
+
+void kmalloc_guard_setup(void *ptr, size_t size)
+{
+	size_t real_size;
+	struct kmalloc_guard *g;
+
+	if (unlikely(ZERO_OR_NULL_PTR(ptr)))
+		return;
+
+	real_size = __ksize(ptr);
+	if (unlikely(real_size >= KMALLOC_MAX_SIZE))
+		return;
+
+	if (unlikely(size + KMALLOC_GUARD_OVERHEAD > real_size)) {
+		pr_err("kmalloc: size not padded, size %zu, allocated size %zu\n",
+			size, real_size);
+		dump_stack();
+		return;
+	}
+
+	put_unaligned(KMALLOC_GUARD_MAGIC1, (unsigned long long *)((char *)ptr + size));
+	g = guard_location(ptr, real_size);
+	g->size = size;
+	g->magic2 = KMALLOC_GUARD_MAGIC2;
+}
+
+void kmalloc_guard_verify(const void *ptr)
+{
+	size_t real_size;
+	const struct kmalloc_guard *g;
+	unsigned long long magic;
+
+	if (unlikely(ZERO_OR_NULL_PTR(ptr)))
+		return;
+
+	real_size = __ksize(ptr);
+	if (unlikely(real_size >= KMALLOC_MAX_SIZE))
+		return;
+
+	g = guard_location(ptr, real_size);
+	if (unlikely(g->magic2 != KMALLOC_GUARD_MAGIC2) ||
+	    unlikely(g->size > real_size - KMALLOC_GUARD_OVERHEAD)) {
+		pr_err("kmalloc: structure damaged, pointer %p, allocated size %zu, magic2 %llx, size %zu\n",
+			ptr, real_size, g->magic2, g->size);
+		dump_stack();
+		return;
+	}
+
+	magic = get_unaligned((const unsigned long long *)((const char *)ptr + g->size));
+	if (unlikely(magic != KMALLOC_GUARD_MAGIC1)) {
+		pr_err("kmalloc: red zone damaged, pointer %p, real_size %zu, size %zu, red zone %llx\n",
+			ptr, real_size, g->size, magic);
+		dump_stack();
+		return;
+	}
+}
+
+size_t ksize(const void *ptr)
+{
+	size_t real_size;
+	const struct kmalloc_guard *g;
+
+	kmalloc_guard_verify(ptr);
+
+	real_size = __ksize(ptr);
+	if (unlikely(!real_size) ||
+	    unlikely(real_size >= KMALLOC_MAX_SIZE))
+		return real_size;
+
+	g = guard_location(ptr, real_size);
+
+	return g->size;
+}
+EXPORT_SYMBOL(ksize);
+
 #endif
 
 #ifdef CONFIG_SLABINFO

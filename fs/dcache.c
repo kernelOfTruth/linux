@@ -278,12 +278,15 @@ static void dentry_iput(struct dentry * dentry)
 	__releases(dentry->d_inode->i_lock)
 {
 	struct inode *inode = dentry->d_inode;
+	bool last_dentry;
+
 	if (inode) {
 		dentry->d_inode = NULL;
 		hlist_del_init(&dentry->d_alias);
+		last_dentry = hlist_empty(&inode->i_dentry);
 		spin_unlock(&dentry->d_lock);
 		spin_unlock(&inode->i_lock);
-		if (!inode->i_nlink)
+		if (!inode->i_nlink && last_dentry)
 			fsnotify_inoderemove(inode);
 		if (dentry->d_op && dentry->d_op->d_iput)
 			dentry->d_op->d_iput(dentry, inode);
@@ -303,13 +306,16 @@ static void dentry_unlink_inode(struct dentry * dentry)
 	__releases(dentry->d_inode->i_lock)
 {
 	struct inode *inode = dentry->d_inode;
+	bool last_dentry;
+
 	__d_clear_type(dentry);
 	dentry->d_inode = NULL;
 	hlist_del_init(&dentry->d_alias);
 	dentry_rcuwalk_barrier(dentry);
+	last_dentry = hlist_empty(&inode->i_dentry);
 	spin_unlock(&dentry->d_lock);
 	spin_unlock(&inode->i_lock);
-	if (!inode->i_nlink)
+	if (!inode->i_nlink && last_dentry)
 		fsnotify_inoderemove(inode);
 	if (dentry->d_op && dentry->d_op->d_iput)
 		dentry->d_op->d_iput(dentry, inode);
@@ -2401,7 +2407,8 @@ void dentry_update_name_case(struct dentry *dentry, struct qstr *name)
 }
 EXPORT_SYMBOL(dentry_update_name_case);
 
-static void switch_names(struct dentry *dentry, struct dentry *target)
+static void switch_names(struct dentry *dentry, struct dentry *target,
+			 bool exchange)
 {
 	if (dname_external(target)) {
 		if (dname_external(dentry)) {
@@ -2433,11 +2440,21 @@ static void switch_names(struct dentry *dentry, struct dentry *target)
 			/*
 			 * Both are internal.
 			 */
-			unsigned int i;
-			BUILD_BUG_ON(!IS_ALIGNED(DNAME_INLINE_LEN, sizeof(long)));
-			for (i = 0; i < DNAME_INLINE_LEN / sizeof(long); i++) {
-				swap(((long *) &dentry->d_iname)[i],
-				     ((long *) &target->d_iname)[i]);
+			if (exchange) {
+				unsigned int i;
+
+				BUILD_BUG_ON(!IS_ALIGNED(DNAME_INLINE_LEN,
+							 sizeof(long)));
+				for (i = 0; i < DNAME_INLINE_LEN / sizeof(long);
+									i++) {
+					swap(((long *) &dentry->d_iname)[i],
+					     ((long *) &target->d_iname)[i]);
+				}
+			} else {
+				memcpy(dentry->d_iname, target->d_name.name,
+						target->d_name.len + 1);
+				dentry->d_name.len = target->d_name.len;
+				return;
 			}
 		}
 	}
@@ -2539,7 +2556,7 @@ static void __d_move(struct dentry *dentry, struct dentry *target,
 	list_del(&target->d_u.d_child);
 
 	/* Switch the names.. */
-	switch_names(dentry, target);
+	switch_names(dentry, target, exchange);
 	swap(dentry->d_name.hash, target->d_name.hash);
 
 	/* ... and switch the parents */
@@ -2678,7 +2695,7 @@ static void __d_materialise_dentry(struct dentry *dentry, struct dentry *anon)
 
 	dparent = dentry->d_parent;
 
-	switch_names(dentry, anon);
+	switch_names(dentry, anon, false);
 	swap(dentry->d_name.hash, anon->d_name.hash);
 
 	dentry->d_parent = dentry;
@@ -2806,12 +2823,17 @@ static int prepend(char **buffer, int *buflen, const char *str, int namelen)
  * the beginning of the name. The sequence number check at the caller will
  * retry it again when a d_move() does happen. So any garbage in the buffer
  * due to mismatched pointer and length will be discarded.
+ *
+ * Data dependency barrier is needed to make sure that we see that terminating
+ * NUL.  Alpha strikes again, film at 11...
  */
 static int prepend_name(char **buffer, int *buflen, struct qstr *name)
 {
 	const char *dname = ACCESS_ONCE(name->name);
 	u32 dlen = ACCESS_ONCE(name->len);
 	char *p;
+
+	smp_read_barrier_depends();
 
 	*buflen -= dlen + 1;
 	if (*buflen < 0)

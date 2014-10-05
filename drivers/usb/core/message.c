@@ -766,13 +766,25 @@ static int usb_get_langid(struct usb_device *dev, unsigned char *tbuf)
 
 	/* If the string was reported but is malformed, default to english
 	 * (0x0409) */
-	if (err == -ENODATA || (err > 0 && err < 4)) {
+	if (err > 0 && err < 4) {
 		dev->string_langid = 0x0409;
 		dev->have_langid = 1;
 		dev_err(&dev->dev,
 			"string descriptor 0 malformed (err = %d), "
 			"defaulting to 0x%04x\n",
 				err, dev->string_langid);
+		return 0;
+	}
+
+	/* If the string was unavailable, default to english (0x0409) */
+	if (err == -ENODATA) {
+		dev->string_langid = 0x0409;
+		dev->have_langid = 1;
+		dev_info(&dev->dev,
+			"no string descriptor language, defaulting to English");
+		dev_dbg(&dev->dev,
+			"string descriptor 0 unavailable (err = -ENODATA), "
+			"defaulting to 0x%04x\n", dev->string_langid);
 		return 0;
 	}
 
