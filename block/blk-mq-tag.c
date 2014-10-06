@@ -80,8 +80,7 @@ static void blk_mq_tag_wakeup_all(struct blk_mq_tags *tags)
 	for (i = 0; i < BT_WAIT_QUEUES; i++) {
 		struct bt_wait_state *bs = &bt->bs[wake_index];
 
-		if (waitqueue_active(&bs->wait))
-			wake_up(&bs->wait);
+		wake_up(&bs->wait);
 
 		wake_index = bt_index_inc(wake_index);
 	}
@@ -346,20 +345,20 @@ static void bt_clear_tag(struct blk_mq_bitmap_tags *bt, unsigned int tag)
 	 */
 	clear_bit_unlock(TAG_TO_BIT(bt, tag), &bt->map[index].word);
 
-	bs = bt_wake_ptr(bt);
-	if (!bs)
-		return;
+	for (;;) {
+		bs = bt_wake_ptr(bt);
+		if (!bs)
+			return;
 
-	wait_cnt = atomic_dec_return(&bs->wait_cnt);
-	if (wait_cnt == 0) {
-wake:
-		atomic_add(bt->wake_cnt, &bs->wait_cnt);
-		bt_index_atomic_inc(&bt->wake_index);
-		wake_up(&bs->wait);
-	} else if (wait_cnt < 0) {
-		wait_cnt = atomic_inc_return(&bs->wait_cnt);
-		if (!wait_cnt)
-			goto wake;
+		wait_cnt = atomic_dec_return(&bs->wait_cnt);
+		if (unlikely(wait_cnt < 0))
+			wait_cnt = atomic_inc_return(&bs->wait_cnt);
+		if (wait_cnt == 0) {
+			atomic_add(bt->wake_cnt, &bs->wait_cnt);
+			bt_index_atomic_inc(&bt->wake_index);
+			wake_up(&bs->wait);
+			return;
+		}
 	}
 }
 
