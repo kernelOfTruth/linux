@@ -187,6 +187,7 @@ enum fullness_group {
 static const int fullness_threshold_frac = 4;
 
 struct size_class {
+	int ref;
 	/*
 	 * Size of objects stored in this class. Must be multiple
 	 * of ZS_ALIGN.
@@ -214,12 +215,7 @@ struct link_free {
 };
 
 struct zs_pool {
-	/*
-	 * Each merge_size_class is pointing to one of size_class that have
-	 * same characteristics. See zs_create_pool() for more information.
-	 */
-	struct size_class *merged_size_class[ZS_SIZE_CLASSES];
-	struct size_class size_class[ZS_SIZE_CLASSES];
+	struct size_class *size_class[ZS_SIZE_CLASSES];
 
 	gfp_t flags;	/* allocation flags used when growing pool */
 	atomic_long_t pages_allocated;
@@ -473,7 +469,7 @@ static enum fullness_group fix_fullness_group(struct zs_pool *pool,
 	if (newfg == currfg)
 		goto out;
 
-	class = pool->merged_size_class[class_idx];
+	class = pool->size_class[class_idx];
 	remove_zspage(page, class, currfg);
 	insert_zspage(page, class, newfg);
 	set_zspage_mapping(page, class_idx, newfg);
@@ -934,17 +930,18 @@ fail:
 	return notifier_to_errno(ret);
 }
 
-static unsigned int objs_per_zspage(struct size_class *class)
+static unsigned int get_maxobj_per_zspage(int size, int pages_per_zspage)
 {
-	return class->pages_per_zspage * PAGE_SIZE / class->size;
+	return pages_per_zspage * PAGE_SIZE / size;
 }
 
-static bool can_merge(struct size_class *prev, struct size_class *curr)
+static bool can_merge(struct size_class *prev, int size, int pages_per_zspage)
 {
-	if (prev->pages_per_zspage != curr->pages_per_zspage)
+	if (prev->pages_per_zspage != pages_per_zspage)
 		return false;
 
-	if (objs_per_zspage(prev) != objs_per_zspage(curr))
+	if (get_maxobj_per_zspage(prev->size, prev->pages_per_zspage)
+		!= get_maxobj_per_zspage(size, pages_per_zspage))
 		return false;
 
 	return true;
@@ -971,45 +968,57 @@ struct zs_pool *zs_create_pool(gfp_t flags)
 		return NULL;
 
 	/*
-	 * Loop reversly, because, size of size_class that we want to use for
-	 * merging should be larger or equal to current size.
+	 * Iterate reversly, because, size of size_class that we want to use
+	 * for merging should be larger or equal to current size.
 	 */
 	for (i = ZS_SIZE_CLASSES - 1; i >= 0; i--) {
 		int size;
+		int pages_per_zspage;
 		struct size_class *class;
 		struct size_class *prev_class;
 
 		size = ZS_MIN_ALLOC_SIZE + i * ZS_SIZE_CLASS_DELTA;
 		if (size > ZS_MAX_ALLOC_SIZE)
 			size = ZS_MAX_ALLOC_SIZE;
-
-		class = &pool->size_class[i];
-		class->size = size;
-		class->index = i;
-		spin_lock_init(&class->lock);
-		class->pages_per_zspage = get_pages_per_zspage(size);
-
-		pool->merged_size_class[i] = class;
-		if (i == ZS_SIZE_CLASSES - 1)
-			continue;
+		pages_per_zspage = get_pages_per_zspage(size);
 
 		/*
-		 * merged_size_class is used for normal zsmalloc operation such
+		 * size_class is used for normal zsmalloc operation such
 		 * as alloc/free for that size. Although it is natural that we
 		 * have one size_class for each size, there is a chance that we
 		 * can get more memory utilization if we use one size_class for
 		 * many different sizes whose size_class have same
-		 * characteristics. So, we makes merged_size_class point to
+		 * characteristics. So, we makes size_class point to
 		 * previous size_class if possible.
 		 */
-		prev_class = pool->merged_size_class[i + 1];
-		if (can_merge(prev_class, class))
-			pool->merged_size_class[i] = prev_class;
+		if (i < ZS_SIZE_CLASSES - 1) {
+			prev_class = pool->size_class[i + 1];
+			if (can_merge(prev_class, size, pages_per_zspage)) {
+				pool->size_class[i] = prev_class;
+				prev_class->ref++;
+				continue;
+			}
+		}
+
+		class = kzalloc(sizeof(struct size_class), GFP_KERNEL);
+		if (!class)
+			goto err;
+
+		class->ref = 1;
+		class->size = size;
+		class->index = i;
+		class->pages_per_zspage = pages_per_zspage;
+		spin_lock_init(&class->lock);
+		pool->size_class[i] = class;
 	}
 
 	pool->flags = flags;
 
 	return pool;
+
+err:
+	zs_destroy_pool(pool);
+	return NULL;
 }
 EXPORT_SYMBOL_GPL(zs_create_pool);
 
@@ -1019,7 +1028,14 @@ void zs_destroy_pool(struct zs_pool *pool)
 
 	for (i = 0; i < ZS_SIZE_CLASSES; i++) {
 		int fg;
-		struct size_class *class = &pool->size_class[i];
+		struct size_class *class = pool->size_class[i];
+
+		if (!class)
+			continue;
+
+		class->ref--;
+		if (class->ref)
+			continue;
 
 		for (fg = 0; fg < _ZS_NR_FULLNESS_GROUPS; fg++) {
 			if (class->fullness_list[fg]) {
@@ -1027,6 +1043,7 @@ void zs_destroy_pool(struct zs_pool *pool)
 					class->size, fg);
 			}
 		}
+		kfree(class);
 	}
 	kfree(pool);
 }
@@ -1053,7 +1070,7 @@ unsigned long zs_malloc(struct zs_pool *pool, size_t size)
 	if (unlikely(!size || size > ZS_MAX_ALLOC_SIZE))
 		return 0;
 
-	class = pool->merged_size_class[get_size_class_index(size)];
+	class = pool->size_class[get_size_class_index(size)];
 
 	spin_lock(&class->lock);
 	first_page = find_get_zspage(class);
@@ -1106,7 +1123,7 @@ void zs_free(struct zs_pool *pool, unsigned long obj)
 	first_page = get_first_page(f_page);
 
 	get_zspage_mapping(first_page, &class_idx, &fullness);
-	class = pool->merged_size_class[class_idx];
+	class = pool->size_class[class_idx];
 	f_offset = obj_idx_to_offset(f_page, f_objidx, class->size);
 
 	spin_lock(&class->lock);
@@ -1167,7 +1184,7 @@ void *zs_map_object(struct zs_pool *pool, unsigned long handle,
 
 	obj_handle_to_location(handle, &page, &obj_idx);
 	get_zspage_mapping(get_first_page(page), &class_idx, &fg);
-	class = pool->merged_size_class[class_idx];
+	class = pool->size_class[class_idx];
 	off = obj_idx_to_offset(page, obj_idx, class->size);
 
 	area = &get_cpu_var(zs_map_area);
@@ -1201,7 +1218,7 @@ void zs_unmap_object(struct zs_pool *pool, unsigned long handle)
 
 	obj_handle_to_location(handle, &page, &obj_idx);
 	get_zspage_mapping(get_first_page(page), &class_idx, &fg);
-	class = pool->merged_size_class[class_idx];
+	class = pool->size_class[class_idx];
 	off = obj_idx_to_offset(page, obj_idx, class->size);
 
 	area = this_cpu_ptr(&zs_map_area);
