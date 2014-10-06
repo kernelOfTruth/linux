@@ -385,7 +385,7 @@ int scm_blk_dev_setup(struct scm_blk_dev *bdev, struct scm_device *scmdev)
 	blk_queue_logical_block_size(rq, 1 << 12);
 	blk_queue_max_hw_sectors(rq, nr_max_blk << 3); /* 8 * 512 = blk_size */
 	blk_queue_max_segments(rq, nr_max_blk);
-	queue_flags_set_nonrot_clear_add_random(rq);
+	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, rq);
 	scm_blk_dev_cluster_setup(bdev);
 
 	bdev->gendisk = alloc_disk(SCM_NR_PARTS);

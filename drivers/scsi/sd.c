@@ -2616,7 +2616,7 @@ static void sd_read_block_characteristics(struct scsi_disk *sdkp)
 	rot = get_unaligned_be16(&buffer[4]);
 
 	if (rot == 1)
-		queue_flags_set_nonrot_clear_add_random(sdkp->disk->queue);
+		queue_flag_set_unlocked(QUEUE_FLAG_NONROT, sdkp->disk->queue);
 
  out:
 	kfree(buffer);

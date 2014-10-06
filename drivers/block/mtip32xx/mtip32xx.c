@@ -3951,7 +3951,7 @@ skip_create_disk:
 		goto start_service_thread;
 
 	/* Set device limits. */
-	queue_flags_set_nonrot_clear_add_random(dd->queue);
+	set_bit(QUEUE_FLAG_NONROT, &dd->queue->queue_flags);
 	blk_queue_max_segments(dd->queue, MTIP_MAX_SG);
 	blk_queue_physical_block_size(dd->queue, 4096);
 	blk_queue_max_hw_sectors(dd->queue, 0xffff);
