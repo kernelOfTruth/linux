@@ -33,7 +33,7 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 	}
 
 	atomic_set(&ns->count, 1);
-	err = mq_init_ns(ns, old_ns);
+	err = mq_init_ns(ns);
 	if (err) {
 		proc_free_inum(ns->proc_inum);
 		kfree(ns);
@@ -41,9 +41,9 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 	}
 	atomic_inc(&nr_ipc_ns);
 
-	sem_init_ns(ns, old_ns);
-	msg_init_ns(ns, old_ns);
-	shm_init_ns(ns, old_ns);
+	sem_init_ns(ns);
+	msg_init_ns(ns);
+	shm_init_ns(ns);
 
 	ns->user_ns = get_user_ns(user_ns);
 
