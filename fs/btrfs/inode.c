@@ -382,7 +382,7 @@ static inline int inode_need_compress(struct inode *inode)
  * are written in the same order that the flusher thread sent them
  * down.
  */
-static noinline int compress_file_range(struct inode *inode,
+static noinline void compress_file_range(struct inode *inode,
 					struct page *locked_page,
 					u64 start, u64 end,
 					struct async_cow *async_cow,
@@ -527,7 +527,10 @@ cont:
 		if (ret <= 0) {
 			unsigned long clear_flags = EXTENT_DELALLOC |
 				EXTENT_DEFRAG;
+			unsigned long page_error_op;
+
 			clear_flags |= (ret < 0) ? EXTENT_DO_ACCOUNTING : 0;
+			page_error_op = ret < 0 ? PAGE_SET_ERROR : 0;
 
 			/*
 			 * inline extent creation worked or returned error,
@@ -538,6 +541,7 @@ cont:
 						     clear_flags, PAGE_UNLOCK |
 						     PAGE_CLEAR_DIRTY |
 						     PAGE_SET_WRITEBACK |
+						     page_error_op |
 						     PAGE_END_WRITEBACK);
 			goto free_pages_out;
 		}
@@ -620,8 +624,7 @@ cleanup_and_bail_uncompressed:
 		*num_added += 1;
 	}
 
-out:
-	return ret;
+	return;
 
 free_pages_out:
 	for (i = 0; i < nr_pages_ret; i++) {
@@ -629,8 +632,6 @@ free_pages_out:
 		page_cache_release(pages[i]);
 	}
 	kfree(pages);
-
-	goto out;
 }
 
 static void free_async_extent_pages(struct async_extent *async_extent)
@@ -7054,9 +7055,12 @@ static int lock_extent_direct(struct inode *inode, u64 lockstart, u64 lockend,
 			btrfs_put_ordered_extent(ordered);
 		} else {
 			/* Screw you mmap */
-			ret = filemap_write_and_wait_range(inode->i_mapping,
-							   lockstart,
-							   lockend);
+			ret = btrfs_fdatawrite_range(inode, lockstart, lockend);
+			if (ret)
+				break;
+			ret = filemap_fdatawait_range(inode->i_mapping,
+						      lockstart,
+						      lockend);
 			if (ret)
 				break;
 
