@@ -187,7 +187,6 @@ enum fullness_group {
 static const int fullness_threshold_frac = 4;
 
 struct size_class {
-	int ref;
 	/*
 	 * Size of objects stored in this class. Must be multiple
 	 * of ZS_ALIGN.
@@ -995,7 +994,6 @@ struct zs_pool *zs_create_pool(gfp_t flags)
 			prev_class = pool->size_class[i + 1];
 			if (can_merge(prev_class, size, pages_per_zspage)) {
 				pool->size_class[i] = prev_class;
-				prev_class->ref++;
 				continue;
 			}
 		}
@@ -1004,7 +1002,6 @@ struct zs_pool *zs_create_pool(gfp_t flags)
 		if (!class)
 			goto err;
 
-		class->ref = 1;
 		class->size = size;
 		class->index = i;
 		class->pages_per_zspage = pages_per_zspage;
@@ -1033,8 +1030,7 @@ void zs_destroy_pool(struct zs_pool *pool)
 		if (!class)
 			continue;
 
-		class->ref--;
-		if (class->ref)
+		if (class->index != i)
 			continue;
 
 		for (fg = 0; fg < _ZS_NR_FULLNESS_GROUPS; fg++) {
