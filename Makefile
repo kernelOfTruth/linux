@@ -1,7 +1,7 @@
 VERSION = 3
 PATCHLEVEL = 17
 SUBLEVEL = 1
-EXTRAVERSION = -plus-v4
+EXTRAVERSION = -plus-v4_btrfs-old
 NAME = Shuffling Zombie Juror
 
 # *DOCUMENTATION*
