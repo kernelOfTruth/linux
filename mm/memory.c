@@ -3275,7 +3275,7 @@ static int __handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		return VM_FAULT_OOM;
 	if (pmd_none(*pmd) && transparent_hugepage_enabled(vma)) {
 		int ret = VM_FAULT_FALLBACK;
-		if (!vma->vm_ops)
+		if (!vma->vm_ops || vma->vm_ops->allow_huge_pages)
 			ret = do_huge_pmd_anonymous_page(mm, vma, address,
 					pmd, flags);
 		if (!(ret & VM_FAULT_FALLBACK))
