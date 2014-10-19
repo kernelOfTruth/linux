@@ -119,3 +119,32 @@ Description:
 		efficiency can be calculated using compr_data_size and this
 		statistic.
 		Unit: bytes
+
+What:		/sys/block/zram<id>/mem_used_max
+Date:		August 2014
+Contact:	Minchan Kim <minchan@kernel.org>
+Description:
+		The mem_used_max file is read/write and specifies the amount
+		of maximum memory zram have consumed to store compressed data.
+		For resetting the value, you should write "0". Otherwise,
+		you could see -EINVAL.
+		Unit: bytes
+
+What:		/sys/block/zram<id>/mem_limit
+Date:		August 2014
+Contact:	Minchan Kim <minchan@kernel.org>
+Description:
+		The mem_limit file is read/write and specifies the maximum
+		amount of memory ZRAM can use to store the compressed data.  The
+		limit could be changed in run time and "0" means disable the
+		limit.  No limit is the initial state.  Unit: bytes
+
+What:		/sys/block/zram<id>/fullness
+Date:		August 2014
+Contact:	Minchan Kim <minchan@kernel.org>
+Description:
+		The fullness file is read/write and specifies how easily
+		zram become full state so if you set it to lower value,
+		zram can reach full state easily compared to higher value.
+		Curretnly, initial value is 80% but it could be changed.
+		Unit: Percentage
