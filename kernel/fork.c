@@ -1349,6 +1349,12 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	p->sequential_io	= 0;
 	p->sequential_io_avg	= 0;
 #endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	/* need to pull these values from sysctl or something */
+	p->pgcollapse_pages_to_scan = HPAGE_PMD_NR * 8;
+	p->pgcollapse_scan_sleep_millisecs = 10000;
+	p->pgcollapse_alloc_sleep_millisecs = 60000;
+#endif
 
 	/* Perform scheduler related setup. Assign this task to a CPU. */
 	retval = sched_fork(clone_flags, p);

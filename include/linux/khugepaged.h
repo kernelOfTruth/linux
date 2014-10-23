@@ -2,11 +2,14 @@
 #define _LINUX_KHUGEPAGED_H
 
 #include <linux/sched.h> /* MMF_VM_HUGEPAGE */
+#include <linux/task_work.h>
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
-extern int __khugepaged_enter(struct mm_struct *mm);
+extern int __khugepaged_enter(void);
 extern void __khugepaged_exit(struct mm_struct *mm);
 extern int khugepaged_enter_vma_merge(struct vm_area_struct *vma);
+extern void task_pgcollapse_work(struct callback_head *);
+extern void khugepaged_do_scan(void);
 
 #define khugepaged_enabled()					       \
 	(transparent_hugepage_flags &				       \
@@ -24,8 +27,9 @@ extern int khugepaged_enter_vma_merge(struct vm_area_struct *vma);
 
 static inline int khugepaged_fork(struct mm_struct *mm, struct mm_struct *oldmm)
 {
+	/* this will add task_pgcollapse_work to task_works */
 	if (test_bit(MMF_VM_HUGEPAGE, &oldmm->flags))
-		return __khugepaged_enter(mm);
+		return __khugepaged_enter();
 	return 0;
 }
 
@@ -42,7 +46,7 @@ static inline int khugepaged_enter(struct vm_area_struct *vma)
 		     (khugepaged_req_madv() &&
 		      vma->vm_flags & VM_HUGEPAGE)) &&
 		    !(vma->vm_flags & VM_NOHUGEPAGE))
-			if (__khugepaged_enter(vma->vm_mm))
+			if (__khugepaged_enter())
 				return -ENOMEM;
 	return 0;
 }

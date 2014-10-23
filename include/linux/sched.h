@@ -1647,6 +1647,18 @@ struct task_struct {
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	unsigned int pgcollapse_pages_collapsed;
 #endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	struct callback_head pgcollapse_work;
+	/* default scan 8*512 pte (or vmas) every 30 second */
+	unsigned int pgcollapse_pages_to_scan;
+	unsigned int pgcollapse_pages_collapsed;
+	unsigned int pgcollapse_full_scans;
+	unsigned int pgcollapse_scan_sleep_millisecs;
+	/* during fragmentation poll the hugepage allocator once every minute */
+	unsigned int pgcollapse_alloc_sleep_millisecs;
+	unsigned long pgcollapse_last_scan;
+	unsigned long pgcollapse_scan_address;
+#endif
 };
 
 /* Future-safe accessor for struct task_struct's cpus_allowed. */
@@ -3020,4 +3032,7 @@ static inline unsigned long rlimit_max(unsigned int limit)
 	return task_rlimit_max(current, limit);
 }
 
+#endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+extern void task_pgcollapse_work(struct callback_head *);
 #endif

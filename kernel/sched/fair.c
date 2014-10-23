@@ -29,6 +29,8 @@
 #include <linux/mempolicy.h>
 #include <linux/migrate.h>
 #include <linux/task_work.h>
+#include <linux/types.h>
+#include <linux/khugepaged.h>
 
 #include <trace/events/sched.h>
 
@@ -2049,6 +2051,23 @@ static inline void account_numa_dequeue(struct rq *rq, struct task_struct *p)
 {
 }
 #endif /* CONFIG_NUMA_BALANCING */
+
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+void task_pgcollapse_work(struct callback_head *work)
+{
+	WARN_ON_ONCE(current != container_of(work, struct task_struct, pgcollapse_work));
+
+	work->next = work; /* protect against double add */
+
+	pr_info("!!! debug - INFO: task: %s/%d in task_pgcollapse_work\n",
+		current->comm, (int) current->pid);
+	khugepaged_do_scan();
+}
+#else
+void task_pgcollapse_work(struct callback_head *work)
+{
+}
+#endif
 
 static void
 account_entity_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se)
