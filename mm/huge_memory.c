@@ -2520,6 +2520,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 
 	*hpage = NULL;
 
+        mm->owner->pgcollapse_pages_collapsed++;
 	khugepaged_pages_collapsed++;
 out_up_write:
 	up_write(&mm->mmap_sem);
