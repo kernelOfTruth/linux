@@ -2495,6 +2495,25 @@ static const struct file_operations proc_projid_map_operations = {
 };
 #endif /* CONFIG_USER_NS */
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+int proc_pgcollapse_show(struct seq_file *m, struct pid_namespace *ns,
+		     struct pid *pid, struct task_struct *tsk)
+{
+	/* need locks here */
+	seq_printf(m, "pages_to_scan: %u\n", tsk->pgcollapse_pages_to_scan);
+	seq_printf(m, "pages_collapsed: %u\n", tsk->pgcollapse_pages_collapsed);
+	seq_printf(m, "full_scans: %u\n", tsk->pgcollapse_full_scans);
+	seq_printf(m, "scan_sleep_millisecs: %u\n",
+		   tsk->pgcollapse_scan_sleep_millisecs);
+	seq_printf(m, "alloc_sleep_millisecs: %u\n", 
+		   tsk->pgcollapse_alloc_sleep_millisecs);
+	seq_printf(m, "last_scan: %lu\n", tsk->pgcollapse_last_scan);
+	seq_printf(m, "scan_address: 0x%0lx\n", tsk->pgcollapse_scan_address);
+
+	return 0;
+}
+#endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+
 static int proc_pid_personality(struct seq_file *m, struct pid_namespace *ns,
 				struct pid *pid, struct task_struct *task)
 {
@@ -2604,6 +2623,9 @@ static const struct pid_entry tgid_base_stuff[] = {
 #endif
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	REG("timers",	  S_IRUGO, proc_timers_operations),
+#endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	ONE("pgcollapse", S_IRUGO, proc_pgcollapse_show),
 #endif
 };
 
@@ -2944,6 +2966,9 @@ static const struct pid_entry tid_base_stuff[] = {
 	REG("uid_map",    S_IRUGO|S_IWUSR, proc_uid_map_operations),
 	REG("gid_map",    S_IRUGO|S_IWUSR, proc_gid_map_operations),
 	REG("projid_map", S_IRUGO|S_IWUSR, proc_projid_map_operations),
+#endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	ONE("pgcollapse", S_IRUGO, proc_pgcollapse_show),
 #endif
 };
 
