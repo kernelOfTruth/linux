@@ -295,24 +295,9 @@ static ssize_t enabled_store(struct kobject *kobj,
 			     struct kobj_attribute *attr,
 			     const char *buf, size_t count)
 {
-	ssize_t ret;
-
-	ret = double_flag_store(kobj, attr, buf, count,
-				TRANSPARENT_HUGEPAGE_FLAG,
-				TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG);
-
-	if (ret > 0) {
-		int err;
-
-		mutex_lock(&khugepaged_mutex);
-		err = start_khugepaged();
-		mutex_unlock(&khugepaged_mutex);
-
-		if (err)
-			ret = err;
-	}
-
-	return ret;
+	return double_flag_store(kobj, attr, buf, count,
+				 TRANSPARENT_HUGEPAGE_FLAG,
+				 TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG);
 }
 static struct kobj_attribute enabled_attr =
 	__ATTR(enabled, 0644, enabled_show, enabled_store);
@@ -654,8 +639,6 @@ static int __init hugepage_init(void)
 	 */
 	if (totalram_pages < (512 << (20 - PAGE_SHIFT)))
 		transparent_hugepage_flags = 0;
-
-	start_khugepaged();
 
 	return 0;
 out:
