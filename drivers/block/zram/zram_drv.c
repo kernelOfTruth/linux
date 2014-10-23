@@ -998,6 +998,43 @@ static int zram_slot_free_notify(struct block_device *bdev,
 	return 0;
 }
 
+static int zram_rw_page(struct block_device *bdev, sector_t sector,
+		       struct page *page, int rw)
+{
+	int offset, ret;
+	u32 index;
+	struct zram *zram;
+	struct bio_vec bv;
+
+	zram = bdev->bd_disk->private_data;
+	if (!valid_io_request(zram, sector, PAGE_SIZE)) {
+		atomic64_inc(&zram->stats.invalid_io);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	down_read(&zram->init_lock);
+	if (unlikely(!init_done(zram))) {
+		ret = -EIO;
+		goto out_unlock;
+	}
+
+	index = sector >> SECTORS_PER_PAGE_SHIFT;
+	offset = sector & (SECTORS_PER_PAGE - 1) << SECTOR_SHIFT;
+
+	bv.bv_page = page;
+	bv.bv_len = PAGE_SIZE;
+	bv.bv_offset = 0;
+
+	ret = zram_bvec_rw(zram, &bv, index, offset, rw);
+
+out_unlock:
+	up_read(&zram->init_lock);
+out:
+	page_endio(page, rw, ret);
+	return ret;
+}
+
 static int zram_full(struct block_device *bdev, void *arg)
 {
 	struct zram *zram;
@@ -1041,6 +1078,7 @@ static int zram_swap_hint(struct block_device *bdev,
 
 static const struct block_device_operations zram_devops = {
 	.swap_hint = zram_swap_hint,
+	.rw_page = zram_rw_page,
 	.owner = THIS_MODULE
 };
 
