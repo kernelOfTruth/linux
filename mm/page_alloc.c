@@ -570,6 +570,7 @@ static inline void __free_one_page(struct page *page,
 	unsigned long combined_idx;
 	unsigned long uninitialized_var(buddy_idx);
 	struct page *buddy;
+	int max_order = MAX_ORDER;
 
 	VM_BUG_ON(!zone_is_initialized(zone));
 
@@ -581,18 +582,26 @@ static inline void __free_one_page(struct page *page,
 	if (unlikely(has_isolate_pageblock(zone) ||
 		is_migrate_isolate(migratetype))) {
 		migratetype = get_pfnblock_migratetype(page, pfn);
-		if (is_migrate_isolate(migratetype))
+		if (is_migrate_isolate(migratetype)) {
+			/*
+			 * We restrict max order of merging to prevent merge
+			 * between freepages on isolate pageblock and normal
+			 * pageblock. Without this, pageblock isolation
+			 * could cause incorrect freepage accounting.
+			 */
+			max_order = min(MAX_ORDER, pageblock_order + 1);
 			goto skip_counting;
+		}
 	}
 	__mod_zone_freepage_state(zone, 1 << order, migratetype);
 
 skip_counting:
-	page_idx = pfn & ((1 << MAX_ORDER) - 1);
+	page_idx = pfn & ((1 << max_order) - 1);
 
 	VM_BUG_ON_PAGE(page_idx & ((1 << order) - 1), page);
 	VM_BUG_ON_PAGE(bad_range(zone, page), page);
 
-	while (order < MAX_ORDER-1) {
+	while (order < max_order - 1) {
 		buddy_idx = __find_buddy_index(page_idx, order);
 		buddy = page + (buddy_idx - page_idx);
 		if (!page_is_buddy(page, buddy, order))
