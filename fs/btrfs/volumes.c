@@ -4240,6 +4240,7 @@ static int __btrfs_alloc_chunk(struct btrfs_trans_handle *trans,
 	int ret;
 	u64 max_stripe_size;
 	u64 max_chunk_size;
+	u64 total_avail_space = 0;
 	u64 stripe_size;
 	u64 num_bytes;
 	u64 raid_stripe_len = BTRFS_STRIPE_LEN;
@@ -4352,8 +4353,25 @@ static int __btrfs_alloc_chunk(struct btrfs_trans_handle *trans,
 		devices_info[ndevs].max_avail = max_avail;
 		devices_info[ndevs].total_avail = total_avail;
 		devices_info[ndevs].dev = device;
+		total_avail_space += total_avail;
 		++ndevs;
 	}
+
+	/*
+	 * Try not to occupy more than half of the unallocated space.
+	 * When run short of space and alloc all the space to
+	 * data/metadata will cause ENOSPC to be triggered more easily.
+	 *
+	 * And since the minimum chunk size is 16M, the half-half will cause
+	 * 16M allocated from 20M available space and reset 4M will not be
+	 * used ever. In that case(16~32M), allocate all directly.
+	 */
+	if (total_avail_space < 32 * 1024 * 1024 &&
+	    total_avail_space > 16 * 1024 * 1024)
+		max_chunk_size = total_avail_space;
+	else
+		max_chunk_size = min(total_avail_space / 2, max_chunk_size);
+	max_chunk_size = min(total_avail_space / 2, max_chunk_size);
 
 	/*
 	 * now sort the devices by hole size / available space
