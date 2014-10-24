@@ -3062,7 +3062,8 @@ out:
 	if (!nr) {
 		if (!PageError(page))
 			SetPageUptodate(page);
-		unlock_page(page);
+		if (PageLocked(page))
+			unlock_page(page);
 	}
 	return 0;
 }
