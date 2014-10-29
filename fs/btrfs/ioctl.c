@@ -2220,8 +2220,8 @@ static noinline int btrfs_ioctl_tree_search_v2(struct file *file,
  * Search INODE_REFs to identify path name of 'dirid' directory
  * in a 'tree_id' tree. and sets path name to 'name'.
  */
-static noinline int btrfs_search_path_in_tree(struct btrfs_fs_info *info,
-				u64 tree_id, u64 dirid, char *name)
+int btrfs_search_path_in_tree(struct btrfs_fs_info *info,
+			      u64 tree_id, u64 dirid, char *name)
 {
 	struct btrfs_root *root;
 	struct btrfs_key key;
@@ -3893,6 +3893,10 @@ void btrfs_get_block_group_info(struct list_head *groups_list,
 		space->total_bytes += block_group->key.offset;
 		space->used_bytes +=
 			btrfs_block_group_used(&block_group->item);
+		/* Add bytes-info in cache */
+		space->used_bytes += block_group->pinned;
+		space->used_bytes += block_group->reserved;
+		space->used_bytes += block_group->bytes_super;
 	}
 }
 
