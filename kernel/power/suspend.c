@@ -28,16 +28,20 @@
 #include <linux/ftrace.h>
 #include <trace/events/power.h>
 #include <linux/compiler.h>
+#include <linux/stop_machine.h>
+#include <linux/clockchips.h>
+#include <linux/hrtimer.h>
 
 #include "power.h"
+#include "../time/tick-internal.h"
+#include "../time/timekeeping_internal.h"
 
 const char *pm_labels[] = { "mem", "standby", "freeze", NULL };
 const char *pm_states[PM_SUSPEND_MAX];
 
 static const struct platform_suspend_ops *suspend_ops;
 static const struct platform_freeze_ops *freeze_ops;
-static DECLARE_WAIT_QUEUE_HEAD(suspend_freeze_wait_head);
-static bool suspend_freeze_wake;
+static int suspend_freeze_wake;
 
 void freeze_set_ops(const struct platform_freeze_ops *ops)
 {
@@ -48,22 +52,179 @@ void freeze_set_ops(const struct platform_freeze_ops *ops)
 
 static void freeze_begin(void)
 {
-	suspend_freeze_wake = false;
+	suspend_freeze_wake = -1;
+}
+
+enum freezer_state {
+	FREEZER_NONE,
+	FREEZER_PICK_TK,
+	FREEZER_SUSPEND_CLKEVT,
+	FREEZER_SUSPEND_TK,
+	FREEZER_IDLE,
+	FREEZER_RESUME_TK,
+	FREEZER_RESUME_CLKEVT,
+	FREEZER_EXIT,
+};
+
+struct freezer_data {
+	int			thread_num;
+	atomic_t		thread_ack;
+	enum freezer_state	state;
+};
+
+static void set_state(struct freezer_data *fd, enum freezer_state state)
+{
+	/* set ack counter */
+	atomic_set(&fd->thread_ack, fd->thread_num);
+	/* guarantee the write ordering between ack counter and state */
+	smp_wmb();
+	fd->state = state;
+}
+
+static void ack_state(struct freezer_data *fd)
+{
+	if (atomic_dec_and_test(&fd->thread_ack))
+		set_state(fd, fd->state + 1);
+}
+
+static void freezer_pick_tk(int cpu)
+{
+	if (tick_do_timer_cpu == TICK_DO_TIMER_NONE) {
+		static DEFINE_SPINLOCK(lock);
+
+		spin_lock(&lock);
+		if (tick_do_timer_cpu == TICK_DO_TIMER_NONE)
+			tick_do_timer_cpu = cpu;
+		spin_unlock(&lock);
+	}
+}
+
+static void freezer_suspend_clkevt(int cpu)
+{
+	if (tick_do_timer_cpu == cpu)
+		return;
+
+	clockevents_notify(CLOCK_EVT_NOTIFY_SUSPEND, NULL);
+}
+
+static void freezer_suspend_tk(int cpu)
+{
+	if (tick_do_timer_cpu != cpu)
+		return;
+
+	timekeeping_suspend();
+
+	cpuidle_use_deepest_state(true);
+	cpuidle_resume();
+}
+
+static void freezer_idle(int cpu)
+{
+	struct cpuidle_device *dev = __this_cpu_read(cpuidle_devices);
+	struct cpuidle_driver *drv = cpuidle_get_cpu_driver(dev);
+
+	stop_critical_timings();
+
+	while (suspend_freeze_wake == -1) {
+		int next_state;
+
+		/*
+		 * interrupt must be disabled before cpu enters idle
+		 */
+		local_irq_disable();
+
+		next_state = cpuidle_select(drv, dev);
+		if (next_state < 0) {
+			arch_cpu_idle();
+			continue;
+		}
+		/*
+		 * cpuidle_enter will return with interrupt enabled
+		 */
+		cpuidle_enter(drv, dev, next_state);
+	}
+
+	if (suspend_freeze_wake == cpu)
+		kick_all_cpus_sync();
+
+	start_critical_timings();
+}
+
+static void freezer_resume_tk(int cpu)
+{
+	if (tick_do_timer_cpu != cpu)
+		return;
+
+	cpuidle_pause();
+	cpuidle_use_deepest_state(false);
+
+	local_irq_disable();
+	timekeeping_resume();
+	local_irq_enable();
+}
+
+static void freezer_resume_clkevt(int cpu)
+{
+	if (tick_do_timer_cpu == cpu)
+		return;
+
+	touch_softlockup_watchdog();
+	clockevents_notify(CLOCK_EVT_NOTIFY_RESUME, NULL);
+	local_irq_disable();
+	hrtimers_resume();
+	local_irq_enable();
+}
+
+typedef void (*freezer_fn)(int);
+
+static freezer_fn freezer_func[FREEZER_EXIT] = {
+	NULL,
+	freezer_pick_tk,
+	freezer_suspend_clkevt,
+	freezer_suspend_tk,
+	freezer_idle,
+	freezer_resume_tk,
+	freezer_resume_clkevt,
+};
+
+static int freezer_stopper_fn(void *arg)
+{
+	struct freezer_data *fd = arg;
+	enum freezer_state state = FREEZER_NONE;
+	int cpu = smp_processor_id();
+
+	do {
+		cpu_relax();
+		if (fd->state != state) {
+			state = fd->state;
+			if (freezer_func[state])
+				(*freezer_func[state])(cpu);
+			ack_state(fd);
+		}
+	} while (fd->state != FREEZER_EXIT);
+
+	return 0;
 }
 
 static void freeze_enter(void)
 {
-	cpuidle_use_deepest_state(true);
-	cpuidle_resume();
-	wait_event(suspend_freeze_wait_head, suspend_freeze_wake);
-	cpuidle_pause();
-	cpuidle_use_deepest_state(false);
+	struct freezer_data fd;
+
+	get_online_cpus();
+
+	fd.thread_num = num_online_cpus();
+	set_state(&fd, FREEZER_PICK_TK);
+
+	__stop_machine(freezer_stopper_fn, &fd, cpu_online_mask);
+
+	put_online_cpus();
 }
 
 void freeze_wake(void)
 {
-	suspend_freeze_wake = true;
-	wake_up(&suspend_freeze_wait_head);
+	if (suspend_freeze_wake != -1)
+		return;
+	suspend_freeze_wake = smp_processor_id();
 }
 EXPORT_SYMBOL_GPL(freeze_wake);
 
