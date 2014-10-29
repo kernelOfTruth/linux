@@ -3893,6 +3893,10 @@ void btrfs_get_block_group_info(struct list_head *groups_list,
 		space->total_bytes += block_group->key.offset;
 		space->used_bytes +=
 			btrfs_block_group_used(&block_group->item);
+		/* Add bytes-info in cache */
+		space->used_bytes += block_group->pinned;
+		space->used_bytes += block_group->reserved;
+		space->used_bytes += block_group->bytes_super;
 	}
 }
 
