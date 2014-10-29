@@ -99,10 +99,8 @@ struct zbud_pool {
 /*
  * struct zbud_header - zbud page metadata occupying the first chunk of each
  *			zbud page.
- * @buddy:	links the zbud page into the unbuddied lists in the pool
  */
 struct zbud_header {
-	struct list_head buddy;
 	bool under_reclaim;
 };
 
@@ -223,21 +221,24 @@ static size_t get_num_chunks(struct page *page, enum buddy bud)
 	for ((_iter) = (_begin); (_iter) < NCHUNKS; (_iter)++)
 
 /* Initializes the zbud header of a newly allocated zbud page */
-static struct zbud_header *init_zbud_page(struct page *page)
+static void init_zbud_page(struct page *page)
 {
 	struct zbud_header *zhdr = page_address(page);
 	set_num_chunks(page, FIRST, 0);
 	set_num_chunks(page, LAST, 0);
-	INIT_LIST_HEAD(&zhdr->buddy);
+	INIT_LIST_HEAD((struct list_head *) &page->index);
 	INIT_LIST_HEAD(&page->lru);
 	zhdr->under_reclaim = 0;
-	return zhdr;
 }
 
 /* Resets the struct page fields and frees the page */
 static void free_zbud_page(struct zbud_header *zhdr)
 {
-	__free_page(virt_to_page(zhdr));
+	struct page *page = virt_to_page(zhdr);
+
+	init_page_count(page);
+	page_mapcount_reset(page);
+	__free_page(page);
 }
 
 static int is_last_chunk(unsigned long handle)
@@ -341,7 +342,6 @@ int zbud_alloc(struct zbud_pool *pool, size_t size, gfp_t gfp,
 			unsigned long *handle)
 {
 	int chunks, i, freechunks;
-	struct zbud_header *zhdr = NULL;
 	enum buddy bud;
 	struct page *page;
 
@@ -355,10 +355,9 @@ int zbud_alloc(struct zbud_pool *pool, size_t size, gfp_t gfp,
 	/* First, try to find an unbuddied zbud page. */
 	for_each_unbuddied_list(i, chunks) {
 		if (!list_empty(&pool->unbuddied[i])) {
-			zhdr = list_first_entry(&pool->unbuddied[i],
-					struct zbud_header, buddy);
-			page = virt_to_page(zhdr);
-			list_del(&zhdr->buddy);
+			page = list_entry((unsigned long *)
+				pool->unbuddied[i].next, struct page, index);
+			list_del((struct list_head *) &page->index);
 			goto found;
 		}
 	}
@@ -370,7 +369,7 @@ int zbud_alloc(struct zbud_pool *pool, size_t size, gfp_t gfp,
 		return -ENOMEM;
 	spin_lock(&pool->lock);
 	pool->pages_nr++;
-	zhdr = init_zbud_page(page);
+	init_zbud_page(page);
 
 found:
 	if (get_num_chunks(page, FIRST) == 0)
@@ -384,7 +383,8 @@ found:
 		get_num_chunks(page, LAST) == 0) {
 		/* Add to unbuddied list */
 		freechunks = num_free_chunks(page);
-		list_add(&zhdr->buddy, &pool->unbuddied[freechunks]);
+		list_add((struct list_head *) &page->index,
+				&pool->unbuddied[freechunks]);
 	}
 
 	/* Add/move zbud page to beginning of LRU */
@@ -433,14 +433,15 @@ void zbud_free(struct zbud_pool *pool, unsigned long handle)
 	freechunks = num_free_chunks(page);
 	if (freechunks == NCHUNKS) {
 		/* Remove from existing unbuddied list */
-		list_del(&zhdr->buddy);
+		list_del((struct list_head *) &page->index);
 		/* zbud page is empty, free */
 		list_del(&page->lru);
 		free_zbud_page(zhdr);
 		pool->pages_nr--;
 	} else {
 		/* Add to unbuddied list */
-		list_add(&zhdr->buddy, &pool->unbuddied[freechunks]);
+		list_add((struct list_head *) &page->index,
+				&pool->unbuddied[freechunks]);
 	}
 
 	spin_unlock(&pool->lock);
@@ -501,7 +502,7 @@ int zbud_reclaim_page(struct zbud_pool *pool, unsigned int retries)
 		page = list_tail_entry(&pool->lru, struct page, lru);
 		zhdr = page_address(page);
 		list_del(&page->lru);
-		list_del(&zhdr->buddy);
+		list_del((struct list_head *) &page->index);
 		/* Protect zbud page against free */
 		zhdr->under_reclaim = true;
 		/*
@@ -543,7 +544,8 @@ next:
 		} else if (get_num_chunks(page, FIRST) == 0 ||
 				get_num_chunks(page, LAST) == 0) {
 			/* add to unbuddied list */
-			list_add(&zhdr->buddy, &pool->unbuddied[freechunks]);
+			list_add((struct list_head *) &page->index,
+					&pool->unbuddied[freechunks]);
 		}
 
 		/* add to beginning of LRU */
