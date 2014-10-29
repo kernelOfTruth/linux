@@ -52,6 +52,7 @@
 #include <linux/spinlock.h>
 #include <linux/zbud.h>
 #include <linux/zpool.h>
+#include <linux/highmem.h>
 
 /*****************
  * Structures
@@ -93,6 +94,9 @@ struct zbud_pool {
 	u64 pages_nr;
 	struct zbud_ops *ops;
 };
+
+/* per-cpu mapping addresses of kmap_atomic()'ed zbud pages */
+static DEFINE_PER_CPU(void *, zbud_mapping);
 
 /*****************
  * zpool
@@ -310,9 +314,6 @@ void zbud_destroy_pool(struct zbud_pool *pool)
  * performed first. If no suitable free region is found, then a new page is
  * allocated and added to the pool to satisfy the request.
  *
- * gfp should not set __GFP_HIGHMEM as highmem pages cannot be used
- * as zbud pool pages.
- *
  * Return: 0 if success and handle is set, otherwise -EINVAL if the size or
  * gfp arguments are invalid or -ENOMEM if the pool was unable to allocate
  * a new page.
@@ -324,7 +325,7 @@ int zbud_alloc(struct zbud_pool *pool, size_t size, gfp_t gfp,
 	enum buddy bud;
 	struct page *page;
 
-	if (!size || (gfp & __GFP_HIGHMEM))
+	if (!size)
 		return -EINVAL;
 	if (size > PAGE_SIZE - CHUNK_SIZE)
 		return -ENOSPC;
@@ -543,14 +544,24 @@ next:
  */
 void *zbud_map(struct zbud_pool *pool, unsigned long handle)
 {
+	void **mapping;
 	size_t offset = 0;
 	struct page *page = handle_to_zbud_page(handle);
+
+	/*
+	 * Because we use per-cpu mapping shared among the pools/users,
+	 * we can't allow mapping in interrupt context because it can
+	 * corrupt another users mappings.
+	 */
+	BUG_ON(in_interrupt());
 
 	if (is_last_chunk(handle))
 		offset = PAGE_SIZE -
 				(get_num_chunks(page, LAST) << CHUNK_SHIFT);
 
-	return (unsigned char *) page_address(page) + offset;
+	mapping = &get_cpu_var(zbud_mapping);
+	*mapping = kmap_atomic(page);
+	return (char *) *mapping + offset;
 }
 
 /**
@@ -560,6 +571,10 @@ void *zbud_map(struct zbud_pool *pool, unsigned long handle)
  */
 void zbud_unmap(struct zbud_pool *pool, unsigned long handle)
 {
+	void **mapping = this_cpu_ptr(&zbud_mapping);
+
+	kunmap_atomic(*mapping);
+	put_cpu_var(zbud_mapping);
 }
 
 /**
