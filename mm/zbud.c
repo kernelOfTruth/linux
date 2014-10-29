@@ -240,35 +240,32 @@ static void free_zbud_page(struct zbud_header *zhdr)
 	__free_page(virt_to_page(zhdr));
 }
 
+static int is_last_chunk(unsigned long handle)
+{
+	return (handle & LAST) == LAST;
+}
+
 /*
  * Encodes the handle of a particular buddy within a zbud page
  * Pool lock should be held as this function accesses first|last_chunks
  */
-static unsigned long encode_handle(struct zbud_header *zhdr, enum buddy bud)
+static unsigned long encode_handle(struct page *page, enum buddy bud)
 {
-	unsigned long handle;
-	struct page *page = virt_to_page(zhdr);
+	return (unsigned long) page | bud;
+}
 
-	/*
-	 * For now, the encoded handle is actually just the pointer to the data
-	 * but this might not always be the case.  A little information hiding.
-	 * Add CHUNK_SIZE to the handle if it is the first allocation to jump
-	 * over the zbud header in the first chunk.
-	 */
-	handle = (unsigned long)zhdr;
-	if (bud == FIRST)
-		/* skip over zbud header */
-		handle += ZHDR_SIZE_ALIGNED;
-	else /* bud == LAST */
-		handle += PAGE_SIZE -
-				(get_num_chunks(page, LAST) << CHUNK_SHIFT);
-	return handle;
+/* Returns struct page of the zbud page where a given handle is stored */
+static struct page *handle_to_zbud_page(unsigned long handle)
+{
+	return (struct page *) (handle & ~LAST);
 }
 
 /* Returns the zbud page where a given handle is stored */
 static struct zbud_header *handle_to_zbud_header(unsigned long handle)
 {
-	return (struct zbud_header *)(handle & PAGE_MASK);
+	struct page *page = handle_to_zbud_page(handle);
+
+	return page_address(page);
 }
 
 /* Returns the number of free chunks in a zbud page */
@@ -395,7 +392,7 @@ found:
 		list_del(&page->lru);
 	list_add(&page->lru, &pool->lru);
 
-	*handle = encode_handle(zhdr, bud);
+	*handle = encode_handle(page, bud);
 	spin_unlock(&pool->lock);
 
 	return 0;
@@ -514,9 +511,9 @@ int zbud_reclaim_page(struct zbud_pool *pool, unsigned int retries)
 		first_handle = 0;
 		last_handle = 0;
 		if (get_num_chunks(page, FIRST))
-			first_handle = encode_handle(zhdr, FIRST);
+			first_handle = encode_handle(page, FIRST);
 		if (get_num_chunks(page, LAST))
-			last_handle = encode_handle(zhdr, LAST);
+			last_handle = encode_handle(page, LAST);
 		spin_unlock(&pool->lock);
 
 		/* Issue the eviction callback(s) */
@@ -570,7 +567,16 @@ next:
  */
 void *zbud_map(struct zbud_pool *pool, unsigned long handle)
 {
-	return (void *)(handle);
+	size_t offset;
+	struct page *page = handle_to_zbud_page(handle);
+
+	if (is_last_chunk(handle))
+		offset = PAGE_SIZE -
+				(get_num_chunks(page, LAST) << CHUNK_SHIFT);
+	else
+		offset = ZHDR_SIZE_ALIGNED;
+
+	return (unsigned char *) page_address(page) + offset;
 }
 
 /**
