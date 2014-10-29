@@ -143,6 +143,7 @@ static int zbud_zpool_malloc(void *pool, size_t size, gfp_t gfp,
 {
 	return zbud_alloc(pool, size, gfp, handle);
 }
+
 static void zbud_zpool_free(void *pool, unsigned long handle)
 {
 	zbud_free(pool, handle);
@@ -172,6 +173,7 @@ static void *zbud_zpool_map(void *pool, unsigned long handle,
 {
 	return zbud_map(pool, handle);
 }
+
 static void zbud_zpool_unmap(void *pool, unsigned long handle)
 {
 	zbud_unmap(pool, handle);
@@ -349,16 +351,11 @@ int zbud_alloc(struct zbud_pool *pool, size_t size, gfp_t gfp,
 	spin_lock(&pool->lock);
 
 	/* First, try to find an unbuddied zbud page. */
-	zhdr = NULL;
 	for_each_unbuddied_list(i, chunks) {
 		if (!list_empty(&pool->unbuddied[i])) {
 			zhdr = list_first_entry(&pool->unbuddied[i],
 					struct zbud_header, buddy);
 			list_del(&zhdr->buddy);
-			if (zhdr->first_chunks == 0)
-				bud = FIRST;
-			else
-				bud = LAST;
 			goto found;
 		}
 	}
@@ -371,13 +368,15 @@ int zbud_alloc(struct zbud_pool *pool, size_t size, gfp_t gfp,
 	spin_lock(&pool->lock);
 	pool->pages_nr++;
 	zhdr = init_zbud_page(page);
-	bud = FIRST;
 
 found:
-	if (bud == FIRST)
+	if (zhdr->first_chunks == 0) {
 		zhdr->first_chunks = chunks;
-	else
+		bud = FIRST;
+	} else {
 		zhdr->last_chunks = chunks;
+		bud = LAST;
+	}
 
 	if (zhdr->first_chunks == 0 || zhdr->last_chunks == 0) {
 		/* Add to unbuddied list */
@@ -432,7 +431,7 @@ void zbud_free(struct zbud_pool *pool, unsigned long handle)
 	/* Remove from existing buddy list */
 	list_del(&zhdr->buddy);
 
-	if (zhdr->first_chunks == 0 && zhdr->last_chunks == 0) {
+	if (num_free_chunks(zhdr) == NCHUNKS) {
 		/* zbud page is empty, free */
 		list_del(&zhdr->lru);
 		free_zbud_page(zhdr);
@@ -488,7 +487,7 @@ int zbud_reclaim_page(struct zbud_pool *pool, unsigned int retries)
 {
 	int i, ret, freechunks;
 	struct zbud_header *zhdr;
-	unsigned long first_handle = 0, last_handle = 0;
+	unsigned long first_handle, last_handle;
 
 	spin_lock(&pool->lock);
 	if (!pool->ops || !pool->ops->evict || list_empty(&pool->lru) ||
@@ -528,7 +527,7 @@ int zbud_reclaim_page(struct zbud_pool *pool, unsigned int retries)
 next:
 		spin_lock(&pool->lock);
 		zhdr->under_reclaim = false;
-		if (zhdr->first_chunks == 0 && zhdr->last_chunks == 0) {
+		if (num_free_chunks(zhdr) == NCHUNKS) {
 			/*
 			 * Both buddies are now free, free the zbud page and
 			 * return success.
