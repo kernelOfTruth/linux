@@ -77,8 +77,6 @@
  * @unbuddied:	array of lists tracking zbud pages that only contain one buddy;
  *		the lists each zbud page is added to depends on the size of
  *		its free region.
- * @buddied:	list tracking the zbud pages that contain two buddies;
- *		these zbud pages are full
  * @lru:	list tracking the zbud pages in LRU order by most recently
  *		added buddy.
  * @pages_nr:	number of zbud pages in the pool.
@@ -91,7 +89,6 @@
 struct zbud_pool {
 	spinlock_t lock;
 	struct list_head unbuddied[NCHUNKS];
-	struct list_head buddied;
 	struct list_head lru;
 	u64 pages_nr;
 	struct zbud_ops *ops;
@@ -100,7 +97,7 @@ struct zbud_pool {
 /*
  * struct zbud_header - zbud page metadata occupying the first chunk of each
  *			zbud page.
- * @buddy:	links the zbud page into the unbuddied/buddied lists in the pool
+ * @buddy:	links the zbud page into the unbuddied lists in the pool
  * @lru:	links the zbud page into the lru list in the pool
  * @first_chunks:	the size of the first buddy in chunks, 0 if free
  * @last_chunks:	the size of the last buddy in chunks, 0 if free
@@ -298,7 +295,6 @@ struct zbud_pool *zbud_create_pool(gfp_t gfp, struct zbud_ops *ops)
 	spin_lock_init(&pool->lock);
 	for_each_unbuddied_list(i, 0)
 		INIT_LIST_HEAD(&pool->unbuddied[i]);
-	INIT_LIST_HEAD(&pool->buddied);
 	INIT_LIST_HEAD(&pool->lru);
 	pool->pages_nr = 0;
 	pool->ops = ops;
@@ -382,9 +378,6 @@ found:
 		/* Add to unbuddied list */
 		freechunks = num_free_chunks(zhdr);
 		list_add(&zhdr->buddy, &pool->unbuddied[freechunks]);
-	} else {
-		/* Add to buddied list */
-		list_add(&zhdr->buddy, &pool->buddied);
 	}
 
 	/* Add/move zbud page to beginning of LRU */
@@ -428,10 +421,9 @@ void zbud_free(struct zbud_pool *pool, unsigned long handle)
 		return;
 	}
 
-	/* Remove from existing buddy list */
-	list_del(&zhdr->buddy);
-
 	if (num_free_chunks(zhdr) == NCHUNKS) {
+		/* Remove from existing unbuddied list */
+		list_del(&zhdr->buddy);
 		/* zbud page is empty, free */
 		list_del(&zhdr->lru);
 		free_zbud_page(zhdr);
@@ -541,9 +533,6 @@ next:
 			/* add to unbuddied list */
 			freechunks = num_free_chunks(zhdr);
 			list_add(&zhdr->buddy, &pool->unbuddied[freechunks]);
-		} else {
-			/* add to buddied list */
-			list_add(&zhdr->buddy, &pool->buddied);
 		}
 
 		/* add to beginning of LRU */
