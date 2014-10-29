@@ -575,6 +575,47 @@ static void mce_read_aux(struct mce *m, int i)
 	}
 }
 
+static bool mem_deferred_error(struct mce *m)
+{
+	int severity;
+	struct cpuinfo_x86 *c = &boot_cpu_data;
+
+	m->mcgstatus |= (MCG_STATUS_MCIP|MCG_STATUS_RIPV);
+	severity = mce_severity(m, mca_cfg.tolerant, NULL);
+
+	if (c->x86_vendor == X86_VENDOR_AMD) {
+		/*
+		 * AMD BKDGs - Machine Check Error Codes
+		 *
+		 * Bit 8 of ErrCode[15:0] of MCi_STATUS is used for indicating
+		 * a memory-specific error. Note that this field encodes info-
+		 * rmation about memory-hierarchy level involved in the error.
+		 */
+		if (severity == MCE_DEFERRED_SEVERITY)
+			return  (m->status & 0xff00) == BIT(8);
+	} else if (c->x86_vendor == X86_VENDOR_INTEL) {
+		/*
+		 * Intel SDM Volume 3B - 15.9.2 Compound Error Codes
+		 *
+		 * Bit 7 of the MCACOD field of IA32_MCi_STATUS is used for
+		 * indicating a memory error. Bit 8 is used for indicating a
+		 * cache hierarchy error. The combination of bit 2 and bit 3
+		 * is used for indicating a `generic' cache hierarchy error
+		 * But we can't just blindly check the above bits, because if
+		 * bit 11 is set, then it is a bus/interconnect error - and
+		 * either way the above bits just gives more detail on what
+		 * bus/interconnect error happened. Note that bit 12 can be
+		 * ignored, as it's the "filter" bit.
+		 */
+		if (severity == MCE_UCNA_SEVERITY)
+			return (m->status & 0xef80) == BIT(7) ||
+			       (m->status & 0xef00) == BIT(8) ||
+			       (m->status & 0xeffc) == 0xc;
+	}
+
+	return false;
+}
+
 DEFINE_PER_CPU(unsigned, mce_poll_count);
 
 /*
@@ -630,6 +671,16 @@ void machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 
 		if (!(flags & MCP_TIMESTAMP))
 			m.tsc = 0;
+
+		/*
+		 * In the cases where we don't have a valid address after all,
+		 * do not add it into the ring buffer.
+		 */
+		if (mem_deferred_error(&m) && (m.status & MCI_STATUS_ADDRV)) {
+			mce_ring_add(m.addr >> PAGE_SHIFT);
+			mce_schedule_work();
+		}
+
 		/*
 		 * Don't get the IP here because it's unlikely to
 		 * have anything to do with the actual error location.
@@ -1098,8 +1149,8 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 		severity = mce_severity(&m, cfg->tolerant, NULL);
 
 		/*
-		 * When machine check was for corrected handler don't touch,
-		 * unless we're panicing.
+		 * When machine check was for corrected/deferred handler don't
+		 * touch, unless we're panicing.
 		 */
 		if ((severity == MCE_KEEP_SEVERITY ||
 		     severity == MCE_UCNA_SEVERITY) && !no_way_out)
