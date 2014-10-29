@@ -1101,7 +1101,8 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 		 * When machine check was for corrected handler don't touch,
 		 * unless we're panicing.
 		 */
-		if (severity == MCE_KEEP_SEVERITY && !no_way_out)
+		if ((severity == MCE_KEEP_SEVERITY ||
+		     severity == MCE_UCNA_SEVERITY) && !no_way_out)
 			continue;
 		__set_bit(i, toclear);
 		if (severity == MCE_NO_SEVERITY) {
