@@ -2556,7 +2556,7 @@ node_vma_new:
 		hlist_add_head(&new_node_vma->hlist, &stable_node->hlist);
 	} else if (node_vma->key != key) {
 		if (node_vma->key < key)
-			hlist_add_after(&node_vma->hlist, &new_node_vma->hlist);
+			hlist_add_behind(&new_node_vma->hlist, &node_vma->hlist);
 		else {
 			hlist_add_before(&new_node_vma->hlist,
 					 &node_vma->hlist);
