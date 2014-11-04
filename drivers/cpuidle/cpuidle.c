@@ -119,6 +119,18 @@ int cpuidle_enter_state(struct cpuidle_device *dev, struct cpuidle_driver *drv,
 	ktime_t time_start, time_end;
 	s64 diff;
 
+	/*
+	 * under the scenario of use deepest idle state, the timekeeping
+	 * could be suspended as well as the clock source device, so we
+	 * bypass the idle counter update for this case
+	 */
+	if (unlikely(use_deepest_state)) {
+		entered_state = target_state->enter(dev, drv, index);
+		if (!cpuidle_state_is_coupled(dev, drv, entered_state))
+			local_irq_enable();
+		return entered_state;
+	}
+
 	trace_cpu_idle_rcuidle(index, dev->cpu);
 	time_start = ktime_get();
 
