@@ -26,7 +26,4 @@ static inline cycle_t clocksource_delta(cycle_t now, cycle_t last, cycle_t mask)
 }
 #endif
 
-extern int timekeeping_suspend(void);
-extern void timekeeping_resume(void);
-
 #endif /* _TIMEKEEPING_INTERNAL_H */

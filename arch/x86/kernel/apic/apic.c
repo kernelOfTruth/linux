@@ -917,14 +917,6 @@ static void local_apic_timer_interrupt(void)
 	 */
 	inc_irq_stat(apic_timer_irqs);
 
-	/*
-	 * if timekeeping is suspended, the clock event device will be
-	 * suspended as well, so we are not supposed to invoke the event
-	 * handler of clock event device.
-	 */
-	if (unlikely(timekeeping_suspended))
-		return;
-
 	evt->event_handler(evt);
 }
 
