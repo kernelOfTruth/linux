@@ -2243,16 +2243,18 @@ repeat:
 		spin_lock_irq(&pool->lock);
 		rescuer->pool = pool;
 
-		/*
-		 * Slurp in all works issued via this workqueue and
-		 * process'em.
-		 */
-		WARN_ON_ONCE(!list_empty(&rescuer->scheduled));
-		list_for_each_entry_safe(work, n, &pool->worklist, entry)
-			if (get_work_pwq(work) == pwq)
-				move_linked_works(work, scheduled, &n);
+		do {
+			/*
+			 * Slurp in all works issued via this workqueue and
+			 * process'em.
+			 */
+			WARN_ON_ONCE(!list_empty(&rescuer->scheduled));
+			list_for_each_entry_safe(work, n, &pool->worklist, entry)
+				if (get_work_pwq(work) == pwq)
+					move_linked_works(work, scheduled, &n);
 
-		process_scheduled_works(rescuer);
+			process_scheduled_works(rescuer);
+		} while (need_more_worker(pool) && pwq->nr_active);
 
 		/*
 		 * Put the reference grabbed by send_mayday().  @pool won't
