@@ -114,8 +114,6 @@ static void freezer_suspend_tk(int cpu)
 
 	timekeeping_suspend();
 
-	cpuidle_use_deepest_state(true);
-	cpuidle_resume();
 }
 
 static void freezer_idle(int cpu)
@@ -147,6 +145,10 @@ static void freezer_idle(int cpu)
 	if (suspend_freeze_wake == cpu)
 		kick_all_cpus_sync();
 
+	/*
+	 * We disable interrupt here for the rest of resume operations
+	 */
+	local_irq_disable();
 	start_critical_timings();
 }
 
@@ -155,23 +157,27 @@ static void freezer_resume_tk(int cpu)
 	if (tick_do_timer_cpu != cpu)
 		return;
 
-	cpuidle_pause();
-	cpuidle_use_deepest_state(false);
-
-	local_irq_disable();
 	timekeeping_resume();
-	local_irq_enable();
 }
 
 static void freezer_resume_clkevt(int cpu)
 {
-	if (tick_do_timer_cpu == cpu)
+	if (tick_do_timer_cpu == cpu) {
+		/*
+		 * Turn on the interrupt on the tick timer CPU as freezer
+		 * tasks are finished.
+		 */
+		local_irq_enable();
 		return;
+	}
 
 	touch_softlockup_watchdog();
 	clockevents_notify(CLOCK_EVT_NOTIFY_RESUME, NULL);
-	local_irq_disable();
 	hrtimers_resume();
+	/*
+	 * Turn on the interrupt on the non-tick-timer CPUs as freezer
+	 * tasks are finished
+	 */
 	local_irq_enable();
 }
 
@@ -210,6 +216,9 @@ static void freeze_enter(void)
 {
 	struct freezer_data fd;
 
+	cpuidle_use_deepest_state(true);
+	cpuidle_resume();
+
 	get_online_cpus();
 
 	fd.thread_num = num_online_cpus();
@@ -218,6 +227,9 @@ static void freeze_enter(void)
 	__stop_machine(freezer_stopper_fn, &fd, cpu_online_mask);
 
 	put_online_cpus();
+
+	cpuidle_pause();
+	cpuidle_use_deepest_state(false);
 }
 
 void freeze_wake(void)
