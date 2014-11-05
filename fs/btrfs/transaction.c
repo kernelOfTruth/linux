@@ -1938,6 +1938,11 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 
 	btrfs_prepare_extent_commit(trans, root);
 
+	spin_lock(&root->fs_info->unused_bgs_lock);
+	list_splice_init(&root->fs_info->unused_bgs,
+			 &root->fs_info->unused_bgs_to_clean);
+	spin_unlock(&root->fs_info->unused_bgs_lock);
+
 	cur_trans = root->fs_info->running_transaction;
 
 	btrfs_set_root_node(&root->fs_info->tree_root->root_item,
