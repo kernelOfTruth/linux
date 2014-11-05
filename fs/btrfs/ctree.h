@@ -1725,6 +1725,7 @@ struct btrfs_fs_info {
 
 	spinlock_t unused_bgs_lock;
 	struct list_head unused_bgs;
+	struct list_head unused_bgs_to_clean;
 };
 
 struct btrfs_subvolume_writers {

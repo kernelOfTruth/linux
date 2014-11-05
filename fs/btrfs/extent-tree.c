@@ -8852,6 +8852,7 @@ int btrfs_free_block_groups(struct btrfs_fs_info *info)
 	up_write(&info->commit_root_sem);
 
 	spin_lock(&info->unused_bgs_lock);
+	list_splice_init(&info->unused_bgs_to_clean, &info->unused_bgs);
 	while (!list_empty(&info->unused_bgs)) {
 		block_group = list_first_entry(&info->unused_bgs,
 					       struct btrfs_block_group_cache,
@@ -9462,10 +9463,10 @@ void btrfs_delete_unused_bgs(struct btrfs_fs_info *fs_info)
 		return;
 
 	spin_lock(&fs_info->unused_bgs_lock);
-	while (!list_empty(&fs_info->unused_bgs)) {
+	while (!list_empty(&fs_info->unused_bgs_to_clean)) {
 		u64 start, end;
 
-		block_group = list_first_entry(&fs_info->unused_bgs,
+		block_group = list_first_entry(&fs_info->unused_bgs_to_clean,
 					       struct btrfs_block_group_cache,
 					       bg_list);
 		space_info = block_group->space_info;
