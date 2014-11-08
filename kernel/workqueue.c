@@ -2249,12 +2249,13 @@ repeat:
 			 * process'em.
 			 */
 			WARN_ON_ONCE(!list_empty(&rescuer->scheduled));
-			list_for_each_entry_safe(work, n, &pool->worklist, entry)
+			list_for_each_entry_safe(work, n, &pool->worklist,
+					entry)
 				if (get_work_pwq(work) == pwq)
 					move_linked_works(work, scheduled, &n);
 
 			process_scheduled_works(rescuer);
-		} while (need_more_worker(pool) && pwq->nr_active);
+		} while (need_to_create_worker(pool) && pwq->nr_active);
 
 		/*
 		 * Put the reference grabbed by send_mayday().  @pool won't
