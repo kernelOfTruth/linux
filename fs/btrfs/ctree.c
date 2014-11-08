@@ -2947,7 +2947,7 @@ done:
 	 */
 	if (!p->leave_spinning)
 		btrfs_set_path_blocking(p);
-	if (ret < 0 && ret != -EOVERFLOW)
+	if (ret < 0)
 		btrfs_release_path(p);
 	return ret;
 }
