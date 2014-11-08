@@ -248,9 +248,8 @@ void shake_page(struct page *p, int access)
 		do {
 			struct shrink_control shrink = {
 				.gfp_mask = GFP_KERNEL,
+				.nid = nid,
 			};
-			node_set(nid, shrink.nodes_to_scan);
-
 			nr = shrink_slab(&shrink, 1000, 1000);
 			if (page_count(p) == 1)
 				break;
