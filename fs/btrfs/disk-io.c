@@ -3855,6 +3855,21 @@ static int btrfs_check_super_valid(struct btrfs_fs_info *fs_info,
 		printk(KERN_WARNING "BTRFS: log_root block unaligned: %llu\n",
 				btrfs_super_log_root(sb));
 
+	/*
+	 * Check the lower bound, the alignment and other constraints are
+	 * checked later.
+	 */
+	if (btrfs_super_nodesize(sb) < 4096) {
+		printk(KERN_ERR "BTRFS: nodesize too small: %llu < 4096\n",
+				btrfs_super_nodesize(sb));
+		ret = -EINVAL;
+	}
+	if (btrfs_super_sectorsize(sb) < 4096) {
+		printk(KERN_ERR "BTRFS: sectorsize too small: %llu < 4096\n",
+				btrfs_super_sectorsize(sb));
+		ret = -EINVAL;
+	}
+
 	if (memcmp(fs_info->fsid, sb->dev_item.fsid, BTRFS_UUID_SIZE) != 0) {
 		printk(KERN_ERR "BTRFS: dev_item UUID does not match fsid: %pU != %pU\n",
 				fs_info->fsid, sb->dev_item.fsid);
@@ -3868,10 +3883,33 @@ static int btrfs_check_super_valid(struct btrfs_fs_info *fs_info,
 	if (btrfs_super_num_devices(sb) > (1UL << 31))
 		printk(KERN_WARNING "BTRFS: suspicious number of devices: %llu\n",
 				btrfs_super_num_devices(sb));
+	if (btrfs_super_num_devices(sb) == 0) {
+		printk(KERN_ERR "BTRFS: number of devices is 0\n");
+		ret = -EINVAL;
+	}
 
 	if (btrfs_super_bytenr(sb) != BTRFS_SUPER_INFO_OFFSET) {
 		printk(KERN_ERR "BTRFS: super offset mismatch %llu != %u\n",
 				btrfs_super_bytenr(sb), BTRFS_SUPER_INFO_OFFSET);
+		ret = -EINVAL;
+	}
+
+	/*
+	 * Obvious sys_chunk_array corruptions, it must hold at least one key
+	 * and one chunk
+	 */
+	if (btrfs_super_sys_array_size(sb) > BTRFS_SYSTEM_CHUNK_ARRAY_SIZE) {
+		printk(KERN_ERR "BTRFS: system chunk array too big %llu > %u\n",
+				btrfs_super_sys_array_size(sb),
+				BTRFS_SYSTEM_CHUNK_ARRAY_SIZE);
+		ret = -EINVAL;
+	}
+	if (btrfs_super_sys_array_size(sb) < sizeof(struct btrfs_disk_key)
+			+ sizeof(struct btrfs_chunk)) {
+		printk(KERN_ERR "BTRFS: system chunk array too small %llu < %u\n",
+				btrfs_super_sys_array_size(sb),
+				sizeof(struct btrfs_disk_key)
+				+ sizeof(struct btrfs_chunk));
 		ret = -EINVAL;
 	}
 
