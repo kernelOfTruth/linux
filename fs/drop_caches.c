@@ -40,13 +40,18 @@ static void drop_pagecache_sb(struct super_block *sb, void *unused)
 static void drop_slab(void)
 {
 	int nr_objects;
-	struct shrink_control shrink = {
-		.gfp_mask = GFP_KERNEL,
-	};
 
-	nodes_setall(shrink.nodes_to_scan);
 	do {
-		nr_objects = shrink_slab(&shrink, 1000, 1000);
+		int nid;
+
+		nr_objects = 0;
+		for_each_online_node(nid) {
+			struct shrink_control shrink = {
+				.gfp_mask = GFP_KERNEL,
+				.nid = nid,
+			};
+			nr_objects += shrink_slab(&shrink, 1000, 1000);
+		}
 	} while (nr_objects > 10);
 }
 
