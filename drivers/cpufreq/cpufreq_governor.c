@@ -19,7 +19,6 @@
 #include <linux/export.h>
 #include <linux/kernel_stat.h>
 #include <linux/slab.h>
-#include <linux/sched.h>
 
 #include "cpufreq_governor.h"
 
@@ -120,29 +119,37 @@ void dbs_check_cpu(struct dbs_data *dbs_data, int cpu)
 		 * actually is. This is undesirable for latency-sensitive bursty
 		 * workloads.
 		 *
-		 * To avoid this, we use the task's cumulative load which woke
-		 * up the idle CPU to suitably scale the CPU frequency. For a
-		 * sibling CPU we use the cumulative load of the current task on
-		 * that CPU.
-		 *
-		 * A task is considered to be CPU intensive if its cumulative
-		 * load is greater than 10. Hence it is desirable to increase
-		 * the CPU frequency to frequency_max.
+		 * To avoid this, we reuse the 'load' from the previous
+		 * time-window and give this task a chance to start with a
+		 * reasonably high CPU frequency. (However, we shouldn't over-do
+		 * this copy, lest we get stuck at a high load (high frequency)
+		 * for too long, even when the current system load has actually
+		 * dropped down. So we perform the copy only once, upon the
+		 * first wake-up from idle.)
 		 *
 		 * Detecting this situation is easy: the governor's deferrable
 		 * timer would not have fired during CPU-idle periods. Hence
 		 * an unusually large 'wall_time' (as compared to the sampling
 		 * rate) indicates this scenario.
+		 *
+		 * prev_load can be zero in two cases and we must recalculate it
+		 * for both cases:
+		 * - during long idle intervals
+		 * - explicitly set to zero
 		 */
+		if (unlikely(wall_time > (2 * sampling_rate) &&
+			     j_cdbs->prev_load)) {
+			load = j_cdbs->prev_load;
 
-		if (unlikely(wall_time > (2 * sampling_rate))) {
-			load = task_cumulative_load(j);
-			if (load > 10) {
-				max_load = MAX_LOAD;
-				break;
-			}
+			/*
+			 * Perform a destructive copy, to ensure that we copy
+			 * the previous load only once, upon the first wake-up
+			 * from idle.
+			 */
+			j_cdbs->prev_load = 0;
 		} else {
 			load = 100 * (wall_time - idle_time) / wall_time;
+			j_cdbs->prev_load = load;
 		}
 
 		if (load > max_load)
@@ -374,6 +381,8 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 
 			prev_load = (unsigned int)
 				(j_cdbs->prev_cpu_wall - j_cdbs->prev_cpu_idle);
+			j_cdbs->prev_load = 100 * prev_load /
+					(unsigned int) j_cdbs->prev_cpu_wall;
 
 			if (ignore_nice)
 				j_cdbs->prev_cpu_nice =
