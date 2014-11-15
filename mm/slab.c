@@ -2876,6 +2876,7 @@ static inline void cache_alloc_debugcheck_before(struct kmem_cache *cachep,
 						gfp_t flags)
 {
 	might_sleep_if(flags & __GFP_WAIT);
+	might_enter_fs_if(flags & __GFP_FS);
 #if DEBUG
 	kmem_flagcheck(cachep, flags);
 #endif

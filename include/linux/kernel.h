@@ -232,6 +232,13 @@ void might_fault(void);
 static inline void might_fault(void) { }
 #endif
 
+#ifdef CONFIG_PROVE_LOCKING
+#define might_enter_fs_if(cond) \
+	 WARN_ON_ONCE((cond) && current->journal_info)
+#else
+static inline void might_enter_fs_if(bool cond) { }
+#endif
+
 extern struct atomic_notifier_head panic_notifier_list;
 extern long (*panic_blink)(int state);
 __printf(1, 2)

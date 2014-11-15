@@ -204,6 +204,7 @@ void * mempool_alloc(mempool_t *pool, gfp_t gfp_mask)
 
 	VM_WARN_ON_ONCE(gfp_mask & __GFP_ZERO);
 	might_sleep_if(gfp_mask & __GFP_WAIT);
+	might_enter_fs_if(gfp_mask & __GFP_FS);
 
 	gfp_mask |= __GFP_NOMEMALLOC;	/* don't allocate emergency reserves */
 	gfp_mask |= __GFP_NORETRY;	/* don't loop in __alloc_pages */
