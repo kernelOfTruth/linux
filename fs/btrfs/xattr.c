@@ -106,12 +106,7 @@ static int do_setxattr(struct btrfs_trans_handle *trans,
 		return -ENOMEM;
 	path->skip_release_on_error = 1;
 
-	if (!value && ((flags & XATTR_REPLACE) || !flags)) {
-		/*
-		 * We're deleting only a xattr (no replace).
-		 * Don't follow the path below because it could leave a leaf
-		 * empty.
-		 */
+	if (!value) {
 		di = btrfs_lookup_xattr(trans, root, path, btrfs_ino(inode),
 					name, name_len, -1);
 		if (!di && (flags & XATTR_REPLACE))
@@ -119,6 +114,25 @@ static int do_setxattr(struct btrfs_trans_handle *trans,
 		else if (di)
 			ret = btrfs_delete_one_dir_name(trans, root, path, di);
 		goto out;
+	}
+
+	/*
+	 * For a replace we can't just do the insert blindly.
+	 * Do a lookup first (read-only btrfs_search_slot), and return if xattr
+	 * doesn't exist. If it exists, fall down below to the insert/replace
+	 * path - we can't race with a concurrent xattr delete, because the VFS
+	 * locks the inode's i_mutex before calling setxattr or removexattr.
+	 */
+	if (flags & XATTR_REPLACE) {
+		ASSERT(mutex_is_locked(&inode->i_mutex));
+		di = btrfs_lookup_xattr(NULL, root, path, btrfs_ino(inode),
+					name, name_len, 0);
+		if (!di) {
+			ret = -ENODATA;
+			goto out;
+		}
+		btrfs_release_path(path);
+		di = NULL;
 	}
 
 	ret = btrfs_insert_xattr_item(trans, root, path, btrfs_ino(inode),
@@ -132,7 +146,7 @@ static int do_setxattr(struct btrfs_trans_handle *trans,
 		ret = 0;
 		btrfs_assert_tree_locked(path->nodes[0]);
 		di = btrfs_match_dir_item_name(root, path, name, name_len);
-		if (!di && (flags & XATTR_CREATE)) {
+		if (!di && !(flags & XATTR_REPLACE)) {
 			ret = -ENOSPC;
 			goto out;
 		}
@@ -144,12 +158,10 @@ static int do_setxattr(struct btrfs_trans_handle *trans,
 		goto out;
 	}
 
-	if (di && (flags & XATTR_CREATE))
+	if (di && (flags & XATTR_CREATE)) {
 		ret = -EEXIST;
-	if (!di && (flags & XATTR_REPLACE))
-		ret = -ENODATA;
-	if (ret)
 		goto out;
+	}
 
 	if (di) {
 		/*
