@@ -2828,7 +2828,6 @@ need_resched:
 	if (likely(prev != next)) {
 		rq->nr_switches++;
 		rq->curr = next;
-		rq->prev = prev;
 		++*switch_count;
 
 		context_switch(rq, prev, next); /* unlocks the rq */
@@ -8164,37 +8163,3 @@ void dump_cpu_task(int cpu)
 	pr_info("Task dump for CPU %d:\n", cpu);
 	sched_show_task(cpu_curr(cpu));
 }
-
-/**
- * task_cumulative_load - return the cumulative load of
- * the previous task if cpu is the current cpu OR the
- * cumulative load of current task on the cpu. If cpu
- * is idle then return 0.
- *
- * Invoked by the cpufreq governor to calculate the
- * load when the CPU is woken from an idle state.
- *
- */
-unsigned int task_cumulative_load(int cpu)
-{
-	struct rq *rq = cpu_rq(cpu);
-	struct task_struct *p;
-
-	if (cpu == smp_processor_id()) {
-		if (rq->prev == rq->idle)
-			goto idle;
-		p = rq->prev;
-	} else {
-		if (rq->curr == rq->idle)
-			goto idle;
-		p = rq->curr;
-	}
-	/*
-	 * Removing the priority as we are interested in CPU
-	 * utilization of the task
-	 */
-	return (100 * p->se.avg.cumulative_avg / p->se.load.weight);
-idle:
-	return 0;
-}
-EXPORT_SYMBOL(task_cumulative_load);
