@@ -1076,6 +1076,8 @@ struct sched_avg {
 	u64 last_runnable_update;
 	s64 decay_count;
 	unsigned long load_avg_contrib;
+	unsigned long cumulative_avg;
+	unsigned long cumulative_avg_count;
 };
 
 #ifdef CONFIG_SCHEDSTATS
@@ -3104,3 +3106,5 @@ static inline unsigned long rlimit_max(unsigned int limit)
 }
 
 #endif
+
+extern unsigned int task_cumulative_load(int cpu);
