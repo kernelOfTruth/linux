@@ -64,7 +64,7 @@ static inline bool interrupted_user_mode(void)
  */
 bool irq_fpu_usable(void)
 {
-	return !in_interrupt() ||
+	return !in_serving_interrupt() ||
 		interrupted_user_mode() ||
 		interrupted_kernel_fpu_idle();
 }
