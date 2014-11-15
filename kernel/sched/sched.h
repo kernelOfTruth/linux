@@ -557,7 +557,7 @@ struct rq {
 	 */
 	unsigned long nr_uninterruptible;
 
-	struct task_struct *curr, *idle, *stop;
+	struct task_struct *curr, *idle, *stop, *prev;
 	unsigned long next_balance;
 	struct mm_struct *prev_mm;
 

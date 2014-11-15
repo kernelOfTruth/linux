@@ -678,6 +678,8 @@ void init_task_runnable_average(struct task_struct *p)
 	slice = sched_slice(task_cfs_rq(p), &p->se) >> 10;
 	p->se.avg.runnable_avg_sum = slice;
 	p->se.avg.runnable_avg_period = slice;
+	p->se.avg.cumulative_avg_count = 1;
+	p->se.avg.cumulative_avg = p->se.load.weight;
 	__update_task_entity_contrib(&p->se);
 }
 #else
@@ -2463,11 +2465,13 @@ static inline void update_rq_runnable_avg(struct rq *rq, int runnable) {}
 static inline void __update_task_entity_contrib(struct sched_entity *se)
 {
 	u32 contrib;
-
 	/* avoid overflowing a 32-bit type w/ SCHED_LOAD_SCALE */
 	contrib = se->avg.runnable_avg_sum * scale_load_down(se->load.weight);
 	contrib /= (se->avg.runnable_avg_period + 1);
 	se->avg.load_avg_contrib = scale_load(contrib);
+	se->avg.cumulative_avg *= se->avg.cumulative_avg_count;
+	se->avg.cumulative_avg += se->avg.load_avg_contrib;
+	se->avg.cumulative_avg /= ++se->avg.cumulative_avg_count;
 }
 
 /* Compute the current contribution to load_avg by se, return any delta */
