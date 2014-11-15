@@ -5711,14 +5711,13 @@ static inline void rtl8169_mark_to_asic(struct RxDesc *desc, u32 rx_buf_sz)
 {
 	u32 eor = le32_to_cpu(desc->opts1) & RingEnd;
 
-	desc->opts1 = cpu_to_le32(DescOwn | eor | rx_buf_sz);
+	store_release(&desc->opts1, cpu_to_le32(DescOwn | eor | rx_buf_sz));
 }
 
 static inline void rtl8169_map_to_asic(struct RxDesc *desc, dma_addr_t mapping,
 				       u32 rx_buf_sz)
 {
 	desc->addr = cpu_to_le64(mapping);
-	wmb();
 	rtl8169_mark_to_asic(desc, rx_buf_sz);
 }
 
@@ -6185,11 +6184,9 @@ static netdev_tx_t rtl8169_start_xmit(struct sk_buff *skb,
 
 	skb_tx_timestamp(skb);
 
-	wmb();
-
 	/* Anti gcc 2.95.3 bugware (sic) */
 	status = opts[0] | len | (RingEnd * !((entry + 1) % NUM_TX_DESC));
-	txd->opts1 = cpu_to_le32(status);
+	store_release(&txd->opts1, cpu_to_le32(status));
 
 	tp->cur_tx += frags + 1;
 
@@ -6290,16 +6287,15 @@ static void rtl_tx(struct net_device *dev, struct rtl8169_private *tp)
 	while (tx_left > 0) {
 		unsigned int entry = dirty_tx % NUM_TX_DESC;
 		struct ring_info *tx_skb = tp->tx_skb + entry;
-		u32 status;
+		__le32 status;
 
-		rmb();
-		status = le32_to_cpu(tp->TxDescArray[entry].opts1);
-		if (status & DescOwn)
+		status = load_acquire(&tp->TxDescArray[entry].opts1);
+		if (status & cpu_to_le32(DescOwn))
 			break;
 
 		rtl8169_unmap_tx_skb(&tp->pci_dev->dev, tx_skb,
 				     tp->TxDescArray + entry);
-		if (status & LastFrag) {
+		if (status & cpu_to_le32(LastFrag)) {
 			u64_stats_update_begin(&tp->tx_stats.syncp);
 			tp->tx_stats.packets++;
 			tp->tx_stats.bytes += tx_skb->skb->len;
@@ -6386,11 +6382,11 @@ static int rtl_rx(struct net_device *dev, struct rtl8169_private *tp, u32 budget
 		struct RxDesc *desc = tp->RxDescArray + entry;
 		u32 status;
 
-		rmb();
-		status = le32_to_cpu(desc->opts1) & tp->opts1_mask;
-
+		status = cpu_to_le32(load_acquire(&desc->opts1));
 		if (status & DescOwn)
 			break;
+
+		status &= tp->opts1_mask;
 		if (unlikely(status & RxRES)) {
 			netif_info(tp, rx_err, dev, "Rx ERROR. status = %08x\n",
 				   status);
@@ -6452,7 +6448,6 @@ process_pkt:
 		}
 release_descriptor:
 		desc->opts2 = 0;
-		wmb();
 		rtl8169_mark_to_asic(desc, rx_buf_sz);
 	}
 
