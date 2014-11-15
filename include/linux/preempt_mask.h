@@ -65,6 +65,8 @@
 #define in_softirq()		(softirq_count())
 #define in_interrupt()		(irq_count())
 #define in_serving_softirq()	(softirq_count() & SOFTIRQ_OFFSET)
+#define in_serving_interrupt()	(irq_count() & (HARDIRQ_MASK | \
+						SOFTIRQ_OFFSET | NMI_MASK))
 
 /*
  * Are we in NMI context?
