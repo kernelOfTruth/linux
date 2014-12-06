@@ -1122,44 +1122,50 @@ static inline int is_subvolume_inode(struct inode *inode)
  */
 static char *setup_root_args(char *args)
 {
-	unsigned len = strlen(args) + 2 + 1;
-	char *src, *dst, *buf;
+	unsigned len;
+	char *src = args;
+	char *p = args;
+	char *dst, *buf;
 
 	/*
 	 * We need the same args as before, but with this substitution:
 	 * s!subvol=[^,]+!subvolid=0!
 	 *
 	 * Since the replacement string is up to 2 bytes longer than the
-	 * original, allocate strlen(args) + 2 + 1 bytes.
+	 * original, allocate strlen(args) + 2 * N + 1 bytes.
 	 */
-
-	src = strstr(args, "subvol=");
+	p = strstr(src, "subvol=");
 	/* This shouldn't happen, but just in case.. */
-	if (!src)
+	if (!p)
 		return NULL;
 
-	buf = dst = kmalloc(len, GFP_NOFS);
+	len = strlen(args) + 1;
+	while (p) {
+		len += 2;
+		p = strchr(p, ',');
+		if (!p)
+			break;
+		p = strstr(p, "subvol=");
+	}
+
+	buf = dst = kzalloc(len, GFP_NOFS);
 	if (!buf)
 		return NULL;
 
-	/*
-	 * If the subvol= arg is not at the start of the string,
-	 * copy whatever precedes it into buf.
-	 */
-	if (src != args) {
-		*src++ = '\0';
-		strcpy(buf, args);
-		dst += strlen(args);
+	/* loop and replace all subvol=xxx string */
+	while ((p = strstr(src, "subvol="))) {
+		strncat(dst, src, p - src);
+		dst += p - src;
+		strcpy(dst, "subvolid=0");
+		dst += strlen("subvolid=0");
+		src = p = strchr(p, ',');
+		if (!src)
+			break;
 	}
-
-	strcpy(dst, "subvolid=0");
-	dst += strlen("subvolid=0");
-
 	/*
 	 * If there is a "," after the original subvol=... string,
 	 * copy that suffix into our buffer.  Otherwise, we're done.
 	 */
-	src = strchr(src, ',');
 	if (src)
 		strcpy(dst, src);
 
