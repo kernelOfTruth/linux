@@ -34,6 +34,7 @@
 #include <linux/pagemap.h>
 #include <linux/btrfs.h>
 #include <linux/workqueue.h>
+#include <linux/security.h>
 #include "extent_io.h"
 #include "extent_map.h"
 #include "async-thread.h"
@@ -1273,6 +1274,8 @@ struct btrfs_block_group_cache {
 	unsigned int ro:1;
 	unsigned int dirty:1;
 	unsigned int iref:1;
+	unsigned int has_caching_ctl:1;
+	unsigned int removed:1;
 
 	int disk_cache_state;
 
@@ -1305,6 +1308,8 @@ struct btrfs_block_group_cache {
 
 	/* For read-only block groups */
 	struct list_head ro_list;
+
+	atomic_t trimming;
 };
 
 /* delayed seq elem */
@@ -1727,6 +1732,15 @@ struct btrfs_fs_info {
 	spinlock_t unused_bgs_lock;
 	struct list_head unused_bgs;
 	struct list_head unused_bgs_to_clean;
+
+	/* For btrfs to record security options */
+	struct security_mnt_opts security_opts;
+
+	/*
+	 * Chunks that can't be freed yet (under a trim/discard operation)
+	 * and will be latter freed. Protected by fs_info->chunk_mutex.
+	 */
+	struct list_head pinned_chunks;
 };
 
 struct btrfs_subvolume_writers {
@@ -3353,7 +3367,8 @@ int btrfs_make_block_group(struct btrfs_trans_handle *trans,
 			   u64 type, u64 chunk_objectid, u64 chunk_offset,
 			   u64 size);
 int btrfs_remove_block_group(struct btrfs_trans_handle *trans,
-			     struct btrfs_root *root, u64 group_start);
+			     struct btrfs_root *root, u64 group_start,
+			     struct extent_map *em);
 void btrfs_delete_unused_bgs(struct btrfs_fs_info *fs_info);
 void btrfs_create_pending_block_groups(struct btrfs_trans_handle *trans,
 				       struct btrfs_root *root);
@@ -3417,8 +3432,6 @@ void btrfs_set_block_group_rw(struct btrfs_root *root,
 			      struct btrfs_block_group_cache *cache);
 void btrfs_put_block_group_cache(struct btrfs_fs_info *info);
 u64 btrfs_account_ro_block_groups_free_space(struct btrfs_space_info *sinfo);
-int btrfs_error_unpin_extent_range(struct btrfs_root *root,
-				   u64 start, u64 end);
 int btrfs_error_discard_extent(struct btrfs_root *root, u64 bytenr,
 			       u64 num_bytes, u64 *actual_bytes);
 int btrfs_force_chunk_alloc(struct btrfs_trans_handle *trans,
@@ -3597,6 +3610,7 @@ static inline void free_fs_info(struct btrfs_fs_info *fs_info)
 	kfree(fs_info->uuid_root);
 	kfree(fs_info->super_copy);
 	kfree(fs_info->super_for_commit);
+	security_free_mnt_opts(&fs_info->security_opts);
 	kfree(fs_info);
 }
 
