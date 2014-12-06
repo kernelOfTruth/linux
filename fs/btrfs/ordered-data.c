@@ -431,29 +431,19 @@ out:
 
 /* Needs to either be called under a log transaction or the log_mutex */
 void btrfs_get_logged_extents(struct inode *inode,
-			      struct list_head *logged_list,
-			      const loff_t start,
-			      const loff_t end)
+			      struct list_head *logged_list)
 {
 	struct btrfs_ordered_inode_tree *tree;
 	struct btrfs_ordered_extent *ordered;
 	struct rb_node *n;
-	struct rb_node *prev;
 
 	tree = &BTRFS_I(inode)->ordered_tree;
 	spin_lock_irq(&tree->lock);
-	n = __tree_search(&tree->tree, end, &prev);
-	if (!n)
-		n = prev;
-	for (; n; n = rb_prev(n)) {
+	for (n = rb_first(&tree->tree); n; n = rb_next(n)) {
 		ordered = rb_entry(n, struct btrfs_ordered_extent, rb_node);
-		if (ordered->file_offset > end)
-			continue;
-		if (entry_end(ordered) <= start)
-			break;
 		if (!list_empty(&ordered->log_list))
 			continue;
-		list_add(&ordered->log_list, logged_list);
+		list_add_tail(&ordered->log_list, logged_list);
 		atomic_inc(&ordered->refs);
 	}
 	spin_unlock_irq(&tree->lock);
