@@ -60,6 +60,7 @@
 #include "backref.h"
 #include "tests/btrfs-tests.h"
 
+#include "qgroup.h"
 #define CREATE_TRACE_POINTS
 #include <trace/events/btrfs.h>
 
@@ -307,13 +308,7 @@ void __btrfs_panic(struct btrfs_fs_info *fs_info, const char *function,
 
 static void btrfs_put_super(struct super_block *sb)
 {
-	(void)close_ctree(btrfs_sb(sb)->tree_root);
-	/* FIXME: need to fix VFS to return error? */
-	/* AV: return it _where_?  ->put_super() can be triggered by any number
-	 * of async events, up to and including delivery of SIGKILL to the
-	 * last process that kept it busy.  Or segfault in the aforementioned
-	 * process...  Whom would you report that to?
-	 */
+	close_ctree(btrfs_sb(sb)->tree_root);
 }
 
 enum {
@@ -513,21 +508,31 @@ int btrfs_parse_options(struct btrfs_root *root, char *options)
 					btrfs_info(root->fs_info,
 						   "btrfs: use %s compression",
 						   compress_type);
+				/*
+				 * If we remount from compress-force=xxx to
+				 * compress=xxx, we need clear FORCE_COMPRESS
+				 * flag, otherwise, there is no way for users
+				 * to disable forcible compression separately.
+				 */
+				btrfs_clear_opt(info->mount_opt, FORCE_COMPRESS);
 			}
-			break;
-		case Opt_ssd:
-			btrfs_set_and_info(root, SSD,
-					   "use ssd allocation scheme");
 			break;
 		case Opt_ssd_spread:
 			btrfs_set_and_info(root, SSD_SPREAD,
 					   "use spread ssd allocation scheme");
+			/* suppress the ssd mount option log */
 			btrfs_set_opt(info->mount_opt, SSD);
+			/* fall through for other ssd routine */
+		case Opt_ssd:
+			btrfs_set_and_info(root, SSD,
+					   "use ssd allocation scheme");
+			btrfs_clear_opt(info->mount_opt, NOSSD);
 			break;
 		case Opt_nossd:
 			btrfs_set_and_info(root, NOSSD,
 					     "not using ssd allocation scheme");
 			btrfs_clear_opt(info->mount_opt, SSD);
+			btrfs_clear_opt(info->mount_opt, SSD_SPREAD);
 			break;
 		case Opt_barrier:
 			btrfs_clear_and_info(root, NOBARRIER,
@@ -1555,8 +1560,20 @@ static int btrfs_calc_avail_data_space(struct btrfs_root *root, u64 *free_bytes)
 	int i = 0, nr_devices;
 	int ret;
 
+	/*
+	 * We aren't under the device list lock, so this is racey-ish, but good
+	 * enough for our purposes.
+	 */
 	nr_devices = fs_info->fs_devices->open_devices;
-	BUG_ON(!nr_devices);
+	if (!nr_devices) {
+		smp_mb();
+		nr_devices = fs_info->fs_devices->open_devices;
+		ASSERT(nr_devices);
+		if (!nr_devices) {
+			*free_bytes = 0;
+			return 0;
+		}
+	}
 
 	devices_info = kmalloc_array(nr_devices, sizeof(*devices_info),
 			       GFP_NOFS);
@@ -1581,10 +1598,16 @@ static int btrfs_calc_avail_data_space(struct btrfs_root *root, u64 *free_bytes)
 	else
 		min_stripe_size = BTRFS_STRIPE_LEN;
 
-	list_for_each_entry(device, &fs_devices->devices, dev_list) {
+	if (fs_info->alloc_start)
+		mutex_lock(&fs_devices->device_list_mutex);
+	rcu_read_lock();
+	list_for_each_entry_rcu(device, &fs_devices->devices, dev_list) {
 		if (!device->in_fs_metadata || !device->bdev ||
 		    device->is_tgtdev_for_dev_replace)
 			continue;
+
+		if (i >= nr_devices)
+			break;
 
 		avail_space = device->total_bytes - device->bytes_used;
 
@@ -1600,24 +1623,32 @@ static int btrfs_calc_avail_data_space(struct btrfs_root *root, u64 *free_bytes)
 		skip_space = 1024 * 1024;
 
 		/* user can set the offset in fs_info->alloc_start. */
-		if (fs_info->alloc_start + BTRFS_STRIPE_LEN <=
-		    device->total_bytes)
+		if (fs_info->alloc_start &&
+		    fs_info->alloc_start + BTRFS_STRIPE_LEN <=
+		    device->total_bytes) {
+			rcu_read_unlock();
 			skip_space = max(fs_info->alloc_start, skip_space);
 
-		/*
-		 * btrfs can not use the free space in [0, skip_space - 1],
-		 * we must subtract it from the total. In order to implement
-		 * it, we account the used space in this range first.
-		 */
-		ret = btrfs_account_dev_extents_size(device, 0, skip_space - 1,
-						     &used_space);
-		if (ret) {
-			kfree(devices_info);
-			return ret;
-		}
+			/*
+			 * btrfs can not use the free space in
+			 * [0, skip_space - 1], we must subtract it from the
+			 * total. In order to implement it, we account the used
+			 * space in this range first.
+			 */
+			ret = btrfs_account_dev_extents_size(device, 0,
+							     skip_space - 1,
+							     &used_space);
+			if (ret) {
+				kfree(devices_info);
+				mutex_unlock(&fs_devices->device_list_mutex);
+				return ret;
+			}
 
-		/* calc the free space in [0, skip_space - 1] */
-		skip_space -= used_space;
+			rcu_read_lock();
+
+			/* calc the free space in [0, skip_space - 1] */
+			skip_space -= used_space;
+		}
 
 		/*
 		 * we can use the free space in [0, skip_space - 1], subtract
@@ -1636,6 +1667,9 @@ static int btrfs_calc_avail_data_space(struct btrfs_root *root, u64 *free_bytes)
 
 		i++;
 	}
+	rcu_read_unlock();
+	if (fs_info->alloc_start)
+		mutex_unlock(&fs_devices->device_list_mutex);
 
 	nr_devices = i;
 
@@ -1694,8 +1728,10 @@ static int btrfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	struct btrfs_block_rsv *block_rsv = &fs_info->global_block_rsv;
 	int ret;
 
-	/* holding chunk_muext to avoid allocating new chunks */
-	mutex_lock(&fs_info->chunk_mutex);
+	/*
+	 * holding chunk_muext to avoid allocating new chunks, holding
+	 * device_list_mutex to avoid the device being removed
+	 */
 	rcu_read_lock();
 	list_for_each_entry_rcu(found, head, list) {
 		if (found->flags & BTRFS_BLOCK_GROUP_DATA) {
@@ -1733,13 +1769,10 @@ static int btrfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 
 	buf->f_bavail = total_free_data;
 	ret = btrfs_calc_avail_data_space(fs_info->tree_root, &total_free_data);
-	if (ret) {
-		mutex_unlock(&fs_info->chunk_mutex);
+	if (ret)
 		return ret;
-	}
 	buf->f_bavail += div_u64(total_free_data, factor);
 	buf->f_bavail = buf->f_bavail >> bits;
-	mutex_unlock(&fs_info->chunk_mutex);
 
 	buf->f_type = BTRFS_SUPER_MAGIC;
 	buf->f_bsize = dentry->d_sb->s_blocksize;
@@ -1863,6 +1896,117 @@ static int btrfs_show_devname(struct seq_file *m, struct dentry *root)
 	return 0;
 }
 
+static char *str_prepend(char *dest, char *src)
+{
+	memmove(dest + strlen(src), dest, strlen(dest) + 1);
+	memcpy(dest, src, strlen(src));
+	return dest;
+}
+
+static int alloc_mem_if_needed(char **dest, char *src, int *len)
+{
+	char *tmp;
+
+	if (unlikely(strlen(*dest) + strlen(src) > *len)) {
+		*len *= 2;
+		tmp = krealloc(*dest, *len, GFP_NOFS);
+		if (!tmp) {
+			return -ENOMEM;
+		}
+		*dest = tmp;
+	}
+	return 0;
+}
+
+static int btrfs_show_path(struct seq_file *m, struct dentry *mount_root)
+{
+	struct inode *inode = mount_root->d_inode;
+	struct btrfs_root *subv_root = BTRFS_I(inode)->root;
+	struct btrfs_fs_info *fs_info = subv_root->fs_info;
+	struct btrfs_root *tree_root = fs_info->tree_root;
+	struct btrfs_root_ref *ref;
+	struct btrfs_key key;
+	struct btrfs_key found_key;
+	struct btrfs_path *path = NULL;
+	char *name = NULL;
+	char *buf = NULL;
+	int ret = 0;
+	int len;
+	u64 dirid = 0;
+	u16 namelen;
+
+	name = kmalloc(PAGE_SIZE, GFP_NOFS);
+	len = PAGE_SIZE;
+	buf = kmalloc(BTRFS_INO_LOOKUP_PATH_MAX, GFP_NOFS);
+	path = btrfs_alloc_path();
+	if (!name || !buf || !path) {
+		ret = -ENOMEM;
+		goto out_free;
+	}
+	*name = '/';
+	*(name + 1) = '\0';
+
+	key.objectid = subv_root->root_key.objectid;
+	key.type = BTRFS_ROOT_BACKREF_KEY;
+	key.offset = 0;
+	down_read(&fs_info->subvol_sem);
+	while (key.objectid != BTRFS_FS_TREE_OBJECTID) {
+		ret = btrfs_search_slot_for_read(tree_root, &key, path, 1, 1);
+		if (ret < 0)
+			goto out;
+		if (ret) {
+			ret = -ENOENT;
+			goto out;
+		}
+		btrfs_item_key_to_cpu(path->nodes[0], &found_key,
+				      path->slots[0]);
+		if (found_key.objectid != key.objectid ||
+		    found_key.type != BTRFS_ROOT_BACKREF_KEY) {
+			ret = -ENOENT;
+			goto out;
+		}
+		/* append the subvol name first */
+		ref = btrfs_item_ptr(path->nodes[0], path->slots[0],
+				     struct btrfs_root_ref);
+		dirid = btrfs_root_ref_dirid(path->nodes[0], ref);
+		namelen = btrfs_root_ref_name_len(path->nodes[0], ref);
+		read_extent_buffer(path->nodes[0], buf,
+				   (unsigned long)(ref + 1), namelen);
+		*(buf + namelen) = '/';
+		*(buf + namelen + 1) = '\0';
+		ret = alloc_mem_if_needed(&name, buf, &len);
+		if (ret < 0)
+			goto out;
+		str_prepend(name + 1, buf);
+
+		/* then append path name inside the subvole */
+		ret = btrfs_search_path_in_tree(fs_info, found_key.offset,
+						dirid, buf);
+		if (ret < 0) {
+			if (ret == -ENOENT)
+				/* parent dir may be under rename/moving,
+				 * info user to try again other than
+				 * "No such file or directory" */
+				ret = -EBUSY;
+			goto out;
+		}
+		btrfs_release_path(path);
+		key.objectid = found_key.offset;
+		ret = alloc_mem_if_needed(&name, buf, &len);
+		if (ret < 0)
+			goto out;
+		str_prepend(name + 1, buf);
+	}
+	seq_puts(m, name);
+out:
+	up_read(&fs_info->subvol_sem);
+out_free:
+	btrfs_free_path(path);
+	kfree(buf);
+	kfree(name);
+	return ret;
+}
+
 static const struct super_operations btrfs_super_ops = {
 	.drop_inode	= btrfs_drop_inode,
 	.evict_inode	= btrfs_evict_inode,
@@ -1877,6 +2021,7 @@ static const struct super_operations btrfs_super_ops = {
 	.remount_fs	= btrfs_remount,
 	.freeze_fs	= btrfs_freeze,
 	.unfreeze_fs	= btrfs_unfreeze,
+	.show_path	= btrfs_show_path,
 };
 
 static const struct file_operations btrfs_ctl_fops = {
