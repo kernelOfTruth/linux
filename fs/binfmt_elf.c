@@ -808,8 +808,11 @@ static int load_elf_binary(struct linux_binprm *bprm)
 			 * load_bias value in order to establish proper
 			 * non-randomized mappings.
 			 */
-			if (current->flags & PF_RANDOMIZE)
+			if (current->flags & PF_RANDOMIZE) {
 				load_bias = 0;
+				if (randomize_va_space > 2)
+					load_bias = current->mm->exec_base;
+			}
 			else
 				load_bias = ELF_PAGESTART(ELF_ET_DYN_BASE - vaddr);
 #else
