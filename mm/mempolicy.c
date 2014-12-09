@@ -2053,6 +2053,46 @@ retry_cpuset:
 	return page;
 }
 
+struct page *alloc_hugepage_vma(gfp_t gfp, struct vm_area_struct *vma,
+				unsigned long addr, int order)
+{
+	struct page *page;
+	nodemask_t *nmask;
+	struct mempolicy *pol;
+	int node = numa_node_id();
+	unsigned int cpuset_mems_cookie;
+
+retry_cpuset:
+	pol = get_vma_policy(vma, addr);
+	cpuset_mems_cookie = read_mems_allowed_begin();
+
+	if (pol->mode != MPOL_INTERLEAVE) {
+		/*
+		 * For interleave policy, we don't worry about
+		 * current node. Otherwise if current node is
+		 * in nodemask, try to allocate hugepage from
+		 * current node. Don't fall back to other nodes
+		 * for THP.
+		 */
+		nmask = policy_nodemask(gfp, pol);
+		if (!nmask || node_isset(node, *nmask)) {
+			mpol_cond_put(pol);
+			page = alloc_pages_exact_node(node, gfp, order);
+			if (unlikely(!page &&
+				     read_mems_allowed_retry(cpuset_mems_cookie)))
+				goto retry_cpuset;
+			return page;
+		}
+	}
+	mpol_cond_put(pol);
+	/*
+	 * if current node is not part of node mask, try
+	 * the allocation from any node, and we can do retry
+	 * in that case.
+	 */
+	return alloc_pages_vma(gfp, order, vma, addr, node);
+}
+
 /**
  * 	alloc_pages_current - Allocate pages.
  *
