@@ -4167,6 +4167,7 @@ again:
 			break;
 
 		clear_extent_dirty(unpin, start, end, GFP_NOFS);
+		btrfs_error_unpin_extent_range(root, start, end);
 		cond_resched();
 	}
 
