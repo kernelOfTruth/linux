@@ -1189,21 +1189,20 @@ static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
 {
 	ssize_t ret = 0, i;
 	__u8 tmp[EXTRACT_SIZE];
-	int large_request = (nbytes > 256);
 
 	trace_extract_entropy_user(r->name, nbytes, ENTROPY_BITS(r), _RET_IP_);
 	xfer_secondary_pool(r, nbytes);
 	nbytes = account(r, nbytes, 0, 0);
 
 	while (nbytes) {
-		if (large_request && need_resched()) {
-			if (signal_pending(current)) {
-				if (ret == 0)
-					ret = -ERESTARTSYS;
-				break;
-			}
+		/*
+		 * getrandom must not be interrupted by a signal while
+		 * reading up to 256 bytes.
+		 */
+		if (signal_pending(current) && ret > 256)
+			break;
+		if (need_resched())
 			schedule();
-		}
 
 		extract_buf(r, tmp);
 		i = min_t(int, nbytes, EXTRACT_SIZE);
