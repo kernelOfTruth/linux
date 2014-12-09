@@ -100,7 +100,8 @@
  * span more than 1 page which avoids complex case of mapping 2 pages simply
  * to restore link_free pointer values.
  */
-#define ZS_ALIGN		8
+#define ZS_ALIGN		(sizeof(struct link_free))
+#define ZS_HANDLE_SIZE		(sizeof(unsigned long))
 
 /*
  * A single 'zspage' is composed of up to 2^N discontiguous 0-order (single)
@@ -138,11 +139,11 @@
 #define MAX(a, b) ((a) >= (b) ? (a) : (b))
 /* ZS_MIN_ALLOC_SIZE must be multiple of ZS_ALIGN */
 #define ZS_MIN_ALLOC_SIZE \
-	MAX(32, (ZS_MAX_PAGES_PER_ZSPAGE << PAGE_SHIFT >> OBJ_INDEX_BITS))
-#define ZS_MAX_ALLOC_SIZE	PAGE_SIZE
+	MAX(ZS_ALIGN, (ZS_MAX_PAGES_PER_ZSPAGE << PAGE_SHIFT >> OBJ_INDEX_BITS))
+#define ZS_MAX_ALLOC_SIZE	(PAGE_SIZE + ZS_HANDLE_SIZE)
 
 /*
- * On systems with 4K page size, this gives 255 size classes! There is a
+ * On systems with 4K page size, this gives 257 size classes! There is a
  * trader-off here:
  *  - Large number of size classes is potentially wasteful as free page are
  *    spread across these classes
