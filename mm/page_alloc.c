@@ -1107,11 +1107,9 @@ static int try_to_steal_freepages(struct zone *zone, struct page *page,
 		if (pages >= (1 << (pageblock_order-1)) ||
 				page_group_by_mobility_disabled)
 			set_pageblock_migratetype(page, start_type);
-
-		return start_type;
 	}
 
-	return fallback_type;
+	return start_type;
 }
 
 /* Remove an element from the buddy allocator from the fallback list */
