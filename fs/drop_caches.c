@@ -45,13 +45,9 @@ static void drop_slab(void)
 		int nid;
 
 		nr_objects = 0;
-		for_each_online_node(nid) {
-			struct shrink_control shrink = {
-				.gfp_mask = GFP_KERNEL,
-				.nid = nid,
-			};
-			nr_objects += shrink_slab(&shrink, 1000, 1000);
-		}
+		for_each_online_node(nid)
+			nr_objects += shrink_node_slabs(GFP_KERNEL, nid,
+							1000, 1000);
 	} while (nr_objects > 10);
 }
 
