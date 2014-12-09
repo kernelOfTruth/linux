@@ -2201,7 +2201,6 @@ gotten:
 		new_page = alloc_zeroed_user_highpage_movable(vma, address);
 		if (!new_page)
 			goto oom;
-		atomic_dec(&pfn_to_page(pte_pfn(orig_pte))->_mapcount);
 	} else {
 		new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, address);
 		if (!new_page)
@@ -2651,7 +2650,6 @@ static int do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		page_table = pte_offset_map_lock(mm, pmd, address, &ptl);
 		if (!pte_none(*page_table))
 			goto unlock;
-		atomic_inc(&(pfn_to_page(my_zero_pfn(address)))->_mapcount);
 		goto setpte;
 	}
 
