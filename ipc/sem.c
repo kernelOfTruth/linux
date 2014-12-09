@@ -507,6 +507,9 @@ static int newary(struct ipc_namespace *ns, struct ipc_params *params)
 		return retval;
 	}
 
+	/* Ensures sem_lock waits on &sma->lock until sma is ready. */
+	sma->complex_count = 1;
+
 	id = ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni);
 	if (id < 0) {
 		ipc_rcu_putref(sma, sem_rcu_free);
