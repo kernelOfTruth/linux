@@ -545,6 +545,7 @@ static void mm_init_owner(struct mm_struct *mm, struct task_struct *p)
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p)
 {
 	mm->mmap = NULL;
+	mm->exec_base = 0;
 	mm->mm_rb = RB_ROOT;
 	mm->vmacache_seqnum = 0;
 	atomic_set(&mm->mm_users, 1);
