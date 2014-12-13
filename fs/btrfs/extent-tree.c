@@ -2300,7 +2300,7 @@ static int run_one_delayed_ref(struct btrfs_trans_handle *trans,
 		if (insert_reserved) {
 			btrfs_pin_extent(root, node->bytenr,
 					 node->num_bytes, 1);
-			if (head->is_data) {
+			if (head->is_data && !head->no_csums) {
 				ret = btrfs_del_csums(trans, root,
 						      node->bytenr,
 						      node->num_bytes);
@@ -6095,7 +6095,11 @@ static int __btrfs_free_extent(struct btrfs_trans_handle *trans,
 		}
 		btrfs_release_path(path);
 
-		if (is_data) {
+		/*
+		 * If the ref root is the tree root then this is a nodatasum
+		 * extent and we can skip the btrfs_del_csums step.
+		 */
+		if (is_data && (root_objectid != BTRFS_ROOT_TREE_OBJECTID)) {
 			ret = btrfs_del_csums(trans, root, bytenr, num_bytes);
 			if (ret) {
 				btrfs_abort_transaction(trans, extent_root, ret);

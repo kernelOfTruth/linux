@@ -101,6 +101,7 @@ struct btrfs_delayed_ref_head {
 	 * the free has happened.
 	 */
 	unsigned int must_insert_reserved:1;
+	unsigned int no_csums:1;
 	unsigned int is_data:1;
 	unsigned int processing:1;
 };
