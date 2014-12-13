@@ -605,6 +605,7 @@ add_delayed_ref_head(struct btrfs_fs_info *fs_info,
 	head_ref->is_data = is_data;
 	head_ref->ref_root = RB_ROOT;
 	head_ref->processing = 0;
+	head_ref->no_csums = 0;
 
 	spin_lock_init(&head_ref->lock);
 	mutex_init(&head_ref->mutex);
@@ -847,6 +848,13 @@ int btrfs_add_delayed_data_ref(struct btrfs_fs_info *fs_info,
 	 */
 	head_ref = add_delayed_ref_head(fs_info, trans, &head_ref->node,
 					bytenr, num_bytes, action, 1);
+
+	/*
+	 * If ref_root is the tree root then this is a block group space cache
+	 * extent and doesn't have csums, so we can set no_csums.
+	 */
+	if (ref_root == BTRFS_ROOT_TREE_OBJECTID)
+		head_ref->no_csums = 1;
 
 	add_delayed_data_ref(fs_info, trans, head_ref, &ref->node, bytenr,
 				   num_bytes, parent, ref_root, owner, offset,

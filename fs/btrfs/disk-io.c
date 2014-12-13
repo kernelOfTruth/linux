@@ -2701,7 +2701,6 @@ retry_root_backup:
 		ret = PTR_ERR(extent_root);
 		goto recovery_tree_root;
 	}
-	set_bit(BTRFS_ROOT_TRACK_DIRTY, &extent_root->state);
 	fs_info->extent_root = extent_root;
 
 	location.objectid = BTRFS_DEV_TREE_OBJECTID;
