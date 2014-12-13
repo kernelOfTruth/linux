@@ -1004,17 +1004,16 @@ static int btrfs_write_and_wait_transaction(struct btrfs_trans_handle *trans,
 }
 
 /*
- * this is used to update the root pointer in the tree of tree roots.
+ * Update the extent_root pointer in the tree of tree roots.
  *
- * But, in the case of the extent allocation tree, updating the root
- * pointer may allocate blocks which may change the root of the extent
- * allocation tree.
+ * In the case of the extent allocation tree, updating the root pointer may
+ * allocate blocks which may change the root of the extent allocation tree.
  *
  * So, this loops and repeats and makes sure the cowonly root didn't
  * change while the root pointer was being updated in the metadata.
  */
-static int update_cowonly_root(struct btrfs_trans_handle *trans,
-			       struct btrfs_root *root)
+static int update_extent_root(struct btrfs_trans_handle *trans,
+			      struct btrfs_root *root)
 {
 	int ret;
 	u64 old_root_bytenr;
@@ -1057,6 +1056,7 @@ static noinline int commit_cowonly_roots(struct btrfs_trans_handle *trans,
 					 struct btrfs_root *root)
 {
 	struct btrfs_fs_info *fs_info = root->fs_info;
+	struct btrfs_root *tree_root = fs_info->tree_root;
 	struct list_head *next;
 	struct extent_buffer *eb;
 	int ret;
@@ -1088,26 +1088,30 @@ static noinline int commit_cowonly_roots(struct btrfs_trans_handle *trans,
 	if (ret)
 		return ret;
 
-	/* run_qgroups might have added some more refs */
-	ret = btrfs_run_delayed_refs(trans, root, (unsigned long)-1);
-	if (ret)
-		return ret;
-
 	while (!list_empty(&fs_info->dirty_cowonly_roots)) {
 		next = fs_info->dirty_cowonly_roots.next;
 		list_del_init(next);
 		root = list_entry(next, struct btrfs_root, dirty_list);
 
-		if (root != fs_info->extent_root)
-			list_add_tail(&root->dirty_list,
-				      &trans->transaction->switch_commits);
-		ret = update_cowonly_root(trans, root);
+		list_add_tail(&root->dirty_list,
+			      &trans->transaction->switch_commits);
+		btrfs_set_root_node(&root->root_item, root->node);
+		ret = btrfs_update_root(trans, tree_root, &root->root_key,
+					&root->root_item);
 		if (ret)
 			return ret;
 	}
 
+	ret = btrfs_run_delayed_refs(trans, root, (unsigned long)-1);
+	if (ret)
+		return ret;
+
 	list_add_tail(&fs_info->extent_root->dirty_list,
 		      &trans->transaction->switch_commits);
+	ret = update_extent_root(trans, fs_info->extent_root);
+	if (ret)
+		return ret;
+
 	btrfs_after_dev_replace_commit(fs_info);
 
 	return 0;
