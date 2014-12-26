@@ -752,11 +752,8 @@ again:			remove_next = 1 + (end > next->vm_end);
 		 * shrinking vma had, to cover any anon pages imported.
 		 */
 		if (exporter && exporter->anon_vma && !importer->anon_vma) {
-			int error;
-
-			error = anon_vma_clone(importer, exporter);
-			if (error)
-				return error;
+			if (anon_vma_clone(importer, exporter))
+				return -ENOMEM;
 			importer->anon_vma = exporter->anon_vma;
 		}
 	}
@@ -2456,8 +2453,7 @@ static int __split_vma(struct mm_struct * mm, struct vm_area_struct * vma,
 	if (err)
 		goto out_free_vma;
 
-	err = anon_vma_clone(new, vma);
-	if (err)
+	if (anon_vma_clone(new, vma))
 		goto out_free_mpol;
 
 	if (new->vm_file)
