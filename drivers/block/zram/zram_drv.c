@@ -719,6 +719,8 @@ static void zram_reset_device(struct zram *zram, bool reset_capacity)
 	}
 
 	meta = zram->meta;
+	zram->meta = NULL;
+
 	/* Free all pages that are still in this zram device */
 	for (index = 0; index < zram->disksize >> PAGE_SHIFT; index++) {
 		unsigned long handle = meta->table[index].handle;
@@ -731,8 +733,6 @@ static void zram_reset_device(struct zram *zram, bool reset_capacity)
 	zcomp_destroy(zram->comp);
 	zram->max_comp_streams = 1;
 
-	zram_meta_free(zram->meta);
-	zram->meta = NULL;
 	/* Reset stats */
 	memset(&zram->stats, 0, sizeof(zram->stats));
 
@@ -741,6 +741,7 @@ static void zram_reset_device(struct zram *zram, bool reset_capacity)
 		set_capacity(zram->disk, 0);
 
 	up_write(&zram->init_lock);
+	zram_meta_free(meta);
 
 	/*
 	 * Revalidate disk out of the init_lock to avoid lockdep splat.
