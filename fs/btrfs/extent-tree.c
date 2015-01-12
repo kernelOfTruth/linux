@@ -5338,13 +5338,15 @@ static int update_block_group(struct btrfs_trans_handle *trans,
 		if (!alloc && cache->cached == BTRFS_CACHE_NO)
 			cache_block_group(cache, 1);
 
-		spin_lock(&trans->transaction->dirty_bgs_lock);
 		if (list_empty(&cache->dirty_list)) {
-			list_add_tail(&cache->dirty_list,
-				      &trans->transaction->dirty_bgs);
-			btrfs_get_block_group(cache);
+			spin_lock(&trans->transaction->dirty_bgs_lock);
+			if (list_empty(&cache->dirty_list)) {
+				list_add_tail(&cache->dirty_list,
+					      &trans->transaction->dirty_bgs);
+				btrfs_get_block_group(cache);
+			}
+			spin_unlock(&trans->transaction->dirty_bgs_lock);
 		}
-		spin_unlock(&trans->transaction->dirty_bgs_lock);
 
 		byte_in_group = bytenr - cache->key.objectid;
 		WARN_ON(byte_in_group > cache->key.offset);
@@ -6140,7 +6142,6 @@ void btrfs_free_tree_block(struct btrfs_trans_handle *trans,
 			   struct extent_buffer *buf,
 			   u64 parent, int last_ref)
 {
-	struct btrfs_block_group_cache *cache = NULL;
 	int pin = 1;
 	int ret;
 
@@ -6156,17 +6157,20 @@ void btrfs_free_tree_block(struct btrfs_trans_handle *trans,
 	if (!last_ref)
 		return;
 
-	cache = btrfs_lookup_block_group(root->fs_info, buf->start);
-
 	if (btrfs_header_generation(buf) == trans->transid) {
+		struct btrfs_block_group_cache *cache;
+
 		if (root->root_key.objectid != BTRFS_TREE_LOG_OBJECTID) {
 			ret = check_ref_cleanup(trans, root, buf->start);
 			if (!ret)
 				goto out;
 		}
 
+		cache = btrfs_lookup_block_group(root->fs_info, buf->start);
+
 		if (btrfs_header_flag(buf, BTRFS_HEADER_FLAG_WRITTEN)) {
 			pin_down_extent(root, cache, buf->start, buf->len, 1);
+			btrfs_put_block_group(cache);
 			goto out;
 		}
 
@@ -6174,6 +6178,7 @@ void btrfs_free_tree_block(struct btrfs_trans_handle *trans,
 
 		btrfs_add_free_space(cache, buf->start, buf->len);
 		btrfs_update_reserved_bytes(cache, buf->len, RESERVE_FREE, 0);
+		btrfs_put_block_group(cache);
 		trace_btrfs_reserved_extent_free(root, buf->start, buf->len);
 		pin = 0;
 	}
@@ -6188,7 +6193,6 @@ out:
 	 * anymore.
 	 */
 	clear_bit(EXTENT_BUFFER_CORRUPT, &buf->bflags);
-	btrfs_put_block_group(cache);
 }
 
 /* Can return -ENOMEM */
@@ -8490,14 +8494,6 @@ int btrfs_set_block_group_ro(struct btrfs_root *root,
 	if (IS_ERR(trans))
 		return PTR_ERR(trans);
 
-	alloc_flags = update_block_group_flags(root, cache->flags);
-	if (alloc_flags != cache->flags) {
-		ret = do_chunk_alloc(trans, root, alloc_flags,
-				     CHUNK_ALLOC_FORCE);
-		if (ret < 0)
-			goto out;
-	}
-
 	ret = set_block_group_ro(cache, 0);
 	if (!ret)
 		goto out;
@@ -8508,6 +8504,11 @@ int btrfs_set_block_group_ro(struct btrfs_root *root,
 		goto out;
 	ret = set_block_group_ro(cache, 0);
 out:
+	if (cache->flags & BTRFS_BLOCK_GROUP_SYSTEM) {
+		alloc_flags = update_block_group_flags(root, cache->flags);
+		check_system_chunk(trans, root, alloc_flags);
+	}
+
 	btrfs_end_transaction(trans, root);
 	return ret;
 }
@@ -9656,26 +9657,23 @@ int btrfs_trim_fs(struct btrfs_root *root, struct fstrim_range *range)
 	u64 start;
 	u64 end;
 	u64 trimmed = 0;
-	u64 total_bytes = btrfs_super_total_bytes(fs_info->super_copy);
 	int ret = 0;
 
 	/*
-	 * try to trim all FS space, our block group may start from non-zero.
+	 * The range passed in is a subinterval of the interval from 0
+	 * to the sum of the sizes of the devices of the filesystem.
+	 * The objectid's used in the filesystem can span any set of
+	 * subintervals of the interval from 0 to (u64)-1. As there is
+	 * neither a simple nor an agreed upon mapping between these
+	 * two ranges we ignore the range parameter's start and len
+	 * fields and always trim the whole filesystem (that is, only
+	 * the free space in allocated chunks).
 	 */
-	if (range->len == total_bytes)
-		cache = btrfs_lookup_first_block_group(fs_info, range->start);
-	else
-		cache = btrfs_lookup_block_group(fs_info, range->start);
+	cache = btrfs_lookup_first_block_group(fs_info, 0);
 
 	while (cache) {
-		if (cache->key.objectid >= (range->start + range->len)) {
-			btrfs_put_block_group(cache);
-			break;
-		}
-
-		start = max(range->start, cache->key.objectid);
-		end = min(range->start + range->len,
-				cache->key.objectid + cache->key.offset);
+		start = cache->key.objectid;
+		end = cache->key.objectid + cache->key.offset;
 
 		if (end - start >= range->minlen) {
 			if (!block_group_cache_done(cache)) {

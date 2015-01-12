@@ -1029,7 +1029,8 @@ static int update_extent_root(struct btrfs_trans_handle *trans,
 		old_root_bytenr = btrfs_root_bytenr(&root->root_item);
 		if (old_root_bytenr == root->node->start &&
 		    old_root_used == btrfs_root_used(&root->root_item) &&
-		    list_empty(&trans->transaction->dirty_bgs))
+		    (!extent_root ||
+		     list_empty(&trans->transaction->dirty_bgs)))
 			break;
 
 		btrfs_set_root_node(&root->root_item, root->node);
