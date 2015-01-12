@@ -7760,6 +7760,7 @@ static int btrfs_submit_direct_hook(int rw, struct btrfs_dio_private *dip,
 	int nr_pages = 0;
 	int ret;
 	int async_submit = 0;
+	u64 alloc_profile;
 
 	map_length = orig_bio->bi_iter.bi_size;
 	ret = btrfs_map_block(root->fs_info, rw, start_sector << 9,
@@ -7767,15 +7768,26 @@ static int btrfs_submit_direct_hook(int rw, struct btrfs_dio_private *dip,
 	if (ret)
 		return -EIO;
 
+	alloc_profile = btrfs_get_alloc_profile(root, 1);
+
 	if (map_length >= orig_bio->bi_iter.bi_size) {
 		bio = orig_bio;
 		dip->flags |= BTRFS_DIO_ORIG_BIO_SUBMITTED;
+
+		/*
+		 * In the case of 'single' profile, the above check is very
+		 * likely to be true as map_length is (chunk_length - offset),
+		 * so checking BTRFS_STRIPE_LEN here.
+		 */
+		if ((alloc_profile & BTRFS_BLOCK_GROUP_PROFILE_MASK) == 0 &&
+		    orig_bio->bi_iter.bi_size >= BTRFS_STRIPE_LEN)
+			async_submit = 1;
+
 		goto submit;
 	}
 
 	/* async crcs make it difficult to collect full stripe writes. */
-	if (btrfs_get_alloc_profile(root, 1) &
-	    (BTRFS_BLOCK_GROUP_RAID5 | BTRFS_BLOCK_GROUP_RAID6))
+	if (alloc_profile & (BTRFS_BLOCK_GROUP_RAID5 | BTRFS_BLOCK_GROUP_RAID6))
 		async_submit = 0;
 	else
 		async_submit = 1;
