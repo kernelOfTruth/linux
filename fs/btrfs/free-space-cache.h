@@ -25,6 +25,7 @@ struct btrfs_free_space {
 	u64 bytes;
 	unsigned long *bitmap;
 	struct list_head list;
+	struct list_head cluster_list;
 };
 
 struct btrfs_free_space_ctl {

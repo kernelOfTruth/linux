@@ -43,6 +43,26 @@ static int link_free_space(struct btrfs_free_space_ctl *ctl,
 static void unlink_free_space(struct btrfs_free_space_ctl *ctl,
 			      struct btrfs_free_space *info);
 
+static struct btrfs_free_space *alloc_free_space_cache(gfp_t mask)
+{
+	struct btrfs_free_space *e;
+
+	e = kmem_cache_zalloc(btrfs_free_space_cachep,
+			      GFP_NOFS);
+	if (!e)
+		return NULL;
+
+	RB_CLEAR_NODE(&e->offset_index);
+	INIT_LIST_HEAD(&e->cluster_list);
+	return e;
+}
+
+static void reclaim_free_space_cache(struct btrfs_free_space *info)
+{
+	WARN_ON_ONCE(!list_empty(&info->cluster_list));
+	kmem_cache_free(btrfs_free_space_cachep, info);
+}
+
 static struct inode *__lookup_free_space_inode(struct btrfs_root *root,
 					       struct btrfs_path *path,
 					       u64 offset)
@@ -630,7 +650,7 @@ again:
 			unlink_free_space(ctl, prev);
 			unlink_free_space(ctl, e);
 			prev->bytes += e->bytes;
-			kmem_cache_free(btrfs_free_space_cachep, e);
+			reclaim_free_space_cache(e);
 			link_free_space(ctl, prev);
 			prev = NULL;
 			spin_unlock(&ctl->tree_lock);
@@ -725,19 +745,18 @@ static int __load_free_space_cache(struct btrfs_root *root, struct inode *inode,
 		goto free_cache;
 
 	while (num_entries) {
-		e = kmem_cache_zalloc(btrfs_free_space_cachep,
-				      GFP_NOFS);
+		e = alloc_free_space_cache(GFP_NOFS);
 		if (!e)
 			goto free_cache;
 
 		ret = io_ctl_read_entry(&io_ctl, e, &type);
 		if (ret) {
-			kmem_cache_free(btrfs_free_space_cachep, e);
+			reclaim_free_space_cache(e);
 			goto free_cache;
 		}
 
 		if (!e->bytes) {
-			kmem_cache_free(btrfs_free_space_cachep, e);
+			reclaim_free_space_cache(e);
 			goto free_cache;
 		}
 
@@ -748,7 +767,7 @@ static int __load_free_space_cache(struct btrfs_root *root, struct inode *inode,
 			if (ret) {
 				btrfs_err(root->fs_info,
 					"Duplicate entries in free space cache, dumping");
-				kmem_cache_free(btrfs_free_space_cachep, e);
+				reclaim_free_space_cache(e);
 				goto free_cache;
 			}
 		} else {
@@ -756,8 +775,7 @@ static int __load_free_space_cache(struct btrfs_root *root, struct inode *inode,
 			num_bitmaps--;
 			e->bitmap = kzalloc(PAGE_CACHE_SIZE, GFP_NOFS);
 			if (!e->bitmap) {
-				kmem_cache_free(
-					btrfs_free_space_cachep, e);
+				reclaim_free_space_cache(e);
 				goto free_cache;
 			}
 			spin_lock(&ctl->tree_lock);
@@ -768,7 +786,7 @@ static int __load_free_space_cache(struct btrfs_root *root, struct inode *inode,
 			if (ret) {
 				btrfs_err(root->fs_info,
 					"Duplicate entries in free space cache, dumping");
-				kmem_cache_free(btrfs_free_space_cachep, e);
+				reclaim_free_space_cache(e);
 				goto free_cache;
 			}
 			list_add_tail(&e->list, &bitmaps);
@@ -897,9 +915,22 @@ int write_cache_extent_entries(struct io_ctl *io_ctl,
 				     block_group_list);
 	}
 
-	if (!node && cluster) {
-		node = rb_first(&cluster->root);
-		cluster = NULL;
+	if (cluster) {
+		struct btrfs_free_space *e;
+
+		list_for_each_entry(e, &cluster->free_space, cluster_list) {
+			*entries += 1;
+
+			ret = io_ctl_add_entry(io_ctl, e->offset, e->bytes,
+					       e->bitmap);
+			if (ret)
+				goto fail;
+
+			if (e->bitmap) {
+				list_add_tail(&e->list, bitmap_list);
+				*bitmaps += 1;
+			}
+		}
 	}
 
 	/* Write out the extent entries */
@@ -919,10 +950,6 @@ int write_cache_extent_entries(struct io_ctl *io_ctl,
 			*bitmaps += 1;
 		}
 		node = rb_next(node);
-		if (!node && cluster) {
-			node = rb_first(&cluster->root);
-			cluster = NULL;
-		}
 	}
 
 	/*
@@ -1490,6 +1517,7 @@ __unlink_free_space(struct btrfs_free_space_ctl *ctl,
 		    struct btrfs_free_space *info)
 {
 	rb_erase(&info->offset_index, &ctl->free_space_offset);
+	RB_CLEAR_NODE(&info->offset_index);
 	ctl->free_extents--;
 }
 
@@ -1728,7 +1756,7 @@ static void free_bitmap(struct btrfs_free_space_ctl *ctl,
 {
 	unlink_free_space(ctl, bitmap_info);
 	kfree(bitmap_info->bitmap);
-	kmem_cache_free(btrfs_free_space_cachep, bitmap_info);
+	reclaim_free_space_cache(bitmap_info);
 	ctl->total_bitmaps--;
 	ctl->op->recalc_thresholds(ctl);
 }
@@ -1895,20 +1923,19 @@ again:
 	 */
 	if (block_group && !list_empty(&block_group->cluster_list)) {
 		struct btrfs_free_cluster *cluster;
-		struct rb_node *node;
 		struct btrfs_free_space *entry;
 
 		cluster = list_entry(block_group->cluster_list.next,
 				     struct btrfs_free_cluster,
 				     block_group_list);
 		spin_lock(&cluster->lock);
-		node = rb_first(&cluster->root);
-		if (!node) {
+		if (list_empty(&cluster->free_space)) {
 			spin_unlock(&cluster->lock);
 			goto no_cluster_bitmap;
 		}
 
-		entry = rb_entry(node, struct btrfs_free_space, offset_index);
+		entry = list_first_entry(&cluster->free_space,
+					 struct btrfs_free_space, cluster_list);
 		if (!entry->bitmap) {
 			spin_unlock(&cluster->lock);
 			goto no_cluster_bitmap;
@@ -1957,8 +1984,7 @@ new_bitmap:
 
 		/* no pre-allocated info, allocate a new one */
 		if (!info) {
-			info = kmem_cache_zalloc(btrfs_free_space_cachep,
-						 GFP_NOFS);
+			info = alloc_free_space_cache(GFP_NOFS);
 			if (!info) {
 				spin_lock(&ctl->tree_lock);
 				ret = -ENOMEM;
@@ -1980,7 +2006,7 @@ out:
 	if (info) {
 		if (info->bitmap)
 			kfree(info->bitmap);
-		kmem_cache_free(btrfs_free_space_cachep, info);
+		reclaim_free_space_cache(info);
 	}
 
 	return ret;
@@ -2013,7 +2039,7 @@ static bool try_merge_free_space(struct btrfs_free_space_ctl *ctl,
 		else
 			__unlink_free_space(ctl, right_info);
 		info->bytes += right_info->bytes;
-		kmem_cache_free(btrfs_free_space_cachep, right_info);
+		reclaim_free_space_cache(right_info);
 		merged = true;
 	}
 
@@ -2025,7 +2051,7 @@ static bool try_merge_free_space(struct btrfs_free_space_ctl *ctl,
 			__unlink_free_space(ctl, left_info);
 		info->offset = left_info->offset;
 		info->bytes += left_info->bytes;
-		kmem_cache_free(btrfs_free_space_cachep, left_info);
+		reclaim_free_space_cache(left_info);
 		merged = true;
 	}
 
@@ -2160,13 +2186,12 @@ int __btrfs_add_free_space(struct btrfs_free_space_ctl *ctl,
 	struct btrfs_free_space *info;
 	int ret = 0;
 
-	info = kmem_cache_zalloc(btrfs_free_space_cachep, GFP_NOFS);
+	info = alloc_free_space_cache(GFP_NOFS);
 	if (!info)
 		return -ENOMEM;
 
 	info->offset = offset;
 	info->bytes = bytes;
-	RB_CLEAR_NODE(&info->offset_index);
 
 	spin_lock(&ctl->tree_lock);
 
@@ -2196,7 +2221,7 @@ link:
 
 	ret = link_free_space(ctl, info);
 	if (ret)
-		kmem_cache_free(btrfs_free_space_cachep, info);
+		reclaim_free_space_cache(info);
 out:
 	spin_unlock(&ctl->tree_lock);
 
@@ -2254,7 +2279,7 @@ again:
 				ret = link_free_space(ctl, info);
 				WARN_ON(ret);
 			} else {
-				kmem_cache_free(btrfs_free_space_cachep, info);
+				reclaim_free_space_cache(info);
 			}
 
 			offset += to_free;
@@ -2354,8 +2379,7 @@ __btrfs_return_cluster_to_free_space(
 			     struct btrfs_free_cluster *cluster)
 {
 	struct btrfs_free_space_ctl *ctl = block_group->free_space_ctl;
-	struct btrfs_free_space *entry;
-	struct rb_node *node;
+	struct btrfs_free_space *entry, *tmp;
 
 	spin_lock(&cluster->lock);
 	if (cluster->block_group != block_group)
@@ -2365,14 +2389,11 @@ __btrfs_return_cluster_to_free_space(
 	cluster->window_start = 0;
 	list_del_init(&cluster->block_group_list);
 
-	node = rb_first(&cluster->root);
-	while (node) {
+	list_for_each_entry_safe(entry, tmp,
+				 &cluster->free_space, cluster_list) {
 		bool bitmap;
 
-		entry = rb_entry(node, struct btrfs_free_space, offset_index);
-		node = rb_next(&entry->offset_index);
-		rb_erase(&entry->offset_index, &cluster->root);
-		RB_CLEAR_NODE(&entry->offset_index);
+		list_del_init(&entry->cluster_list);
 
 		bitmap = (entry->bitmap != NULL);
 		if (!bitmap) {
@@ -2382,7 +2403,6 @@ __btrfs_return_cluster_to_free_space(
 		tree_insert_offset(&ctl->free_space_offset,
 				   entry->offset, &entry->offset_index, bitmap);
 	}
-	cluster->root = RB_ROOT;
 
 out:
 	spin_unlock(&cluster->lock);
@@ -2400,7 +2420,7 @@ static void __btrfs_remove_free_space_cache_locked(
 		info = rb_entry(node, struct btrfs_free_space, offset_index);
 		if (!info->bitmap) {
 			unlink_free_space(ctl, info);
-			kmem_cache_free(btrfs_free_space_cachep, info);
+			reclaim_free_space_cache(info);
 		} else {
 			free_bitmap(ctl, info);
 		}
@@ -2476,7 +2496,7 @@ u64 btrfs_find_space_for_alloc(struct btrfs_block_group_cache *block_group,
 
 		entry->bytes -= bytes + align_gap_len;
 		if (!entry->bytes)
-			kmem_cache_free(btrfs_free_space_cachep, entry);
+			reclaim_free_space_cache(entry);
 		else
 			link_free_space(ctl, entry);
 	}
@@ -2569,8 +2589,7 @@ u64 btrfs_alloc_from_cluster(struct btrfs_block_group_cache *block_group,
 			     u64 min_start, u64 *max_extent_size)
 {
 	struct btrfs_free_space_ctl *ctl = block_group->free_space_ctl;
-	struct btrfs_free_space *entry = NULL;
-	struct rb_node *node;
+	struct btrfs_free_space *entry = NULL, *tmp;
 	u64 ret = 0;
 
 	spin_lock(&cluster->lock);
@@ -2580,38 +2599,23 @@ u64 btrfs_alloc_from_cluster(struct btrfs_block_group_cache *block_group,
 	if (cluster->block_group != block_group)
 		goto out;
 
-	node = rb_first(&cluster->root);
-	if (!node)
-		goto out;
-
-	entry = rb_entry(node, struct btrfs_free_space, offset_index);
-	while (1) {
+	list_for_each_entry_safe(entry, tmp,
+				 &cluster->free_space, cluster_list) {
 		if (entry->bytes < bytes && entry->bytes > *max_extent_size)
 			*max_extent_size = entry->bytes;
 
 		if (entry->bytes < bytes ||
-		    (!entry->bitmap && entry->offset < min_start)) {
-			node = rb_next(&entry->offset_index);
-			if (!node)
-				break;
-			entry = rb_entry(node, struct btrfs_free_space,
-					 offset_index);
+		    (!entry->bitmap && entry->offset < min_start))
 			continue;
-		}
 
 		if (entry->bitmap) {
 			ret = btrfs_alloc_from_bitmap(block_group,
 						      cluster, entry, bytes,
 						      cluster->window_start,
 						      max_extent_size);
-			if (ret == 0) {
-				node = rb_next(&entry->offset_index);
-				if (!node)
-					break;
-				entry = rb_entry(node, struct btrfs_free_space,
-						 offset_index);
+			if (ret == 0)
 				continue;
-			}
+
 			cluster->window_start += bytes;
 		} else {
 			ret = entry->offset;
@@ -2621,7 +2625,7 @@ u64 btrfs_alloc_from_cluster(struct btrfs_block_group_cache *block_group,
 		}
 
 		if (entry->bytes == 0)
-			rb_erase(&entry->offset_index, &cluster->root);
+			list_del_init(&entry->cluster_list);
 		break;
 	}
 out:
@@ -2640,7 +2644,7 @@ out:
 			ctl->total_bitmaps--;
 			ctl->op->recalc_thresholds(ctl);
 		}
-		kmem_cache_free(btrfs_free_space_cachep, entry);
+		reclaim_free_space_cache(entry);
 	}
 
 	spin_unlock(&ctl->tree_lock);
@@ -2662,7 +2666,6 @@ static int btrfs_bitmap_cluster(struct btrfs_block_group_cache *block_group,
 	unsigned long found_bits;
 	unsigned long start = 0;
 	unsigned long total_found = 0;
-	int ret;
 
 	i = offset_to_bit(entry->offset, ctl->unit,
 			  max_t(u64, offset, entry->offset));
@@ -2701,9 +2704,10 @@ again:
 
 	cluster->window_start = start * ctl->unit + entry->offset;
 	rb_erase(&entry->offset_index, &ctl->free_space_offset);
-	ret = tree_insert_offset(&cluster->root, entry->offset,
-				 &entry->offset_index, 1);
-	ASSERT(!ret); /* -EEXIST; Logic error */
+	RB_CLEAR_NODE(&entry->offset_index);
+
+	WARN_ON_ONCE(!list_empty(&entry->cluster_list));
+	list_add_tail(&entry->cluster_list, &cluster->free_space);
 
 	trace_btrfs_setup_cluster(block_group, cluster,
 				  total_found * ctl->unit, 1);
@@ -2751,6 +2755,8 @@ setup_cluster_no_bitmap(struct btrfs_block_group_cache *block_group,
 	max_extent = entry->bytes;
 	first = entry;
 	last = entry;
+	WARN_ON_ONCE(!list_empty(&entry->cluster_list));
+	list_add_tail(&entry->cluster_list, &cluster->free_space);
 
 	for (node = rb_next(&entry->offset_index); node;
 	     node = rb_next(&entry->offset_index)) {
@@ -2769,33 +2775,32 @@ setup_cluster_no_bitmap(struct btrfs_block_group_cache *block_group,
 		window_free += entry->bytes;
 		if (entry->bytes > max_extent)
 			max_extent = entry->bytes;
+
+		WARN_ON_ONCE(!list_empty(&entry->cluster_list));
+		list_add_tail(&entry->cluster_list, &cluster->free_space);
 	}
 
-	if (window_free < bytes || max_extent < cont1_bytes)
+	if (window_free < bytes || max_extent < cont1_bytes) {
+		struct btrfs_free_space *tmp;
+
+		list_for_each_entry_safe(entry, tmp,
+					 &cluster->free_space, cluster_list)
+			list_del_init(&entry->cluster_list);
 		return -ENOSPC;
+	}
 
 	cluster->window_start = first->offset;
-
-	node = &first->offset_index;
 
 	/*
 	 * now we've found our entries, pull them out of the free space
 	 * cache and put them into the cluster rbtree
 	 */
-	do {
-		int ret;
-
-		entry = rb_entry(node, struct btrfs_free_space, offset_index);
-		node = rb_next(&entry->offset_index);
-		if (entry->bitmap || entry->bytes < min_bytes)
-			continue;
-
+	list_for_each_entry(entry, &cluster->free_space, cluster_list) {
+		WARN_ON_ONCE(entry->bitmap || entry->bytes < min_bytes);
 		rb_erase(&entry->offset_index, &ctl->free_space_offset);
-		ret = tree_insert_offset(&cluster->root, entry->offset,
-					 &entry->offset_index, 0);
+		RB_CLEAR_NODE(&entry->offset_index);
 		total_size += entry->bytes;
-		ASSERT(!ret); /* -EEXIST; Logic error */
-	} while (node && entry != last);
+	}
 
 	cluster->max_size = max_extent;
 	trace_btrfs_setup_cluster(block_group, cluster, total_size, 0);
@@ -2940,9 +2945,9 @@ void btrfs_init_free_cluster(struct btrfs_free_cluster *cluster)
 {
 	spin_lock_init(&cluster->lock);
 	spin_lock_init(&cluster->refill_lock);
-	cluster->root = RB_ROOT;
 	cluster->max_size = 0;
 	INIT_LIST_HEAD(&cluster->block_group_list);
+	INIT_LIST_HEAD(&cluster->free_space);
 	cluster->block_group = NULL;
 }
 
@@ -3051,7 +3056,7 @@ static int trim_no_bitmap(struct btrfs_block_group_cache *block_group,
 		}
 
 		unlink_free_space(ctl, entry);
-		kmem_cache_free(btrfs_free_space_cachep, entry);
+		reclaim_free_space_cache(entry);
 
 		spin_unlock(&ctl->tree_lock);
 		trim_entry.start = extent_start;
@@ -3245,7 +3250,7 @@ u64 btrfs_find_ino_for_alloc(struct btrfs_root *fs_root)
 		entry->offset++;
 		entry->bytes--;
 		if (!entry->bytes)
-			kmem_cache_free(btrfs_free_space_cachep, entry);
+			reclaim_free_space_cache(entry);
 		else
 			link_free_space(ctl, entry);
 	} else {
@@ -3384,7 +3389,7 @@ int test_add_free_space_entry(struct btrfs_block_group_cache *cache,
 
 again:
 	if (!info) {
-		info = kmem_cache_zalloc(btrfs_free_space_cachep, GFP_NOFS);
+		info = alloc_free_space_cache(GFP_NOFS);
 		if (!info)
 			return -ENOMEM;
 	}
@@ -3396,14 +3401,14 @@ again:
 		ret = link_free_space(ctl, info);
 		spin_unlock(&ctl->tree_lock);
 		if (ret)
-			kmem_cache_free(btrfs_free_space_cachep, info);
+			reclaim_free_space_cache(info);
 		return ret;
 	}
 
 	if (!map) {
 		map = kzalloc(PAGE_CACHE_SIZE, GFP_NOFS);
 		if (!map) {
-			kmem_cache_free(btrfs_free_space_cachep, info);
+			reclaim_free_space_cache(info);
 			return -ENOMEM;
 		}
 	}
@@ -3428,7 +3433,7 @@ again:
 		goto again;
 
 	if (info)
-		kmem_cache_free(btrfs_free_space_cachep, info);
+		reclaim_free_space_cache(info);
 	if (map)
 		kfree(map);
 	return 0;

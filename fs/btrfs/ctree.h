@@ -1204,7 +1204,8 @@ struct btrfs_block_rsv {
 struct btrfs_free_cluster {
 	spinlock_t lock;
 	spinlock_t refill_lock;
-	struct rb_root root;
+
+	struct list_head free_space;
 
 	/* largest extent in this cluster */
 	u64 max_size;
