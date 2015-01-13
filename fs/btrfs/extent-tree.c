@@ -5338,15 +5338,13 @@ static int update_block_group(struct btrfs_trans_handle *trans,
 		if (!alloc && cache->cached == BTRFS_CACHE_NO)
 			cache_block_group(cache, 1);
 
+		spin_lock(&trans->transaction->dirty_bgs_lock);
 		if (list_empty(&cache->dirty_list)) {
-			spin_lock(&trans->transaction->dirty_bgs_lock);
-			if (list_empty(&cache->dirty_list)) {
-				list_add_tail(&cache->dirty_list,
-					      &trans->transaction->dirty_bgs);
-				btrfs_get_block_group(cache);
-			}
-			spin_unlock(&trans->transaction->dirty_bgs_lock);
+			list_add_tail(&cache->dirty_list,
+				      &trans->transaction->dirty_bgs);
+			btrfs_get_block_group(cache);
 		}
+		spin_unlock(&trans->transaction->dirty_bgs_lock);
 
 		byte_in_group = bytenr - cache->key.objectid;
 		WARN_ON(byte_in_group > cache->key.offset);
