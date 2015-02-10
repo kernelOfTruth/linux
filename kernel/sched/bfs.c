@@ -3597,7 +3597,7 @@ asmlinkage __visible void __sched notrace preempt_schedule(void)
 
 	do {
 		__preempt_count_add(PREEMPT_ACTIVE);
- 		schedule();
+		__schedule();
 		__preempt_count_sub(PREEMPT_ACTIVE);
 
 		/*
@@ -3670,7 +3670,7 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
 	do {
 		__preempt_count_add(PREEMPT_ACTIVE);
 		local_irq_enable();
-		schedule();
+		__schedule();
 		local_irq_disable();
 		__preempt_count_sub(PREEMPT_ACTIVE);
 
@@ -4760,7 +4760,7 @@ SYSCALL_DEFINE0(sched_yield)
 static void __cond_resched(void)
 {
 	__preempt_count_add(PREEMPT_ACTIVE);
- 	schedule();
+	__schedule();
 	__preempt_count_sub(PREEMPT_ACTIVE);
 }
 
