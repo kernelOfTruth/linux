@@ -988,11 +988,19 @@ static inline void deactivate_task(struct task_struct *p, struct rq *rq)
 #ifdef CONFIG_SMP
 void set_task_cpu(struct task_struct *p, unsigned int cpu)
 {
+#ifdef CONFIG_SCHED_DEBUG
+	/*
+	 * We should never call set_task_cpu() on a blocked task,
+	 * ttwu() will sort out the placement.
+	 */
+	WARN_ON_ONCE(p->state != TASK_RUNNING && p->state != TASK_WAKING &&
+			!p->on_rq);
 #ifdef CONFIG_LOCKDEP
 	/*
 	 * The caller should hold grq lock.
 	 */
 	WARN_ON_ONCE(debug_locks && !lockdep_is_held(&grq.lock));
+#endif
 #endif
 	if (task_cpu(p) == cpu)
 		return;
@@ -1453,14 +1461,19 @@ void wake_up_if_idle(int cpu)
 	struct rq *rq = cpu_rq(cpu);
 	unsigned long flags;
 
-	if (!is_idle_task(rq->curr))
-		return;
+	rcu_read_lock();
+
+	if (!is_idle_task(rcu_dereference(rq->curr)))
+		goto out;
 
 	grq_lock_irqsave(&flags);
 	if (likely(is_idle_task(rq->curr)))
 		smp_send_reschedule(cpu);
 	/* Else cpu is not in idle, do nothing here */
 	grq_unlock_irqrestore(&flags);
+
+out:
+	rcu_read_unlock();
 }
 
 #ifdef CONFIG_SMP
@@ -1848,7 +1861,6 @@ prepare_task_switch(struct rq *rq, struct task_struct *prev,
 
 /**
  * finish_task_switch - clean up after a task-switch
- * @rq: runqueue associated with task-switch
  * @prev: the thread we just switched away from.
  *
  * finish_task_switch must be called after the context switch, paired
@@ -1860,10 +1872,16 @@ prepare_task_switch(struct rq *rq, struct task_struct *prev,
  * so, we finish that here outside of the runqueue lock.  (Doing it
  * with the lock held can cause deadlocks; see schedule() for
  * details.)
+ *
+ * The context switch have flipped the stack from under us and restored the
+ * local variables which were saved when this task called schedule() in the
+ * past. prev == current is still correct but we need to recalculate this_rq
+ * because prev may have moved to another CPU.
  */
-static inline void finish_task_switch(struct rq *rq, struct task_struct *prev)
+static struct rq *finish_task_switch(struct task_struct *prev)
 	__releases(grq.lock)
 {
+	struct rq *rq = this_rq();
 	struct mm_struct *mm = rq->prev_mm;
 	long prev_state;
 
@@ -1898,6 +1916,8 @@ static inline void finish_task_switch(struct rq *rq, struct task_struct *prev)
 		kprobe_flush_task(prev);
 		put_task_struct(prev);
 	}
+
+	return rq;
 }
 
 /**
@@ -1907,18 +1927,21 @@ static inline void finish_task_switch(struct rq *rq, struct task_struct *prev)
 asmlinkage __visible void schedule_tail(struct task_struct *prev)
 	__releases(grq.lock)
 {
-	struct rq *rq = this_rq();
+	struct rq *rq;
 
-	finish_task_switch(rq, prev);
+	/* finish_task_switch() drops rq->lock and enables preemtion */
+	preempt_disable();
+	rq = finish_task_switch(prev);
+	preempt_enable();
+
 	if (current->set_child_tid)
 		put_user(task_pid_vnr(current), current->set_child_tid);
 }
 
 /*
- * context_switch - switch to the new MM and the new
- * thread's register state.
+ * context_switch - switch to the new MM and the new thread's register state.
  */
-static inline void
+static inline struct rq *
 context_switch(struct rq *rq, struct task_struct *prev,
 	       struct task_struct *next)
 {
@@ -1959,12 +1982,8 @@ context_switch(struct rq *rq, struct task_struct *prev,
 	switch_to(prev, next, prev);
 
 	barrier();
-	/*
-	 * this_rq must be evaluated again because prev may have moved
-	 * CPUs since it called schedule(), thus the 'rq' on its stack
-	 * frame will be invalid.
-	 */
-	finish_task_switch(this_rq(), prev);
+
+	return finish_task_switch(prev);
 }
 
 /*
@@ -3360,7 +3379,7 @@ need_resched:
 	preempt_disable();
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
-	rcu_note_context_switch(cpu);
+	rcu_note_context_switch();
 	prev = rq->curr;
 
 	deactivate = false;
@@ -3482,16 +3501,8 @@ need_resched:
 		rq->curr = next;
 		++*switch_count;
 
-		context_switch(rq, prev, next); /* unlocks the grq */
-		/*
-		 * The context switch have flipped the stack from under us
-		 * and restored the local variables which were saved when
-		 * this task called schedule() in the past. prev == current
-		 * is still correct, but it can be moved to another cpu/rq.
-		 */
-		cpu = smp_processor_id();
-		rq = cpu_rq(cpu);
-		idle = rq->idle;
+		rq = context_switch(rq, prev, next); /* unlocks the grq */
+		cpu = cpu_of(rq);
 	} else {
 		check_smt_siblings(cpu);
 		grq_unlock_irq();
@@ -4965,8 +4976,10 @@ void sched_show_task(struct task_struct *p)
 #ifdef CONFIG_DEBUG_STACK_USAGE
 	free = stack_not_used(p);
 #endif
+	ppid = 0;
 	rcu_read_lock();
-	ppid = task_pid_nr(rcu_dereference(p->real_parent));
+	if (pid_alive(p))
+		ppid = task_pid_nr(rcu_dereference(p->real_parent));
 	rcu_read_unlock();
 	printk(KERN_CONT "%5lu %5d %6d 0x%08lx\n", free,
 		task_pid_nr(p), ppid,
@@ -6033,7 +6046,9 @@ static void claim_allocations(int cpu, struct sched_domain *sd)
 
 #ifdef CONFIG_NUMA
 static int sched_domains_numa_levels;
+enum numa_topology_type sched_numa_topology_type;
 static int *sched_domains_numa_distance;
+int sched_max_numa_distance;
 static struct cpumask ***sched_domains_numa_masks;
 static int sched_domains_curr_level;
 #endif
@@ -6205,7 +6220,7 @@ static void sched_numa_warn(const char *str)
 	printk(KERN_WARNING "\n");
 }
 
-static bool find_numa_distance(int distance)
+bool find_numa_distance(int distance)
 {
 	int i;
 
@@ -6218,6 +6233,56 @@ static bool find_numa_distance(int distance)
 	}
 
 	return false;
+}
+
+/*
+ * A system can have three types of NUMA topology:
+ * NUMA_DIRECT: all nodes are directly connected, or not a NUMA system
+ * NUMA_GLUELESS_MESH: some nodes reachable through intermediary nodes
+ * NUMA_BACKPLANE: nodes can reach other nodes through a backplane
+ *
+ * The difference between a glueless mesh topology and a backplane
+ * topology lies in whether communication between not directly
+ * connected nodes goes through intermediary nodes (where programs
+ * could run), or through backplane controllers. This affects
+ * placement of programs.
+ *
+ * The type of topology can be discerned with the following tests:
+ * - If the maximum distance between any nodes is 1 hop, the system
+ *   is directly connected.
+ * - If for two nodes A and B, located N > 1 hops away from each other,
+ *   there is an intermediary node C, which is < N hops away from both
+ *   nodes A and B, the system is a glueless mesh.
+ */
+static void init_numa_topology_type(void)
+{
+	int a, b, c, n;
+
+	n = sched_max_numa_distance;
+
+	if (n <= 1)
+		sched_numa_topology_type = NUMA_DIRECT;
+
+	for_each_online_node(a) {
+		for_each_online_node(b) {
+			/* Find two nodes furthest removed from each other. */
+			if (node_distance(a, b) < n)
+				continue;
+
+			/* Is there an intermediary node between a and b? */
+			for_each_online_node(c) {
+				if (node_distance(a, c) < n &&
+				    node_distance(b, c) < n) {
+					sched_numa_topology_type =
+							NUMA_GLUELESS_MESH;
+					return;
+				}
+			}
+
+			sched_numa_topology_type = NUMA_BACKPLANE;
+			return;
+		}
+	}
 }
 
 static void sched_init_numa(void)
@@ -6352,6 +6417,9 @@ static void sched_init_numa(void)
 	sched_domain_topology = tl;
 
 	sched_domains_numa_levels = level;
+	sched_max_numa_distance = sched_domains_numa_distance[level - 1];
+
+	init_numa_topology_type();
 }
 
 static void sched_domains_numa_masks_set(int cpu)
@@ -7059,6 +7127,24 @@ static inline int preempt_count_equals(int preempt_offset)
 
 void __might_sleep(const char *file, int line, int preempt_offset)
 {
+	/*
+	 * Blocking primitives will set (and therefore destroy) current->state,
+	 * since we will exit with TASK_RUNNING make sure we enter with it,
+	 * otherwise we will destroy state.
+	 */
+	WARN_ONCE(current->state != TASK_RUNNING && current->task_state_change,
+			"do not call blocking ops when !TASK_RUNNING; "
+			"state=%lx set at [<%p>] %pS\n",
+			current->state,
+			(void *)current->task_state_change,
+			(void *)current->task_state_change);
+
+	___might_sleep(file, line, preempt_offset);
+}
+EXPORT_SYMBOL(__might_sleep);
+
+void ___might_sleep(const char *file, int line, int preempt_offset)
+{
 	static unsigned long prev_jiffy;	/* ratelimiting */
 
 	rcu_sleep_check(); /* WARN_ON_ONCE() by default, no rate limit reqd. */
@@ -7090,7 +7176,7 @@ void __might_sleep(const char *file, int line, int preempt_offset)
 #endif
 	dump_stack();
 }
-EXPORT_SYMBOL(__might_sleep);
+EXPORT_SYMBOL(___might_sleep);
 #endif
 
 #ifdef CONFIG_MAGIC_SYSRQ
