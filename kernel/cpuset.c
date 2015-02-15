@@ -506,6 +506,7 @@ static int validate_change(struct cpuset *cur, struct cpuset *trial)
 			goto out;
 	}
 
+#ifndef CONFIG_SCHED_BFS
 	/*
 	 * We can't shrink if we won't have enough room for SCHED_DEADLINE
 	 * tasks.
@@ -515,6 +516,7 @@ static int validate_change(struct cpuset *cur, struct cpuset *trial)
 	    !cpuset_cpumask_can_shrink(cur->cpus_allowed,
 				       trial->cpus_allowed))
 		goto out;
+#endif
 
 	ret = 0;
 out:
