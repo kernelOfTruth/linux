@@ -947,6 +947,7 @@ if CGROUPS
 
 config CGROUP_DEBUG
 	bool "Example debug cgroup subsystem"
+	depends on !SCHED_BFS
 	default n
 	help
 	  This option enables a simple cgroup subsystem that
@@ -969,6 +970,7 @@ config CGROUP_DEVICE
 
 config CPUSETS
 	bool "Cpuset support"
+	depends on !SCHED_BFS
 	help
 	  This option will let you create and manage CPUSETs which
 	  allow dynamically partitioning a system into sets of CPUs and
@@ -1067,6 +1069,7 @@ config CGROUP_HUGETLB
 config CGROUP_PERF
 	bool "Enable perf_event per-cpu per-container group (cgroup) monitoring"
 	depends on PERF_EVENTS && CGROUPS
+	depends on !SCHED_BFS
 	help
 	  This option extends the per-cpu mode to restrict monitoring to
 	  threads which belong to the cgroup specified and run on the
