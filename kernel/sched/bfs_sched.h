@@ -110,6 +110,14 @@ static inline u64 rq_clock_task(struct rq *rq)
 	return rq->clock_task;
 }
 
+#ifdef CONFIG_NUMA
+enum numa_topology_type {
+	NUMA_DIRECT,
+	NUMA_GLUELESS_MESH,
+	NUMA_BACKPLANE,
+};
+#endif
+
 #define rcu_dereference_check_sched_domain(p) \
 	rcu_dereference_check((p), \
 			      lockdep_is_held(&sched_domains_mutex))
