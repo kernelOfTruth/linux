@@ -1530,9 +1530,44 @@ static int run_delalloc_range(struct inode *inode, struct page *locked_page,
 static void btrfs_split_extent_hook(struct inode *inode,
 				    struct extent_state *orig, u64 split)
 {
+	u64 size;
+
 	/* not delalloc, ignore it */
 	if (!(orig->state & EXTENT_DELALLOC))
 		return;
+
+	size = orig->end - orig->start + 1;
+	if (size > BTRFS_MAX_EXTENT_SIZE) {
+		u64 num_extents;
+		u64 new_size;
+
+		/*
+		 * We need the largest size of the remaining extent to see if we
+		 * need to add a new outstanding extent.  Think of the following
+		 * case
+		 *
+		 * [MEAX_EXTENT_SIZEx2 - 4k][4k]
+		 *
+		 * The new_size would just be 4k and we'd think we had enough
+		 * outstanding extents for this if we only took one side of the
+		 * split, same goes for the other direction.  We need to see if
+		 * the larger size still is the same amount of extents as the
+		 * original size, because if it is we need to add a new
+		 * outstanding extent.  But if we split up and the larger size
+		 * is less than the original then we are good to go since we've
+		 * already accounted for the extra extent in our original
+		 * accounting.
+		 */
+		new_size = orig->end - split + 1;
+		if ((split - orig->start) > new_size)
+			new_size = split - orig->start;
+
+		num_extents = div64_u64(size + BTRFS_MAX_EXTENT_SIZE - 1,
+					BTRFS_MAX_EXTENT_SIZE);
+		if (div64_u64(new_size + BTRFS_MAX_EXTENT_SIZE - 1,
+			      BTRFS_MAX_EXTENT_SIZE) < num_extents)
+			return;
+	}
 
 	spin_lock(&BTRFS_I(inode)->lock);
 	BTRFS_I(inode)->outstanding_extents++;
@@ -1549,8 +1584,32 @@ static void btrfs_merge_extent_hook(struct inode *inode,
 				    struct extent_state *new,
 				    struct extent_state *other)
 {
+	u64 new_size, old_size;
+	u64 num_extents;
+
 	/* not delalloc, ignore it */
 	if (!(other->state & EXTENT_DELALLOC))
+		return;
+
+	old_size = other->end - other->start + 1;
+	new_size = old_size + (new->end - new->start + 1);
+
+	/* we're not bigger than the max, unreserve the space and go */
+	if (new_size <= BTRFS_MAX_EXTENT_SIZE) {
+		spin_lock(&BTRFS_I(inode)->lock);
+		BTRFS_I(inode)->outstanding_extents--;
+		spin_unlock(&BTRFS_I(inode)->lock);
+		return;
+	}
+
+	/*
+	 * If we grew by another max_extent, just return, we want to keep that
+	 * reserved amount.
+	 */
+	num_extents = div64_u64(old_size + BTRFS_MAX_EXTENT_SIZE - 1,
+				BTRFS_MAX_EXTENT_SIZE);
+	if (div64_u64(new_size + BTRFS_MAX_EXTENT_SIZE - 1,
+		      BTRFS_MAX_EXTENT_SIZE) > num_extents)
 		return;
 
 	spin_lock(&BTRFS_I(inode)->lock);
@@ -1648,6 +1707,8 @@ static void btrfs_clear_bit_hook(struct inode *inode,
 				 unsigned *bits)
 {
 	u64 len = state->end + 1 - state->start;
+	u64 num_extents = div64_u64(len + BTRFS_MAX_EXTENT_SIZE -1,
+				    BTRFS_MAX_EXTENT_SIZE);
 
 	spin_lock(&BTRFS_I(inode)->lock);
 	if ((state->state & EXTENT_DEFRAG) && (*bits & EXTENT_DEFRAG))
@@ -1667,7 +1728,7 @@ static void btrfs_clear_bit_hook(struct inode *inode,
 			*bits &= ~EXTENT_FIRST_DELALLOC;
 		} else if (!(*bits & EXTENT_DO_ACCOUNTING)) {
 			spin_lock(&BTRFS_I(inode)->lock);
-			BTRFS_I(inode)->outstanding_extents--;
+			BTRFS_I(inode)->outstanding_extents -= num_extents;
 			spin_unlock(&BTRFS_I(inode)->lock);
 		}
 
@@ -7155,11 +7216,12 @@ static int btrfs_get_blocks_direct(struct inode *inode, sector_t iblock,
 	u64 start = iblock << inode->i_blkbits;
 	u64 lockstart, lockend;
 	u64 len = bh_result->b_size;
+	u64 orig_len = len;
 	int unlock_bits = EXTENT_LOCKED;
 	int ret = 0;
 
 	if (create)
-		unlock_bits |= EXTENT_DELALLOC | EXTENT_DIRTY;
+		unlock_bits |= EXTENT_DIRTY;
 	else
 		len = min_t(u64, len, root->sectorsize);
 
@@ -7290,14 +7352,12 @@ unlock:
 		if (start + len > i_size_read(inode))
 			i_size_write(inode, start + len);
 
-		spin_lock(&BTRFS_I(inode)->lock);
-		BTRFS_I(inode)->outstanding_extents++;
-		spin_unlock(&BTRFS_I(inode)->lock);
-
-		ret = set_extent_bit(&BTRFS_I(inode)->io_tree, lockstart,
-				     lockstart + len - 1, EXTENT_DELALLOC, NULL,
-				     &cached_state, GFP_NOFS);
-		BUG_ON(ret);
+		if (len < orig_len) {
+			spin_lock(&BTRFS_I(inode)->lock);
+			BTRFS_I(inode)->outstanding_extents++;
+			spin_unlock(&BTRFS_I(inode)->lock);
+		}
+		btrfs_free_reserved_data_space(inode, len);
 	}
 
 	/*
@@ -8073,8 +8133,6 @@ static ssize_t btrfs_direct_IO(int rw, struct kiocb *iocb,
 		else if (ret >= 0 && (size_t)ret < count)
 			btrfs_delalloc_release_space(inode,
 						     count - (size_t)ret);
-		else
-			btrfs_delalloc_release_metadata(inode, 0);
 	}
 out:
 	if (wakeup)
