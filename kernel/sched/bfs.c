@@ -5204,6 +5204,33 @@ void resched_cpu(int cpu)
 	grq_unlock_irqrestore(&flags);
 }
 
+int cpuset_cpumask_can_shrink(const struct cpumask *cur,
+			     const struct cpumask *trial)
+{
+	return 1;
+}
+
+int task_can_attach(struct task_struct *p,
+		   const struct cpumask *cs_cpus_allowed)
+{
+	int ret = 0;
+
+	/*
+	 * Kthreads which disallow setaffinity shouldn't be moved
+	 * to a new cpuset; we don't want to change their cpu
+	 * affinity and isolating such threads by their set of
+	 * allowed nodes is unnecessary.  Thus, cpusets are not
+	 * applicable for such threads.  This prevents checking for
+	 * success of set_cpus_allowed_ptr() on all attached tasks
+	 * before cpus_allowed may be changed.
+	 */
+	if (p->flags & PF_NO_SETAFFINITY) {
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+
 #ifdef CONFIG_SMP
 #ifdef CONFIG_NO_HZ_COMMON
 void nohz_balance_enter_idle(int cpu)
