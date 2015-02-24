@@ -1610,11 +1610,11 @@ static int try_to_wake_up(struct task_struct *p, unsigned int state,
 	/*
 	 * We only need to update the rq clock if we activate the task
 	 */
-	rq = task_vrq_lock_irqsave(p, &lock, &flags);
+	rq = task_access_lock_irqsave(p, &lock, &flags);
 
 	/* state is a volatile long, どうして、分からない */
 	if (!(p->state & state)) {
-		task_vrq_unlock_irqrestore(rq, lock, &flags);
+		task_access_unlock_irqrestore(lock, &flags);
 		return 0;
 	}
 
@@ -1623,7 +1623,7 @@ static int try_to_wake_up(struct task_struct *p, unsigned int state,
 		ttwu_do_wakeup(rq, p, 0);
 		cpu = task_cpu(p);
 		ttwu_stat(p, cpu, wake_flags);
-		task_vrq_unlock_irqrestore(rq, lock, &flags);
+		task_access_unlock_irqrestore(lock, &flags);
 		return success;
 	}
 
@@ -1643,7 +1643,7 @@ static int try_to_wake_up(struct task_struct *p, unsigned int state,
 
 	cpu = task_cpu(p);
 	ttwu_stat(p, cpu, wake_flags);
-	task_vrq_unlock_irqrestore(rq, lock, &flags);
+	task_access_unlock_irqrestore(lock, &flags);
 
 	preempt_rq(prq);
 
