@@ -4346,13 +4346,13 @@ recheck:
 	 * racy but acceptable as ->stop doesn't change much.
 	 * An enhancemnet can be made to read rq->stop saftly.
 	 */
-	rq = task_vrq_lock(p, &lock);
+	rq = task_access_lock(p, &lock);
 
 	/*
 	 * Changing the policy of the stop threads its a very bad idea
 	 */
 	if (p == rq->stop) {
-		task_vrq_unlock(rq, lock);
+		task_access_unlock(lock);
 		raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 		return -EINVAL;
 	}
@@ -4362,7 +4362,7 @@ recheck:
 	 */
 	if (unlikely(policy == p->policy && (!is_rt_policy(policy) ||
 			attr->sched_priority == p->rt_priority))) {
-		task_vrq_unlock(rq, lock);
+		task_access_unlock(lock);
 		raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 		return 0;
 	}
@@ -4370,7 +4370,7 @@ recheck:
 	/* recheck policy now with rq lock held */
 	if (unlikely(oldpolicy != -1 && oldpolicy != p->policy)) {
 		policy = oldpolicy = -1;
-		task_vrq_unlock(rq, lock);
+		task_access_unlock(lock);
 		raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 		goto recheck;
 	}
@@ -4389,7 +4389,7 @@ recheck:
 	 */
 	if (rt_mutex_check_prio(p, newprio)) {
 		__setscheduler_params(p, attr);
-		task_vrq_unlock(rq, lock);
+		task_access_unlock(lock);
 		raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 		return 0;
 	}
@@ -4404,7 +4404,7 @@ recheck:
 	}
 
 	check_task_changed(rq, p, oldprio);
-	task_vrq_unlock(rq, lock);
+	task_access_unlock(lock);
 	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 
 	rt_mutex_adjust_pi(p);
