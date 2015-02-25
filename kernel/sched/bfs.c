@@ -7485,15 +7485,18 @@ static void normalize_task(struct rq *rq, struct task_struct *p)
 	struct sched_attr attr = {
 		.sched_policy = SCHED_NORMAL,
 	};
-	int old_prio = p->prio;
+	int old_prio;
 	int queued;
 	struct rq *prq = NULL;
 	raw_spinlock_t *lock;
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&p->pi_lock, flags);
-	rq = task_vrq_lock(p, &lock);
+	rq = task_access_lock(p, &lock);
 
+	rq = task_rq(p);
+
+	old_prio = p->prio;
 	queued = task_queued(p);
 	if (queued)
 		dequeue_task(p);
@@ -7505,7 +7508,7 @@ static void normalize_task(struct rq *rq, struct task_struct *p)
 
 	check_task_changed(rq, p, old_prio);
 
-	task_vrq_unlock(rq, lock);
+	task_access_unlock(lock);
 	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 
 	preempt_rq(prq);
