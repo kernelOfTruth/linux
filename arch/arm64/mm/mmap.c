@@ -28,6 +28,16 @@
 #include <linux/random.h>
 
 #include <asm/cputype.h>
+#include <asm/elf.h>
+
+
+#if ELF_EXEC_PAGESIZE > PAGE_SIZE
+#define ELF_MIN_ALIGN   ELF_EXEC_PAGESIZE
+#else
+#define ELF_MIN_ALIGN   PAGE_SIZE
+#endif
+
+#define ELF_PAGESTART(_v) ((_v) & ~(unsigned long)(ELF_MIN_ALIGN-1))
 
 /*
  * Leave enough space between the mmap area and the stack to honour ulimit in
