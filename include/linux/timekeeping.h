@@ -5,6 +5,8 @@
 
 void timekeeping_init(void);
 extern int timekeeping_suspended;
+extern void timekeeping_freeze(void);
+extern void timekeeping_unfreeze(void);
 
 /*
  * Get and set timeofday

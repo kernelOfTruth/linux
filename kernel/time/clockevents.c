@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/smp.h>
 #include <linux/device.h>
+#include <linux/suspend.h>
 
 #include "tick-internal.h"
 
@@ -577,6 +578,18 @@ int clockevents_notify(unsigned long reason, void *arg)
 
 	case CLOCK_EVT_NOTIFY_RESUME:
 		tick_resume();
+		break;
+
+	case CLOCK_EVT_NOTIFY_FREEZE_PREPARE:
+		tick_freeze_prepare();
+		break;
+
+	case CLOCK_EVT_NOTIFY_FREEZE:
+		tick_freeze();
+		break;
+
+	case CLOCK_EVT_NOTIFY_UNFREEZE:
+		tick_unfreeze();
 		break;
 
 	case CLOCK_EVT_NOTIFY_CPU_DEAD:
