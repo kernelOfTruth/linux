@@ -125,10 +125,16 @@ static inline bool isolation_suitable(struct compact_control *cc,
 
 /*
  * Invalidate cached compaction scanner positions, so that compact_zone()
- * will reinitialize them on the next compaction.
+ * will reinitialize them on the next compaction. Optionally reset the
+ * initial pivot position for the scanners to the position where the scanners
+ * have met the last time.
  */
-static void reset_cached_positions(struct zone *zone)
+static void reset_cached_positions(struct zone *zone, bool update_pivot)
 {
+	if (update_pivot)
+		zone->compact_cached_pivot_pfn =
+					zone->compact_cached_last_met_pfn;
+
 	/* Invalid values are re-initialized in compact_zone */
 	zone->compact_cached_migrate_pfn[0] = 0;
 	zone->compact_cached_migrate_pfn[1] = 0;
@@ -1193,7 +1199,13 @@ static int compact_finished(struct zone *zone, struct compact_control *cc,
 	/* Compaction run completes if the migrate and free scanner meet */
 	if (compact_scanners_met(cc)) {
 		/* Let the next compaction start anew. */
-		reset_cached_positions(zone);
+		reset_cached_positions(zone, false);
+		/* 
+		 * Remember where compaction scanners met for the next time
+		 * the pivot pfn is changed.
+		 */
+		zone->compact_cached_last_met_pfn =
+				cc->migrate_pfn & ~(pageblock_nr_pages-1);
 
 		/*
 		 * Mark that the PG_migrate_skip information should be cleared
@@ -1321,7 +1333,7 @@ static int compact_zone(struct zone *zone, struct compact_control *cc)
 	 */
 	if (compaction_restarting(zone, cc->order) && !current_is_kswapd()) {
 		__reset_isolation_suitable(zone);
-		reset_cached_positions(zone);
+		reset_cached_positions(zone, true);
 	}
 
 	/*
@@ -1334,7 +1346,7 @@ static int compact_zone(struct zone *zone, struct compact_control *cc)
 		cc->pivot_pfn = start_pfn;
 		zone->compact_cached_pivot_pfn = cc->pivot_pfn;
 		/* When starting position was invalid, reset the rest */
-		reset_cached_positions(zone);
+		reset_cached_positions(zone, false);
 	}
 
 	cc->migrate_pfn = zone->compact_cached_migrate_pfn[sync];
