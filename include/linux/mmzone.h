@@ -503,6 +503,8 @@ struct zone {
 	unsigned long percpu_drift_mark;
 
 #if defined CONFIG_COMPACTION || defined CONFIG_CMA
+	/* pfn where compaction scanners have initially started last time */
+	unsigned long		compact_cached_pivot_pfn;
 	/* pfn where compaction free scanner should start */
 	unsigned long		compact_cached_free_pfn;
 	/* pfn where async and sync compaction migration scanner should start */

@@ -123,11 +123,16 @@ static inline bool isolation_suitable(struct compact_control *cc,
 	return !get_pageblock_skip(page);
 }
 
+/*
+ * Invalidate cached compaction scanner positions, so that compact_zone()
+ * will reinitialize them on the next compaction.
+ */
 static void reset_cached_positions(struct zone *zone)
 {
-	zone->compact_cached_migrate_pfn[0] = zone->zone_start_pfn;
-	zone->compact_cached_migrate_pfn[1] = zone->zone_start_pfn;
-	zone->compact_cached_free_pfn = zone_end_pfn(zone);
+	/* Invalid values are re-initialized in compact_zone */
+	zone->compact_cached_migrate_pfn[0] = 0;
+	zone->compact_cached_migrate_pfn[1] = 0;
+	zone->compact_cached_free_pfn = 0;
 }
 
 /*
@@ -172,9 +177,33 @@ void reset_isolation_suitable(pg_data_t *pgdat)
 		/* Only flush if a full compaction finished recently */
 		if (zone->compact_blockskip_flush) {
 			__reset_isolation_suitable(zone);
-			reset_cached_positions(zone);
+			reset_cached_positions(zone, false);
 		}
 	}
+}
+
+static void update_cached_migrate_pfn(unsigned long pfn,
+		unsigned long pivot_pfn, unsigned long *old_pfn)
+{
+	/* Both old and new pfn either wrapped or not, and new is higher */
+	if (((*old_pfn >= pivot_pfn) == (pfn >= pivot_pfn))
+	    && (pfn > *old_pfn))
+		*old_pfn = pfn;
+	/* New pfn has wrapped and the old didn't yet */
+	else if ((*old_pfn >= pivot_pfn) && (pfn < pivot_pfn))
+		*old_pfn = pfn;
+}
+
+static void update_cached_free_pfn(unsigned long pfn,
+		unsigned long pivot_pfn, unsigned long *old_pfn)
+{
+	/* Both old and new either pfn wrapped or not, and new is lower */
+	if (((*old_pfn < pivot_pfn) == (pfn < pivot_pfn))
+	    && (pfn < *old_pfn))
+		*old_pfn = pfn;
+	/* New pfn has wrapped and the old didn't yet */
+	else if ((*old_pfn < pivot_pfn) && (pfn >= pivot_pfn))
+		*old_pfn = pfn;
 }
 
 /*
@@ -186,6 +215,7 @@ static void update_pageblock_skip(struct compact_control *cc,
 			bool migrate_scanner)
 {
 	struct zone *zone = cc->zone;
+	unsigned long pivot_pfn = cc->pivot_pfn;
 	unsigned long pfn;
 
 	if (cc->ignore_skip_hint)
@@ -203,14 +233,14 @@ static void update_pageblock_skip(struct compact_control *cc,
 
 	/* Update where async and sync compaction should restart */
 	if (migrate_scanner) {
-		if (pfn > zone->compact_cached_migrate_pfn[0])
-			zone->compact_cached_migrate_pfn[0] = pfn;
-		if (cc->mode != MIGRATE_ASYNC &&
-		    pfn > zone->compact_cached_migrate_pfn[1])
-			zone->compact_cached_migrate_pfn[1] = pfn;
+		update_cached_migrate_pfn(pfn, pivot_pfn,
+					&zone->compact_cached_migrate_pfn[0]);
+		if (cc->mode != MIGRATE_ASYNC)
+			update_cached_migrate_pfn(pfn, pivot_pfn,
+					&zone->compact_cached_migrate_pfn[1]);
 	} else {
-		if (pfn < zone->compact_cached_free_pfn)
-			zone->compact_cached_free_pfn = pfn;
+		update_cached_free_pfn(pfn, pivot_pfn,
+					&zone->compact_cached_free_pfn);
 	}
 }
 #else
@@ -808,14 +838,41 @@ isolate_migratepages_range(struct compact_control *cc, unsigned long start_pfn,
 
 #endif /* CONFIG_COMPACTION || CONFIG_CMA */
 #ifdef CONFIG_COMPACTION
+static inline bool migrate_scanner_wrapped(struct compact_control *cc)
+{
+	return cc->migrate_pfn < cc->pivot_pfn;
+}
+
+static inline bool free_scanner_wrapped(struct compact_control *cc)
+{
+	return cc->free_pfn >= cc->pivot_pfn;
+}
+
 /*
  * Test whether the free scanner has reached the same or lower pageblock than
  * the migration scanner, and compaction should thus terminate.
  */
 static inline bool compact_scanners_met(struct compact_control *cc)
 {
-	return (cc->free_pfn >> pageblock_order)
-		<= (cc->migrate_pfn >> pageblock_order);
+	bool free_below_migrate = (cc->free_pfn >> pageblock_order)
+		                <= (cc->migrate_pfn >> pageblock_order);
+
+	if (migrate_scanner_wrapped(cc) != free_scanner_wrapped(cc))
+		/*
+		 * Only one of the scanners have wrapped. Terminate if free
+		 * scanner is in the same or lower pageblock than migration
+		 * scanner.
+		*/
+		return free_below_migrate;
+	else
+		/*
+		 * If neither scanner has wrapped, then free < start <=
+		 * migration and we return false by definition.
+		 * It shouldn't happen that both have wrapped, but even if it
+		 * does due to e.g. reading mismatched zone cached pfn's, then
+		 * migration < start <= free, so we return true and terminate.
+		 */
+		return !free_below_migrate;
 }
 
 /*
@@ -832,7 +889,10 @@ static void isolate_freepages(struct compact_control *cc)
 	unsigned long low_pfn;	     /* lowest pfn scanner is able to scan */
 	int nr_freepages = cc->nr_freepages;
 	struct list_head *freelist = &cc->freepages;
+	bool wrapping; /* set to true in the first pageblock of the zone */
+	bool wrapped; /* set to true when either scanner has wrapped */
 
+wrap:
 	/*
 	 * Initialise the free scanner. The starting point is where we last
 	 * successfully isolated from, zone-cached value, or the end of the
@@ -848,14 +908,25 @@ static void isolate_freepages(struct compact_control *cc)
 	block_start_pfn = cc->free_pfn & ~(pageblock_nr_pages-1);
 	block_end_pfn = min(block_start_pfn + pageblock_nr_pages,
 						zone_end_pfn(zone));
-	low_pfn = ALIGN(cc->migrate_pfn + 1, pageblock_nr_pages);
+
+	wrapping = false;
+	wrapped = free_scanner_wrapped(cc) || migrate_scanner_wrapped(cc);
+	if (!wrapped)
+		/* 
+		 * If neither scanner wrapped yet, we are limited by zone's
+		 * beginning. Here we pretend that the zone starts pageblock
+		 * aligned to make the for-loop condition simpler.
+		 */
+		low_pfn = zone->zone_start_pfn & ~(pageblock_nr_pages-1);
+	else
+		low_pfn = ALIGN(cc->migrate_pfn + 1, pageblock_nr_pages);
 
 	/*
 	 * Isolate free pages until enough are available to migrate the
 	 * pages on cc->migratepages. We stop searching if the migrate
 	 * and free page scanners meet or enough free pages are isolated.
 	 */
-	for (; block_start_pfn >= low_pfn;
+	for (; !wrapping && block_start_pfn >= low_pfn;
 				block_end_pfn = block_start_pfn,
 				block_start_pfn -= pageblock_nr_pages,
 				isolate_start_pfn = block_start_pfn) {
@@ -869,6 +940,24 @@ static void isolate_freepages(struct compact_control *cc)
 		if (!(block_start_pfn % (SWAP_CLUSTER_MAX * pageblock_nr_pages))
 						&& compact_should_abort(cc))
 			break;
+
+		/*
+		 * When we are limited by zone boundary, this means we have
+		 * reached its first pageblock.
+		 */
+		if (!wrapped && block_start_pfn <= zone->zone_start_pfn) {
+			/* The zone might start in the middle of the pageblock */
+			block_start_pfn = zone->zone_start_pfn;
+			if (isolate_start_pfn <= zone->zone_start_pfn)
+				isolate_start_pfn = zone->zone_start_pfn;
+			/*
+			 * For e.g. DMA zone with zone_start_pfn == 1, we will
+			 * underflow block_start_pfn in the next loop
+			 * iteration. We have to terminate the loop with other
+			 * means.
+			 */
+			wrapping = true;
+		}
 
 		page = pageblock_pfn_to_page(block_start_pfn, block_end_pfn,
 									zone);
@@ -903,6 +992,12 @@ static void isolate_freepages(struct compact_control *cc)
 			if (isolate_start_pfn >= block_end_pfn)
 				isolate_start_pfn =
 					block_start_pfn - pageblock_nr_pages;
+			else if (wrapping)
+				/*
+				 * We have been in the first pageblock of the
+				 * zone, but have not finished it yet.
+				 */
+				wrapping = false;
 			break;
 		} else {
 			/*
@@ -910,6 +1005,20 @@ static void isolate_freepages(struct compact_control *cc)
 			 * prematurely unless contended, or isolated enough
 			 */
 			VM_BUG_ON(isolate_start_pfn < block_end_pfn);
+		}
+	}
+
+	/* Did we reach the beginning of the zone? Wrap to the end. */
+	if (!wrapped && wrapping) {
+		isolate_start_pfn = (zone_end_pfn(zone)-1) &
+						~(pageblock_nr_pages-1);
+		/*
+		 * If we haven't isolated anything, we have to continue
+		 * immediately, otherwise page migration will fail.
+		 */
+		if (!nr_freepages && !cc->contended) {
+			cc->free_pfn = isolate_start_pfn;
+			goto wrap;
 		}
 	}
 
@@ -984,10 +1093,11 @@ typedef enum {
 static isolate_migrate_t isolate_migratepages(struct zone *zone,
 					struct compact_control *cc)
 {
-	unsigned long low_pfn, end_pfn;
+	unsigned long low_pfn, end_pfn, max_pfn;
 	struct page *page;
 	const isolate_mode_t isolate_mode =
 		(cc->mode == MIGRATE_ASYNC ? ISOLATE_ASYNC_MIGRATE : 0);
+	bool wrapped = migrate_scanner_wrapped(cc) || free_scanner_wrapped(cc);
 
 	/*
 	 * Start at where we last stopped, or beginning of the zone as
@@ -998,13 +1108,27 @@ static isolate_migrate_t isolate_migratepages(struct zone *zone,
 	/* Only scan within a pageblock boundary */
 	end_pfn = ALIGN(low_pfn + 1, pageblock_nr_pages);
 
+	if (!wrapped) {
+		/* 
+		 * Neither of the scanners has wrapped yet, we are limited by
+		 * zone end. Here we pretend it's aligned to pageblock
+		 * boundary to make the for-loop condition simpler
+		 */
+		max_pfn = ALIGN(zone_end_pfn(zone), pageblock_nr_pages);
+	} else {
+		/* If any of the scanners wrapped, we will meet free scanner */
+		max_pfn = cc->free_pfn;
+	}
+
 	/*
 	 * Iterate over whole pageblocks until we find the first suitable.
-	 * Do not cross the free scanner.
+	 * Do not cross the free scanner or the end of the zone.
 	 */
-	for (; end_pfn <= cc->free_pfn;
+	for (; end_pfn <= max_pfn;
 			low_pfn = end_pfn, end_pfn += pageblock_nr_pages) {
 
+		if (!wrapped && end_pfn > zone_end_pfn(zone))
+			end_pfn = zone_end_pfn(zone);
 		/*
 		 * This can potentially iterate a massively long zone with
 		 * many pageblocks unsuitable, so periodically check if we
@@ -1047,6 +1171,10 @@ static isolate_migrate_t isolate_migratepages(struct zone *zone,
 	}
 
 	acct_isolated(zone, cc);
+	/* Did we reach the end of the zone? Wrap to the beginning */
+	if (!wrapped && low_pfn >= zone_end_pfn(zone))
+		low_pfn = zone->zone_start_pfn;
+
 	/* Record where migration scanner will be restarted. */
 	cc->migrate_pfn = low_pfn;
 
@@ -1197,20 +1325,46 @@ static int compact_zone(struct zone *zone, struct compact_control *cc)
 	}
 
 	/*
-	 * Setup to move all movable pages to the end of the zone. Used cached
+	 * Setup the scanner positions according to pivot pfn. Use cached
 	 * information on where the scanners should start but check that it
 	 * is initialised by ensuring the values are within zone boundaries.
 	 */
-	cc->migrate_pfn = zone->compact_cached_migrate_pfn[sync];
-	cc->free_pfn = zone->compact_cached_free_pfn;
-	if (cc->free_pfn < start_pfn || cc->free_pfn > end_pfn) {
-		cc->free_pfn = end_pfn & ~(pageblock_nr_pages-1);
-		zone->compact_cached_free_pfn = cc->free_pfn;
+	cc->pivot_pfn = zone->compact_cached_pivot_pfn;
+	if (cc->pivot_pfn < start_pfn || cc->pivot_pfn > end_pfn) {
+		cc->pivot_pfn = start_pfn;
+		zone->compact_cached_pivot_pfn = cc->pivot_pfn;
+		/* When starting position was invalid, reset the rest */
+		reset_cached_positions(zone);
 	}
+
+	cc->migrate_pfn = zone->compact_cached_migrate_pfn[sync];
 	if (cc->migrate_pfn < start_pfn || cc->migrate_pfn > end_pfn) {
-		cc->migrate_pfn = start_pfn;
+		cc->migrate_pfn = cc->pivot_pfn;
 		zone->compact_cached_migrate_pfn[0] = cc->migrate_pfn;
 		zone->compact_cached_migrate_pfn[1] = cc->migrate_pfn;
+	}
+
+	cc->free_pfn = zone->compact_cached_free_pfn;
+	if (cc->free_pfn < start_pfn || cc->free_pfn > end_pfn)
+		cc->free_pfn = cc->pivot_pfn;
+
+	/*
+	 * Free scanner should start on the beginning of the pageblock below
+	 * the cc->pivot_pfn. If that's below the zone boundary, wrap to the
+	 * last pageblock of the zone.
+	 */
+	if (cc->free_pfn == cc->pivot_pfn) {
+		/* Don't underflow in zones starting with e.g. pfn 1 */
+		if (cc->pivot_pfn < pageblock_nr_pages) {
+			cc->free_pfn = (end_pfn-1) & ~(pageblock_nr_pages-1);
+		} else {
+			cc->free_pfn = (cc->pivot_pfn - pageblock_nr_pages);
+			cc->free_pfn &= ~(pageblock_nr_pages-1);
+			if (cc->free_pfn < start_pfn)
+				cc->free_pfn = (end_pfn-1) &
+					~(pageblock_nr_pages-1);
+		}
+		zone->compact_cached_free_pfn = cc->free_pfn;
 	}
 
 	trace_mm_compaction_begin(start_pfn, cc->migrate_pfn, cc->free_pfn, end_pfn);
