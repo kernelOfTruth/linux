@@ -18,6 +18,9 @@ enum clock_event_nofitiers {
 	CLOCK_EVT_NOTIFY_BROADCAST_EXIT,
 	CLOCK_EVT_NOTIFY_SUSPEND,
 	CLOCK_EVT_NOTIFY_RESUME,
+	CLOCK_EVT_NOTIFY_FREEZE_PREPARE,
+	CLOCK_EVT_NOTIFY_FREEZE,
+	CLOCK_EVT_NOTIFY_UNFREEZE,
 	CLOCK_EVT_NOTIFY_CPU_DYING,
 	CLOCK_EVT_NOTIFY_CPU_DEAD,
 };
@@ -95,6 +98,7 @@ enum clock_event_mode {
  */
 struct clock_event_device {
 	void			(*event_handler)(struct clock_event_device *);
+	void			(*real_handler)(struct clock_event_device *);
 	int			(*set_next_event)(unsigned long evt,
 						  struct clock_event_device *);
 	int			(*set_next_ktime)(ktime_t expires,

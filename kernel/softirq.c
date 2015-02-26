@@ -26,6 +26,7 @@
 #include <linux/smpboot.h>
 #include <linux/tick.h>
 #include <linux/irq.h>
+#include <linux/suspend.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/irq.h>
@@ -321,7 +322,7 @@ asmlinkage __visible void do_softirq(void)
 void irq_enter(void)
 {
 	rcu_irq_enter();
-	if (is_idle_task(current) && !in_interrupt()) {
+	if (is_idle_task(current) && !in_interrupt() && !in_freeze()) {
 		/*
 		 * Prevent raise_softirq from needlessly waking up ksoftirqd
 		 * here, as softirq will be serviced on return from interrupt.
@@ -364,7 +365,7 @@ static inline void tick_irq_exit(void)
 
 	/* Make sure that timer wheel updates are propagated */
 	if ((idle_cpu(cpu) && !need_resched()) || tick_nohz_full_cpu(cpu)) {
-		if (!in_interrupt())
+		if (!in_interrupt() && !in_freeze())
 			tick_nohz_irq_exit();
 	}
 #endif
