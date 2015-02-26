@@ -58,23 +58,21 @@ static inline u64 notrace cyc_to_ns(u64 cyc, u32 mult, u32 shift)
 
 unsigned long long notrace sched_clock(void)
 {
-	u64 epoch_ns;
-	u64 epoch_cyc;
-	u64 cyc;
+	u64 cyc, res;
 	unsigned long seq;
-
-	if (cd.suspended)
-		return cd.epoch_ns;
 
 	do {
 		seq = raw_read_seqcount_begin(&cd.seq);
-		epoch_cyc = cd.epoch_cyc;
-		epoch_ns = cd.epoch_ns;
+
+		res = cd.epoch_ns;
+		if (!cd.suspended) {
+			cyc = read_sched_clock();
+			cyc = (cyc - cd.epoch_cyc) & sched_clock_mask;
+			res += cyc_to_ns(cyc, cd.mult, cd.shift);
+		}
 	} while (read_seqcount_retry(&cd.seq, seq));
 
-	cyc = read_sched_clock();
-	cyc = (cyc - epoch_cyc) & sched_clock_mask;
-	return epoch_ns + cyc_to_ns(cyc, cd.mult, cd.shift);
+	return res;
 }
 
 /*
@@ -124,10 +122,11 @@ void __init sched_clock_register(u64 (*read)(void), int bits,
 	clocks_calc_mult_shift(&new_mult, &new_shift, rate, NSEC_PER_SEC, 3600);
 
 	new_mask = CLOCKSOURCE_MASK(bits);
+	cd.rate = rate;
 
 	/* calculate how many ns until we wrap */
 	wrap = clocks_calc_max_nsecs(new_mult, new_shift, 0, new_mask);
-	new_wrap_kt = ns_to_ktime(wrap - (wrap >> 3));
+	cd.wrap_kt = ns_to_ktime(wrap - (wrap >> 3));
 
 	/* update epoch for new counter and update epoch_ns from old counter*/
 	new_epoch = read();
@@ -138,8 +137,6 @@ void __init sched_clock_register(u64 (*read)(void), int bits,
 	raw_write_seqcount_begin(&cd.seq);
 	read_sched_clock = read;
 	sched_clock_mask = new_mask;
-	cd.rate = rate;
-	cd.wrap_kt = new_wrap_kt;
 	cd.mult = new_mult;
 	cd.shift = new_shift;
 	cd.epoch_cyc = new_epoch;
