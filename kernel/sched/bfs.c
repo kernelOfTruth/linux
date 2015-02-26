@@ -5384,7 +5384,7 @@ out:
 	task_grq_unlock(&flags);
 
 	if (running_wrong)
-		__cond_resched();
+		preempt_schedule_common();
 
 	return ret;
 }
