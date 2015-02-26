@@ -1,8 +1,8 @@
 VERSION = 3
 PATCHLEVEL = 19
 SUBLEVEL = 0
-EXTRAVERSION = -plus-v8
-NAME = Toothless white witherfang
+EXTRAVERSION = -plus-v8-r2
+NAME = Toothless white fanged stegodon
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
