@@ -1,8 +1,8 @@
 VERSION = 3
 PATCHLEVEL = 19
 SUBLEVEL = 0
-EXTRAVERSION =
-NAME = Diseased Newt
+EXTRAVERSION = -plus-v8
+NAME = Toothless white witherfang
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
