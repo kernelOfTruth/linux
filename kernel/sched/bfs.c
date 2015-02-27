@@ -3669,9 +3669,9 @@ need_resched:
 					if (unlikely(to_wakeup == prev))
 						deactivate = false;
 					else {
-						grq_lock();
+						_grq_lock();
 						try_to_wake_up_local(to_wakeup);
-						grq_unlock();
+						_grq_unlock();
 						rq->wakeup_worker = to_wakeup;
 					}
 				}
@@ -4143,9 +4143,7 @@ static void __setscheduler(struct rq *rq, struct task_struct *p,
 	update_task_priodl(p);
 
 	if (task_running(p)) {
-		grq_lock();
 		reset_rq_task(rq, p);
-		grq_unlock();
 		/* Resched only if we might now be preempted */
 		if (p->prio > oldprio || p->rt_priority > oldrtprio)
 			resched_curr(rq);
@@ -5335,7 +5333,8 @@ void init_idle(struct task_struct *idle, int cpu)
 	 * should just lock on schedule() is locking on
 	 */
 	raw_spin_lock_irqsave(&rq->lock, flags);
-	grq_lock();
+	_grq_lock();
+
 	update_rq_clock(rq);
 	idle->last_ran = rq->clock_task;
 	idle->state = TASK_RUNNING;
@@ -5352,7 +5351,8 @@ void init_idle(struct task_struct *idle, int cpu)
 	rcu_read_unlock();
 	rq->curr = rq->idle = idle;
 	idle->on_cpu = 1;
-	grq_unlock();
+
+	_grq_unlock();
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 
 	/* Set the preempt count _outside_ the spinlocks! */
