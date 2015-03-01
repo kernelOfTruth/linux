@@ -199,6 +199,12 @@ static int btrfs_csum_sizes[] = { 4, 0 };
 #define BTRFS_DIRTY_METADATA_THRESH	(32 * 1024 * 1024)
 
 #define BTRFS_MAX_EXTENT_SIZE (128 * 1024 * 1024)
+#define BTRFS_MAX_EXTENT_BIT 27
+
+static inline u64 btrfs_num_extents(u64 num_bytes)
+{
+	return (num_bytes + BTRFS_MAX_EXTENT_SIZE - 1) >> BTRFS_MAX_EXTENT_BIT;
+}
 
 /*
  * The key defines the order in the tree, and so it also defines (optimal)
@@ -356,6 +362,7 @@ static inline unsigned long btrfs_chunk_item_size(int num_stripes)
 
 #define BTRFS_SUPER_FLAG_SEEDING	(1ULL << 32)
 #define BTRFS_SUPER_FLAG_METADUMP	(1ULL << 33)
+#define BTRFS_SUPER_FLAG_METADUMP_V2	(1ULL << 34)
 
 #define BTRFS_BACKREF_REV_MAX		256
 #define BTRFS_BACKREF_REV_SHIFT		56
