@@ -9666,26 +9666,23 @@ int btrfs_trim_fs(struct btrfs_root *root, struct fstrim_range *range)
 	u64 start;
 	u64 end;
 	u64 trimmed = 0;
-	u64 total_bytes = btrfs_super_total_bytes(fs_info->super_copy);
 	int ret = 0;
 
 	/*
-	 * try to trim all FS space, our block group may start from non-zero.
+	 * The range passed in is a subinterval of the interval from 0
+	 * to the sum of the sizes of the devices of the filesystem.
+	 * The objectid's used in the filesystem can span any set of
+	 * subintervals of the interval from 0 to (u64)-1. As there is
+	 * neither a simple nor an agreed upon mapping between these
+	 * two ranges we ignore the range parameter's start and len
+	 * fields and always trim the whole filesystem (that is, only
+	 * the free space in allocated chunks).
 	 */
-	if (range->len == total_bytes)
-		cache = btrfs_lookup_first_block_group(fs_info, range->start);
-	else
-		cache = btrfs_lookup_block_group(fs_info, range->start);
+	cache = btrfs_lookup_first_block_group(fs_info, 0);
 
 	while (cache) {
-		if (cache->key.objectid >= (range->start + range->len)) {
-			btrfs_put_block_group(cache);
-			break;
-		}
-
-		start = max(range->start, cache->key.objectid);
-		end = min(range->start + range->len,
-				cache->key.objectid + cache->key.offset);
+		start = cache->key.objectid;
+		end = cache->key.objectid + cache->key.offset;
 
 		if (end - start >= range->minlen) {
 			if (!block_group_cache_done(cache)) {
