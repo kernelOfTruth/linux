@@ -2632,6 +2632,7 @@ int btrfs_check_space_for_delayed_refs(struct btrfs_trans_handle *trans,
 {
 	struct btrfs_block_rsv *global_rsv;
 	u64 num_heads = trans->transaction->delayed_refs.num_heads_ready;
+	u64 num_dirty_bgs = trans->transaction->num_dirty_bgs;
 	u64 num_bytes;
 	int ret = 0;
 
@@ -2640,6 +2641,7 @@ int btrfs_check_space_for_delayed_refs(struct btrfs_trans_handle *trans,
 	if (num_heads > 1)
 		num_bytes += (num_heads - 1) * root->nodesize;
 	num_bytes <<= 1;
+	num_bytes += btrfs_calc_trans_metadata_size(root, num_dirty_bgs);
 	global_rsv = &root->fs_info->global_block_rsv;
 
 	/*
@@ -5370,6 +5372,7 @@ static int update_block_group(struct btrfs_trans_handle *trans,
 		if (list_empty(&cache->dirty_list)) {
 			list_add_tail(&cache->dirty_list,
 				      &trans->transaction->dirty_bgs);
+			trans->transaction->num_dirty_bgs++;
 			btrfs_get_block_group(cache);
 		}
 		spin_unlock(&trans->transaction->dirty_bgs_lock);
