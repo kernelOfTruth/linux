@@ -1901,7 +1901,10 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	if (ret)
 		return ret;
 
-	mutex_lock(&inode->i_mutex);
+	if (S_ISDIR(inode->i_mode))
+		mutex_lock_nested(&inode->i_mutex, I_MUTEX_PARENT);
+	else
+		mutex_lock(&inode->i_mutex);
 	atomic_inc(&root->log_batch);
 	full_sync = test_bit(BTRFS_INODE_NEEDS_FULL_SYNC,
 			     &BTRFS_I(inode)->runtime_flags);
