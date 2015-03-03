@@ -594,7 +594,7 @@ static int ep_scan_ready_list(struct eventpoll *ep,
 					   struct list_head *, void *),
 			      void *priv, int depth, bool ep_locked)
 {
-	int error, pwake = 0;
+	int error, pwake = 0, newly_ready = 0;
 	unsigned long flags;
 	struct epitem *epi, *nepi;
 	LIST_HEAD(txlist);
@@ -634,6 +634,13 @@ static int ep_scan_ready_list(struct eventpoll *ep,
 	for (nepi = ep->ovflist; (epi = nepi) != NULL;
 	     nepi = epi->next, epi->next = EP_UNACTIVE_PTR) {
 		/*
+		 * We only need to perform wakeups if new events have arrived
+		 * while the ep->lock was dropped. We should have already
+		 * issued the wakeups for an existing events.
+		 */
+		if (!newly_ready)
+			newly_ready = 1;
+		/*
 		 * We need to check if the item is already in the list.
 		 * During the "sproc" callback execution time, items are
 		 * queued into ->ovflist but the "txlist" might already
@@ -657,7 +664,7 @@ static int ep_scan_ready_list(struct eventpoll *ep,
 	list_splice(&txlist, &ep->rdllist);
 	__pm_relax(ep->ws);
 
-	if (!list_empty(&ep->rdllist)) {
+	if (newly_ready) {
 		/*
 		 * Wake up (if active) both the eventpoll wait list and
 		 * the ->poll() wait list (delayed after we release the lock).
