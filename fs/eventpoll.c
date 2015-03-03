@@ -219,6 +219,9 @@ struct eventpoll {
 	/* used to optimize loop detection check */
 	int visited;
 	struct list_head visited_list_link;
+
+	/* wakeup policy type */
+	int wakeup_policy;
 };
 
 /* Wait structure used by the poll hooks */
@@ -1009,6 +1012,7 @@ static int ep_poll_callback(wait_queue_t *wait, unsigned mode, int sync, void *k
 	unsigned long flags;
 	struct epitem *epi = ep_item_from_wait(wait);
 	struct eventpoll *ep = epi->ep;
+	int ewake = 0;
 
 	if ((unsigned long)key & POLLFREE) {
 		ep_pwq_from_wait(wait)->whead = NULL;
@@ -1073,8 +1077,10 @@ static int ep_poll_callback(wait_queue_t *wait, unsigned mode, int sync, void *k
 	 * Wake up ( if active ) both the eventpoll wait list and the ->poll()
 	 * wait list.
 	 */
-	if (waitqueue_active(&ep->wq))
+	if (waitqueue_active(&ep->wq)) {
 		wake_up_locked(&ep->wq);
+		ewake = 1;
+	}
 	if (waitqueue_active(&ep->poll_wait))
 		pwake++;
 
@@ -1082,9 +1088,15 @@ out_unlock:
 	spin_unlock_irqrestore(&ep->lock, flags);
 
 	/* We have to call this outside the lock */
-	if (pwake)
-		ep_poll_safewake(&ep->poll_wait);
-
+	if (pwake) {
+		if (ep->wakeup_policy == EPOLL_ROTATE)
+			__wake_up_rotate(&ep->poll_wait, TASK_NORMAL, 1, 0,
+					 (void *)POLLIN);
+		else
+			ep_poll_safewake(&ep->poll_wait);
+	}
+	if (epi->event.events & EPOLLROTATE)
+		return ewake;
 	return 1;
 }
 
@@ -1097,12 +1109,19 @@ static void ep_ptable_queue_proc(struct file *file, wait_queue_head_t *whead,
 {
 	struct epitem *epi = ep_item_from_epqueue(pt);
 	struct eppoll_entry *pwq;
+	struct eventpoll *ep;
 
 	if (epi->nwait >= 0 && (pwq = kmem_cache_alloc(pwq_cache, GFP_KERNEL))) {
 		init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
 		pwq->whead = whead;
 		pwq->base = epi;
-		add_wait_queue(whead, &pwq->wait);
+		if (is_file_epoll(epi->ffd.file))
+			ep = epi->ffd.file->private_data;
+		if (ep && (ep->wakeup_policy == EPOLL_ROTATE)) {
+			__add_wait_queue_exclusive(whead, &pwq->wait);
+			epi->event.events |= EPOLLROTATE;
+		} else
+			add_wait_queue(whead, &pwq->wait);
 		list_add_tail(&pwq->llink, &epi->pwqlist);
 		epi->nwait++;
 	} else {
@@ -1777,7 +1796,7 @@ SYSCALL_DEFINE1(epoll_create1, int, flags)
 	/* Check the EPOLL_* constant for consistency.  */
 	BUILD_BUG_ON(EPOLL_CLOEXEC != O_CLOEXEC);
 
-	if (flags & ~EPOLL_CLOEXEC)
+	if (flags & ~(EPOLL_CLOEXEC | EPOLL_ROTATE))
 		return -EINVAL;
 	/*
 	 * Create the internal data structure ("struct eventpoll").
@@ -1802,6 +1821,8 @@ SYSCALL_DEFINE1(epoll_create1, int, flags)
 	}
 	ep->file = file;
 	fd_install(fd, file);
+	if (flags & EPOLL_ROTATE)
+		ep->wakeup_policy = EPOLL_ROTATE;
 	return fd;
 
 out_free_fd:
@@ -1874,6 +1895,9 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 	 */
 	ep = f.file->private_data;
 
+	if ((ep->wakeup_policy == EPOLL_ROTATE) && is_file_epoll(tf.file))
+		goto error_tgt_fput;
+
 	/*
 	 * When we insert an epoll file descriptor, inside another epoll file
 	 * descriptor, there is the change of creating closed loops, which are
@@ -1911,6 +1935,10 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 				mutex_lock_nested(&tep->mtx, 1);
 			}
 		}
+		error = -EINVAL;
+		if ((ep->wakeup_policy == EPOLL_ROTATE) &&
+					(!RB_EMPTY_ROOT(&ep->rbr)))
+			goto error_unlock;
 	}
 
 	/*
@@ -1945,6 +1973,7 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 			error = -ENOENT;
 		break;
 	}
+error_unlock:
 	if (tep != NULL)
 		mutex_unlock(&tep->mtx);
 	mutex_unlock(&ep->mtx);
