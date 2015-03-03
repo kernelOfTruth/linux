@@ -1811,22 +1811,10 @@ static ssize_t btrfs_file_write_iter(struct kiocb *iocb,
 	mutex_unlock(&inode->i_mutex);
 
 	/*
-	 * we want to make sure fsync finds this change
-	 * but we haven't joined a transaction running right now.
-	 *
-	 * Later on, someone is sure to update the inode and get the
-	 * real transid recorded.
-	 *
-	 * We set last_trans now to the fs_info generation + 1,
-	 * this will either be one more than the running transaction
-	 * or the generation used for the next transaction if there isn't
-	 * one running right now.
-	 *
 	 * We also have to set last_sub_trans to the current log transid,
 	 * otherwise subsequent syncs to a file that's been synced in this
 	 * transaction will appear to have already occured.
 	 */
-	BTRFS_I(inode)->last_trans = root->fs_info->generation + 1;
 	BTRFS_I(inode)->last_sub_trans = root->log_transid;
 	if (num_written > 0) {
 		err = generic_write_sync(file, pos, num_written);
@@ -1989,44 +1977,14 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	 * bail out safely. For the fast path, when the full sync flag is not
 	 * set in our inode, we can not do it because we start only our ordered
 	 * extents and don't wait for them to complete (that is when
-	 * btrfs_finish_ordered_io runs) - if we rely on the speculative value
-	 * for inode->last_trans set by btrfs_file_write_iter we lose data in
-	 * the following scenario:
-	 *
-	 * 1. fs_info->last_trans_committed == N - 1 and current transaction is
-	 *    transaction N (fs_info->generation == N);
-	 *
-	 * 2. do a buffered write;
-	 *
-	 * 3. fsync our inode, this clears our inode's full sync flag, starts
-	 *    an ordered extent and waits for it to complete - when it completes
-	 *    at btrfs_finish_ordered_io(), the inode's last_trans is set to
-	 *    the value N;
-	 *
-	 * 4. transaction N is committed, so fs_info->last_trans_committed is
-	 *    now set to the value N and fs_info->generation remains with the
-	 *    value N;
-	 *
-	 * 5. do another buffered write, when this happens btrfs_file_write_iter
-	 *    sets our inode's last_trans to the value N + 1;
-	 *
-	 * 6. transaction N + 1 is started and fs_info->generation now has the
-	 *    value N + 1;
-	 *
-	 * 7. transaction N + 1 is committed, so fs_info->last_trans_committed
-	 *    is set to the value N + 1;
-	 *
-	 * 8. fsync our inode - because it doesn't have the full sync flag set,
-	 *    we only start the ordered extent, we don't wait for it to complete
-	 *    (only in a later phase) therefore its last_trans field has the
-	 *    value N + 1 set previously by btrfs_file_write_iter(), and so we
-	 *    have:
-	 *
-	 *        inode->last_trans <= fs_info->last_trans_committed
-	 *            (N + 1)              (N + 1)
-	 *
-	 *    Which would make us not log the last buffered write, resulting in
-	 *    data loss after a crash.
+	 * btrfs_finish_ordered_io runs), so here at this point their last_trans
+	 * value might be less than or equals to fs_info->last_trans_committed,
+	 * and setting a speculative last_trans for an inode when a buffered
+	 * write is made (such as fs_info->generation + 1 for example) would not
+	 * be reliable since after setting the value and before fsync is called
+	 * any number of transactions can start and commit (transaction kthread
+	 * commits the current transaction periodically), and a transaction
+	 * commit does not start nor waits for ordered extents to complete.
 	 */
 	smp_mb();
 	if (btrfs_inode_in_log(inode, root->fs_info->generation) ||
