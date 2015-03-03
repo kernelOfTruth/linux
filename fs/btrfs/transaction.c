@@ -1053,9 +1053,6 @@ static int update_cowonly_root(struct btrfs_trans_handle *trans,
 		ret = btrfs_run_delayed_refs(trans, root, (unsigned long)-1);
 		if (ret)
 			return ret;
-		ret = btrfs_run_delayed_refs(trans, root, (unsigned long)-1);
-		if (ret)
-			return ret;
 	}
 
 	return 0;
