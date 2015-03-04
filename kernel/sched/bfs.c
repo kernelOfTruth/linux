@@ -3439,12 +3439,15 @@ static inline void idle_schedule(int cpu, struct rq *rq, struct task_struct *pre
 	if (likely(queued_notrunning())) {
 		struct task_struct *next;
 
-		_grq_lock();
-
 		bfs_stat_idle_qnr++;
+
+		_grq_lock();
 		next = earliest_deadline_task(rq, cpu, prev);
 
 		if (likely(prev != next)) {
+			grq.nr_switches++;
+			_grq_unlock();
+
 			if (likely(next->prio != PRIO_LIMIT))
 				clear_cpuidle_map(cpu);
 			else
@@ -3454,7 +3457,6 @@ static inline void idle_schedule(int cpu, struct rq *rq, struct task_struct *pre
 
 			check_smt_siblings(cpu);
 
-			grq.nr_switches++;
 			rq->curr = next;
 			++*switch_count;
 
@@ -3462,10 +3464,10 @@ static inline void idle_schedule(int cpu, struct rq *rq, struct task_struct *pre
 
 			return;
 		}
+		_grq_unlock();
 		bfs_stat_idle_qnr_eq++;
 
 		check_smt_siblings(cpu);
-		_grq_unlock();
 		raw_spin_unlock_irq(&rq->lock);
 
 		return;
@@ -3515,30 +3517,26 @@ static inline void deactivate_schedule(int cpu, struct rq *rq, struct task_struc
 		schedstat_inc(rq, sched_goidle);
 	}
 
-	if (likely(prev != next)) {
-		if (likely(next->prio != PRIO_LIMIT))
-			clear_cpuidle_map(cpu);
-		else
-			set_cpuidle_map(cpu);
+	/*
+	 * For deactivate schedule, always next != prev
+	 */
+	if (likely(next->prio != PRIO_LIMIT))
+		clear_cpuidle_map(cpu);
+	else
+		set_cpuidle_map(cpu);
 
-		set_rq_task(rq, next);
+	set_rq_task(rq, next);
 
-		if (next != idle)
-			check_smt_siblings(cpu);
-		else
-			wake_smt_siblings(cpu);
-
-		grq.nr_switches++;
-		rq->curr = next;
-		++*switch_count;
-
-		rq = context_switch(rq, prev, next); /* unlocks the grq */
-	} else {
-		bfs_stat_deactivate_eq++;
+	if (next != idle)
 		check_smt_siblings(cpu);
-		_grq_unlock();
-		raw_spin_unlock_irq(&rq->lock);
-	}
+	else
+		wake_smt_siblings(cpu);
+
+	grq.nr_switches++;
+	rq->curr = next;
+	++*switch_count;
+
+	rq = context_switch(rq, prev, next); /* unlocks the grq */
 }
 
 static int bfs_stat_activate, bfs_stat_activate_needother, bfs_stat_activate_qnr,
