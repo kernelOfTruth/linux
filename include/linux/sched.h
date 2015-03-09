@@ -1299,11 +1299,9 @@ struct task_struct {
 	struct list_head run_list;
 	u64 last_ran;
 	u64 sched_time; /* sched_clock time spent running */
+	int cache_count;
 #ifdef CONFIG_SMT_NICE
 	int smt_bias; /* Policy/nice level bias across smt siblings */
-#endif
-#ifdef CONFIG_SMP
-	bool sticky; /* Soft affined flag */
 #endif
 #ifdef CONFIG_HOTPLUG_CPU
 	bool zerobound; /* Bound to CPU0 for hotplug */
