@@ -1314,6 +1314,13 @@ static inline bool needs_other_cpu(struct task_struct *p, int cpu)
 	return !cpumask_test_cpu(cpu, &p->cpus_allowed);
 }
 
+/*
+ * task_preemptable_rq - get the rq which the given task can preempt on
+ * @p: task wants to preempt cpu
+ * This function should be called without any rq lock or grq lock, as it
+ * will decide which cpu to be preempted and require to lock on that rq
+ * to do reschedule.
+ */
 static struct rq* task_preemptable_rq(struct task_struct *p)
 {
 	int cpu, target_cpu;
@@ -1366,6 +1373,28 @@ static struct rq* task_preemptable_rq(struct task_struct *p)
 
 	return NULL;
 }
+
+static void try_preempt(struct task_struct *p)
+{
+	struct rq *rq = task_preemptable_rq(p);
+	unsigned long flags;
+
+	bfs_test[0]++;
+	if (rq) {
+		struct task_struct *preempt;
+
+		bfs_test[1]++;
+		raw_spin_lock_irqsave(&rq->lock, flags);
+		preempt = rq->preempt_task;
+		if (!preempt || p->priodl < preempt->priodl) {
+			bfs_test[2]++;
+			rq->preempt_task = p;
+		}
+		resched_curr(rq);
+		raw_spin_unlock_irqrestore(&rq->lock, flags);
+	}
+}
+
 #else /* CONFIG_SMP */
 static inline bool needs_other_cpu(struct task_struct *p, int cpu)
 {
@@ -1492,9 +1521,9 @@ static int try_to_wake_up(struct task_struct *p, unsigned int state,
 			  int wake_flags)
 {
 	unsigned long flags;
-	struct rq *rq, *prq;
+	struct rq *rq;
 	raw_spinlock_t *lock;
-	int cpu, success = 0;
+	int cpu, preempt, success = 0;
 
 	/*
 	 * If we are going to wake up a thread waiting for CONDITION we
@@ -1534,15 +1563,16 @@ static int try_to_wake_up(struct task_struct *p, unsigned int state,
 	 * instead waiting for current to deschedule.
 	 */
 	if (!(wake_flags & WF_SYNC) || suitable_idle_cpus(p))
-		prq = task_preemptable_rq(p);
+		preempt = 1;
 	else
-		prq = NULL;
+		preempt = 0;
 
 	cpu = task_cpu(p);
 	ttwu_stat(p, cpu, wake_flags);
 	task_access_unlock_irqrestore(lock, &flags);
 
-	preempt_rq(prq);
+	if (preempt)
+		try_preempt(p);
 
 	return success;
 }
@@ -3352,6 +3382,22 @@ static void check_smt_siblings(int __maybe_unused cpu) {}
 static void wake_smt_siblings(int __maybe_unused cpu) {}
 #endif
 
+static inline struct task_struct *pick_next_task(struct rq *rq, int cpu,
+						struct task_struct *idle)
+{
+	struct task_struct *next = rq->preempt_task;
+
+	if (next) {
+		bfs_test[3]++;
+		if (likely(task_queued(next))) {
+			bfs_test[4]++;
+			take_task(cpu, next);
+			return next;
+		}
+	} 
+	return earliest_deadline_task(rq, cpu, idle);
+}
+
 static int bfs_stat_idle, bfs_stat_idle_qnr, bfs_stat_idle_qnr_eq;
 
 static inline void idle_schedule(int cpu, struct rq *rq, struct task_struct *prev,
@@ -3368,7 +3414,7 @@ static inline void idle_schedule(int cpu, struct rq *rq, struct task_struct *pre
 		bfs_stat_idle_qnr++;
 
 		_grq_lock();
-		next = earliest_deadline_task(rq, cpu, prev);
+		next = pick_next_task(rq, cpu, prev);
 
 		if (likely(prev != next)) {
 			grq.nr_switches++;
@@ -3433,6 +3479,14 @@ static inline void deactivate_schedule(int cpu, struct rq *rq, struct task_struc
 	if (likely(queued_notrunning())) {
 		bfs_stat_deactivate_qnr++;
 		next = earliest_deadline_task(rq, cpu, idle);
+
+		if (rq->preempt_task) {
+			bfs_test[5]++;
+			if (next == rq->preempt_task)
+				bfs_test[6]++;
+			rq->preempt_task = NULL;
+		}
+
 	} else {
 		/*
 		 * This CPU is now truly idle as opposed to when idle is
@@ -3501,7 +3555,9 @@ static inline void activate_schedule(int cpu, struct rq *rq, struct task_struct 
 		_grq_lock();
 		enqueue_task(prev, rq);
 		inc_qnr();
-		next = earliest_deadline_task(rq, cpu, idle);
+
+		next = pick_next_task(rq, cpu, idle);
+
 		if (prev != next) {
 			/* Set prev cached */
 			cache_task(prev, rq);
