@@ -2400,8 +2400,9 @@ __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 			goto out;
 	}
 	/* Exhausted what can be done so it's blamo time */
-	out_of_memory(zonelist, gfp_mask, order, nodemask, false);
-	*did_some_progress = 1;
+	if (out_of_memory(zonelist, gfp_mask, order, nodemask, false)
+			|| WARN_ON_ONCE(gfp_mask & __GFP_NOFAIL))
+		*did_some_progress = 1;
 out:
 	oom_zonelist_unlock(zonelist, gfp_mask);
 	return page;
