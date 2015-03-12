@@ -3394,7 +3394,7 @@ static inline struct task_struct *pick_next_task(struct rq *rq, int cpu,
 			take_task(cpu, next);
 			return next;
 		}
-	} 
+	}
 	return earliest_deadline_task(rq, cpu, idle);
 }
 
