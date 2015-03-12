@@ -615,17 +615,39 @@ static inline int task_timeslice(struct task_struct *p)
 
 static void resched_curr(struct rq *rq);
 
-static inline void preempt_rq(struct rq * rq)
+static inline void preempt_rq(struct task_struct *p, struct rq * rq)
 {
 	unsigned long flags;
 
 	if (rq) {
+		struct task_struct *preempt;
+
+		bfs_test[1]++;
 		raw_spin_lock_irqsave(&rq->lock, flags);
+		preempt = rq->preempt_task;
+		if (!preempt || p->priodl < preempt->priodl) {
+			bfs_test[2]++;
+			rq->preempt_task = p;
+		}
 		resched_curr(rq);
 		raw_spin_unlock_irqrestore(&rq->lock, flags);
 	}
 }
 
+static inline void __preempt_rq(struct task_struct *p, struct rq * rq)
+{
+	if (rq) {
+		struct task_struct *preempt;
+
+		bfs_test[8]++;
+		preempt = rq->preempt_task;
+		if (!preempt || p->priodl < preempt->priodl) {
+			bfs_test[9]++;
+			rq->preempt_task = p;
+		}
+		resched_curr(rq);
+	}
+}
 
 #ifdef CONFIG_SMP
 /*
@@ -1317,9 +1339,7 @@ static inline bool needs_other_cpu(struct task_struct *p, int cpu)
 /*
  * task_preemptable_rq - get the rq which the given task can preempt on
  * @p: task wants to preempt cpu
- * This function should be called without any rq lock or grq lock, as it
- * will decide which cpu to be preempted and require to lock on that rq
- * to do reschedule.
+ * This function is lock-free.
  */
 static struct rq* task_preemptable_rq(struct task_struct *p)
 {
@@ -1374,25 +1394,15 @@ static struct rq* task_preemptable_rq(struct task_struct *p)
 	return NULL;
 }
 
+/*
+ * This function should be called without any rq lock or grq lock, as it
+ * will decide which cpu to be preempted and require to lock on that rq
+ * to do reschedule.
+ */
 static void try_preempt(struct task_struct *p)
 {
-	struct rq *rq = task_preemptable_rq(p);
-	unsigned long flags;
-
 	bfs_test[0]++;
-	if (rq) {
-		struct task_struct *preempt;
-
-		bfs_test[1]++;
-		raw_spin_lock_irqsave(&rq->lock, flags);
-		preempt = rq->preempt_task;
-		if (!preempt || p->priodl < preempt->priodl) {
-			bfs_test[2]++;
-			rq->preempt_task = p;
-		}
-		resched_curr(rq);
-		raw_spin_unlock_irqrestore(&rq->lock, flags);
-	}
+	preempt_rq(p, task_preemptable_rq(p));
 }
 
 #else /* CONFIG_SMP */
@@ -1401,7 +1411,7 @@ static inline bool needs_other_cpu(struct task_struct *p, int cpu)
 	return false;
 }
 
-static void try_preempt(struct task_struct *p, struct rq *this_rq)
+static void try_preempt(struct task_struct *p)
 {
 	if (p->policy == SCHED_IDLEPRIO)
 		return;
@@ -1523,7 +1533,7 @@ static int try_to_wake_up(struct task_struct *p, unsigned int state,
 	unsigned long flags;
 	struct rq *rq;
 	raw_spinlock_t *lock;
-	int cpu, preempt, success = 0;
+	int cpu, success = 0;
 
 	/*
 	 * If we are going to wake up a thread waiting for CONDITION we
@@ -1556,6 +1566,10 @@ static int try_to_wake_up(struct task_struct *p, unsigned int state,
 	ttwu_activate(p, rq);
 	ttwu_do_wakeup(rq, p, 0);
 
+	cpu = task_cpu(p);
+	ttwu_stat(p, cpu, wake_flags);
+	task_access_unlock_irqrestore(lock, &flags);
+
 	/*
 	 * Sync wakeups (i.e. those types of wakeups where the waker
 	 * has indicated that it will leave the CPU in short order)
@@ -1563,15 +1577,6 @@ static int try_to_wake_up(struct task_struct *p, unsigned int state,
 	 * instead waiting for current to deschedule.
 	 */
 	if (!(wake_flags & WF_SYNC) || suitable_idle_cpus(p))
-		preempt = 1;
-	else
-		preempt = 0;
-
-	cpu = task_cpu(p);
-	ttwu_stat(p, cpu, wake_flags);
-	task_access_unlock_irqrestore(lock, &flags);
-
-	if (preempt)
 		try_preempt(p);
 
 	return success;
@@ -1752,6 +1757,10 @@ after_ts_init:
 			__set_tsk_resched(parent);
 		} else {
 			prq = task_preemptable_rq(p);
+			if (prq == rq) {
+				__preempt_rq(p, prq);
+				prq = NULL;
+			}
 		}
 	} else {
 		if (rq->curr == parent) {
@@ -1773,7 +1782,7 @@ after_ts_init:
 
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 
-	preempt_rq(prq);
+	preempt_rq(p, prq);
 }
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
@@ -1949,7 +1958,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 	       struct task_struct *next)
 {
 	struct mm_struct *mm, *oldmm;
-	struct rq *prq, *w_prq;
+	struct task_struct *return_task, *wakeup_worker;
 
 	prepare_task_switch(rq, prev, next);
 
@@ -1992,25 +2001,20 @@ context_switch(struct rq *rq, struct task_struct *prev,
 	/*
 	 * Before unlock rq, record all rq need to be reschedule in the stack
 	 */
-	if (rq->return_task) {
-		prq = task_best_idle_rq(rq->return_task);
-		rq->return_task = NULL;
-	} else
-		prq = NULL;
-	if (rq->wakeup_worker) {
-		if (current != rq->wakeup_worker)
-			w_prq = task_best_idle_rq(rq->wakeup_worker);
-		else
-			w_prq = NULL;
-		rq->wakeup_worker = NULL;
-	} else
-		w_prq = NULL;
+	return_task = rq->return_task;
+	rq->return_task = NULL;
+
+	wakeup_worker = rq->wakeup_worker;
+	rq->wakeup_worker = NULL;
+	if (current == wakeup_worker)
+		wakeup_worker = NULL;
 
 	rq = finish_task_switch(prev);
 
-	preempt_rq(prq);
-	if (w_prq != prq)
-		preempt_rq(w_prq);
+	if (return_task)
+		try_preempt(return_task);
+	if (wakeup_worker)
+		try_preempt(wakeup_worker);
 
 	return rq;
 }
@@ -3885,7 +3889,7 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 {
 	unsigned long flags;
 	int queued, oldprio;
-	struct rq *rq, *prq = NULL;
+	struct rq *rq;
 	raw_spinlock_t *lock;
 
 	BUG_ON(prio < 0 || prio > MAX_PRIO);
@@ -3911,28 +3915,26 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	if (unlikely(p == rq->idle)) {
 		WARN_ON(p != rq->curr);
 		WARN_ON(p->pi_blocked_on);
-		goto out_unlock;
+		task_access_unlock_irqrestore(lock, &flags);
+		return;
 	}
 
 	trace_sched_pi_setprio(p, prio);
 	oldprio = p->prio;
 	queued = task_queued(p);
-	if (queued) {
+	if (queued)
 		dequeue_task(p);
-	}
 	p->prio = prio;
 	update_task_priodl(p);
-	if (queued) {
+	if (queued)
 		enqueue_task(p, rq);
-		prq = task_preemptable_rq(p);
-	}
 
 	check_task_changed(rq, p, oldprio);
 
-out_unlock:
 	task_access_unlock_irqrestore(lock, &flags);
 
-	preempt_rq(prq);
+	if (queued)
+		try_preempt(p);
 }
 
 #endif
@@ -3950,7 +3952,7 @@ void set_user_nice(struct task_struct *p, long nice)
 {
 	int queued, new_static, old_static;
 	unsigned long flags;
-	struct rq *rq, *prq = NULL;
+	struct rq *rq;
 	raw_spinlock_t *lock;
 
 	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
@@ -3971,12 +3973,12 @@ void set_user_nice(struct task_struct *p, long nice)
 	 */
 	if (has_rt_policy(p)) {
 		p->static_prio = new_static;
-		goto out_unlock;
+		task_access_unlock_irqrestore(lock, &flags);
+		return;
 	}
 	queued = task_queued(p);
-	if (queued) {
+	if (queued)
 		dequeue_task(p);
-	}
 
 	adjust_deadline(p, new_static);
 	old_static = p->static_prio;
@@ -3984,19 +3986,17 @@ void set_user_nice(struct task_struct *p, long nice)
 	p->prio = effective_prio(p);
 	update_task_priodl(p);
 
-	if (queued) {
+	if (queued)
 		enqueue_task(p, rq);
-		if (new_static < old_static)
-			prq = task_preemptable_rq(p);
-	} else if (task_running(p)) {
+	else if (task_running(p)) {
 		reset_rq_task(rq, p);
 		if (old_static < new_static)
 			resched_curr(rq);
 	}
-out_unlock:
 	task_access_unlock_irqrestore(lock, &flags);
 
-	preempt_rq(prq);
+	if (queued && new_static < old_static)
+		try_preempt(p);
 }
 EXPORT_SYMBOL(set_user_nice);
 
@@ -4193,7 +4193,7 @@ static int __sched_setscheduler(struct task_struct *p,
 	int queued, retval, oldprio, oldpolicy = -1;
 	int policy = attr->sched_policy;
 	unsigned long flags;
-	struct rq *rq, *prq = NULL;
+	struct rq *rq;
 	int reset_on_fork;
 	raw_spinlock_t *lock;
 
@@ -4347,10 +4347,8 @@ recheck:
 	if (queued)
 		dequeue_task(p);
 	__setscheduler(rq, p, attr);
-	if (queued) {
+	if (queued)
 		enqueue_task(p, rq);
-		prq = task_preemptable_rq(p);
-	}
 
 	check_task_changed(rq, p, oldprio);
 	task_access_unlock(lock);
@@ -4358,7 +4356,8 @@ recheck:
 
 	rt_mutex_adjust_pi(p);
 
-	preempt_rq(prq);
+	if (queued)
+		try_preempt(p);
 out:
 	return 0;
 }
@@ -5535,7 +5534,7 @@ int set_cpus_allowed_ptr(struct task_struct *p, const struct cpumask *new_mask)
 {
 	bool queued = false;
 	unsigned long flags;
-	struct rq *rq, *prq = NULL;
+	struct rq *rq;
 	raw_spinlock_t *lock;
 	int ret = 0;
 
@@ -5562,11 +5561,10 @@ int set_cpus_allowed_ptr(struct task_struct *p, const struct cpumask *new_mask)
 		resched_curr(rq);
 
 out:
-	if (queued)
-		prq = task_preemptable_rq(p);
 	task_access_unlock_irqrestore(lock, &flags);
 
-	preempt_rq(prq);
+	if (queued)
+		try_preempt(p);
 
 	return ret;
 }
@@ -7424,7 +7422,6 @@ static void normalize_task(struct rq *rq, struct task_struct *p)
 	};
 	int old_prio;
 	int queued;
-	struct rq *prq = NULL;
 	raw_spinlock_t *lock;
 	unsigned long flags;
 
@@ -7438,17 +7435,16 @@ static void normalize_task(struct rq *rq, struct task_struct *p)
 	if (queued)
 		dequeue_task(p);
 	__setscheduler(rq, p, &attr);
-	if (queued) {
+	if (queued)
 		enqueue_task(p, rq);
-		prq = task_preemptable_rq(p);
-	}
 
 	check_task_changed(rq, p, old_prio);
 
 	task_access_unlock(lock);
 	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 
-	preempt_rq(prq);
+	if (queued)
+		try_preempt(p);
 }
 
 void normalize_rt_tasks(void)
