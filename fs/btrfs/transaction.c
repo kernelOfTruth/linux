@@ -1024,23 +1024,14 @@ static int update_cowonly_root(struct btrfs_trans_handle *trans,
 	u64 old_root_bytenr;
 	u64 old_root_used;
 	struct btrfs_root *tree_root = root->fs_info->tree_root;
-	struct btrfs_fs_info *fs_info = root->fs_info;
 
 	old_root_used = btrfs_root_used(&root->root_item);
 	btrfs_write_dirty_block_groups(trans, root);
 
 	while (1) {
 		old_root_bytenr = btrfs_root_bytenr(&root->root_item);
-
-		/*
-		 * We can only break out if our root matches the root item and
-		 * we either have more roots to process or we have no more roots
-		 * to process and there are no empty bgs.
-		 */
 		if (old_root_bytenr == root->node->start &&
-		    old_root_used == btrfs_root_used(&root->root_item) &&
-		    (!list_empty(&fs_info->dirty_cowonly_roots) ||
-		     list_empty(&trans->transaction->dirty_bgs)))
+		    old_root_used == btrfs_root_used(&root->root_item))
 			break;
 
 		btrfs_set_root_node(&root->root_item, root->node);
@@ -1051,14 +1042,6 @@ static int update_cowonly_root(struct btrfs_trans_handle *trans,
 			return ret;
 
 		old_root_used = btrfs_root_used(&root->root_item);
-		if (list_empty(&fs_info->dirty_cowonly_roots)) {
-			ret = btrfs_write_dirty_block_groups(trans, root);
-			if (ret)
-				return ret;
-		}
-		ret = btrfs_run_delayed_refs(trans, root, (unsigned long)-1);
-		if (ret)
-			return ret;
 	}
 
 	return 0;
@@ -1075,6 +1058,7 @@ static noinline int commit_cowonly_roots(struct btrfs_trans_handle *trans,
 					 struct btrfs_root *root)
 {
 	struct btrfs_fs_info *fs_info = root->fs_info;
+	struct list_head *dirty_bgs = &trans->transaction->dirty_bgs;
 	struct list_head *next;
 	struct extent_buffer *eb;
 	int ret;
@@ -1106,7 +1090,7 @@ static noinline int commit_cowonly_roots(struct btrfs_trans_handle *trans,
 	ret = btrfs_run_delayed_refs(trans, root, (unsigned long)-1);
 	if (ret)
 		return ret;
-
+again:
 	while (!list_empty(&fs_info->dirty_cowonly_roots)) {
 		next = fs_info->dirty_cowonly_roots.next;
 		list_del_init(next);
@@ -1119,7 +1103,22 @@ static noinline int commit_cowonly_roots(struct btrfs_trans_handle *trans,
 		ret = update_cowonly_root(trans, root);
 		if (ret)
 			return ret;
+		ret = btrfs_run_delayed_refs(trans, root, (unsigned long)-1);
+		if (ret)
+			return ret;
 	}
+
+	while (!list_empty(dirty_bgs)) {
+		ret = btrfs_write_dirty_block_groups(trans, root);
+		if (ret)
+			return ret;
+		ret = btrfs_run_delayed_refs(trans, root, (unsigned long)-1);
+		if (ret)
+			return ret;
+	}
+
+	if (!list_empty(&fs_info->dirty_cowonly_roots))
+		goto again;
 
 	list_add_tail(&fs_info->extent_root->dirty_list,
 		      &trans->transaction->switch_commits);
@@ -1817,6 +1816,9 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 		ret = btrfs_end_transaction(trans, root);
 
 		wait_for_commit(root, cur_trans);
+
+		if (unlikely(cur_trans->aborted))
+			ret = cur_trans->aborted;
 
 		btrfs_put_transaction(cur_trans);
 
