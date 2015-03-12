@@ -1024,22 +1024,16 @@ static int update_cowonly_root(struct btrfs_trans_handle *trans,
 	u64 old_root_bytenr;
 	u64 old_root_used;
 	struct btrfs_root *tree_root = root->fs_info->tree_root;
-	struct btrfs_fs_info *fs_info = root->fs_info;
+	bool extent_root = (root->objectid == BTRFS_EXTENT_TREE_OBJECTID);
 
 	old_root_used = btrfs_root_used(&root->root_item);
 	btrfs_write_dirty_block_groups(trans, root);
 
 	while (1) {
 		old_root_bytenr = btrfs_root_bytenr(&root->root_item);
-
-		/*
-		 * We can only break out if our root matches the root item and
-		 * we either have more roots to process or we have no more roots
-		 * to process and there are no empty bgs.
-		 */
 		if (old_root_bytenr == root->node->start &&
 		    old_root_used == btrfs_root_used(&root->root_item) &&
-		    (!list_empty(&fs_info->dirty_cowonly_roots) ||
+		    (!extent_root ||
 		     list_empty(&trans->transaction->dirty_bgs)))
 			break;
 
@@ -1051,7 +1045,7 @@ static int update_cowonly_root(struct btrfs_trans_handle *trans,
 			return ret;
 
 		old_root_used = btrfs_root_used(&root->root_item);
-		if (list_empty(&fs_info->dirty_cowonly_roots)) {
+		if (extent_root) {
 			ret = btrfs_write_dirty_block_groups(trans, root);
 			if (ret)
 				return ret;
