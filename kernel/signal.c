@@ -2544,6 +2544,22 @@ void __set_current_blocked(const sigset_t *newset)
 	spin_unlock_irq(&tsk->sighand->siglock);
 }
 
+/**
+ * unblock_current - change current->blocked mask, but only allow
+ * unblocking of signals.
+ * @newset: new mask
+ *
+ * This method should be used in sigreturn implementations to prevent
+ * seccomp-isolated processes from blocking signals using sigreturn.
+ */
+void unblock_current(const sigset_t *newset)
+{
+	spin_lock_irq(&current->sighand->siglock);
+	sigandsets(&current->blocked, &current->blocked, newset);
+	recalc_sigpending();
+	spin_unlock_irq(&current->sighand->siglock);
+}
+
 /*
  * This is also useful for kernel threads that want to temporarily
  * (or permanently) block certain signals.

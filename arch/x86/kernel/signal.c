@@ -551,7 +551,7 @@ asmlinkage unsigned long sys_sigreturn(void)
 				    sizeof(frame->extramask))))
 		goto badframe;
 
-	set_current_blocked(&set);
+	unblock_current(&set);
 
 	if (restore_sigcontext(regs, &frame->sc, &ax))
 		goto badframe;
@@ -577,7 +577,7 @@ asmlinkage long sys_rt_sigreturn(void)
 	if (__copy_from_user(&set, &frame->uc.uc_sigmask, sizeof(set)))
 		goto badframe;
 
-	set_current_blocked(&set);
+	unblock_current(&set);
 
 	if (restore_sigcontext(regs, &frame->uc.uc_mcontext, &ax))
 		goto badframe;
@@ -795,7 +795,7 @@ asmlinkage long sys32_x32_rt_sigreturn(void)
 	if (__copy_from_user(&set, &frame->uc.uc_sigmask, sizeof(set)))
 		goto badframe;
 
-	set_current_blocked(&set);
+	unblock_current(&set);
 
 	if (restore_sigcontext(regs, &frame->uc.uc_mcontext, &ax))
 		goto badframe;
