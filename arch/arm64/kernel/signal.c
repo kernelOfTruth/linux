@@ -101,7 +101,7 @@ static int restore_sigframe(struct pt_regs *regs,
 
 	err = __copy_from_user(&set, &sf->uc.uc_sigmask, sizeof(set));
 	if (err == 0)
-		set_current_blocked(&set);
+		unblock_current(&set);
 
 	for (i = 0; i < 31; i++)
 		__get_user_error(regs->regs[i], &sf->uc.uc_mcontext.regs[i],
