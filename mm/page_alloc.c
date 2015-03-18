@@ -735,7 +735,8 @@ static void free_pcppages_bulk(struct zone *zone, int count,
 
 	spin_lock(&zone->lock);
 	nr_scanned = zone_page_state(zone, NR_PAGES_SCANNED);
-	if (nr_scanned)
+	if (nr_scanned &&
+	    zone_page_state(zone, NR_FREE_PAGES) > high_wmark_pages(zone))
 		__mod_zone_page_state(zone, NR_PAGES_SCANNED, -nr_scanned);
 
 	while (to_free) {
@@ -786,7 +787,8 @@ static void free_one_page(struct zone *zone,
 	unsigned long nr_scanned;
 	spin_lock(&zone->lock);
 	nr_scanned = zone_page_state(zone, NR_PAGES_SCANNED);
-	if (nr_scanned)
+	if (nr_scanned &&
+	    zone_page_state(zone, NR_FREE_PAGES) > high_wmark_pages(zone))
 		__mod_zone_page_state(zone, NR_PAGES_SCANNED, -nr_scanned);
 
 	if (unlikely(has_isolate_pageblock(zone) ||
