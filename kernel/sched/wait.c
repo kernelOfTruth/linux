@@ -157,6 +157,33 @@ void __wake_up_sync(wait_queue_head_t *q, unsigned int mode, int nr_exclusive)
 EXPORT_SYMBOL_GPL(__wake_up_sync);	/* For internal use only */
 
 /*
+ * Special wait queue were anything added as excluive will be rotated to the
+ * back of the queue in order to balance the wakeups.
+ */
+void __wake_up_rotate(wait_queue_head_t *q, unsigned int mode,
+		      int nr_exclusive, int wake_flags, void *key)
+{
+	unsigned long flags;
+	wait_queue_t *curr, *next;
+	LIST_HEAD(rotate_list);
+
+	spin_lock_irqsave(&q->lock, flags);
+	list_for_each_entry_safe(curr, next, &q->task_list, task_list) {
+		unsigned wq_flags = curr->flags;
+
+		if (curr->func(curr, mode, wake_flags, key) &&
+					(wq_flags & WQ_FLAG_EXCLUSIVE)) {
+			if (nr_exclusive > 0)
+				list_move_tail(&curr->task_list, &rotate_list);
+			if (!--nr_exclusive)
+				break;
+		}
+	}
+	list_splice_tail(&rotate_list, &q->task_list);
+	spin_unlock_irqrestore(&q->lock, flags);
+}
+
+/*
  * Note: we use "set_current_state()" _after_ the wait-queue add,
  * because we need a memory barrier there on SMP, so that any
  * wake-function that tests for the wait-queue being active
