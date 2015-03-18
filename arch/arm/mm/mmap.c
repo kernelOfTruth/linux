@@ -10,6 +10,7 @@
 #include <linux/personality.h>
 #include <linux/random.h>
 #include <asm/cachetype.h>
+#include <asm/elf.h>
 
 #define COLOUR_ALIGN(addr,pgoff)		\
 	((((addr)+SHMLBA-1)&~(SHMLBA-1)) +	\
@@ -18,6 +19,14 @@
 /* gap between mmap and stack */
 #define MIN_GAP (128*1024*1024UL)
 #define MAX_GAP ((TASK_SIZE)/6*5)
+
+#if ELF_EXEC_PAGESIZE > PAGE_SIZE
+#define ELF_MIN_ALIGN   ELF_EXEC_PAGESIZE
+#else
+#define ELF_MIN_ALIGN   PAGE_SIZE
+#endif
+
+#define ELF_PAGESTART(_v) ((_v) & ~(unsigned long)(ELF_MIN_ALIGN-1))
 
 static int mmap_is_legacy(void)
 {
@@ -184,6 +193,9 @@ void arch_pick_mmap_layout(struct mm_struct *mm)
 	} else {
 		mm->mmap_base = mmap_base(random_factor);
 		mm->get_unmapped_area = arch_get_unmapped_area_topdown;
+		if (randomize_va_space > 2)
+			mm->exec_base = ELF_PAGESTART(ELF_ET_DYN_BASE -
+				((get_random_int() % (1 << 8)) << PAGE_SHIFT));
 	}
 }
 

@@ -31,6 +31,14 @@
 #include <linux/sched.h>
 #include <asm/elf.h>
 
+#if ELF_EXEC_PAGESIZE > PAGE_SIZE
+#define ELF_MIN_ALIGN   ELF_EXEC_PAGESIZE
+#else
+#define ELF_MIN_ALIGN   PAGE_SIZE
+#endif
+
+#define ELF_PAGESTART(_v) ((_v) & ~(unsigned long)(ELF_MIN_ALIGN-1))
+
 struct va_alignment __read_mostly va_align = {
 	.flags = -1,
 };
@@ -120,5 +128,7 @@ void arch_pick_mmap_layout(struct mm_struct *mm)
 		mm->get_unmapped_area = arch_get_unmapped_area;
 	} else {
 		mm->get_unmapped_area = arch_get_unmapped_area_topdown;
+		if (randomize_va_space > 2)
+			mm->exec_base = ELF_PAGESTART(ELF_ET_DYN_BASE - mmap_rnd());
 	}
 }
