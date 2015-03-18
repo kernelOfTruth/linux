@@ -250,6 +250,7 @@ loop:
 	INIT_LIST_HEAD(&cur_trans->switch_commits);
 	INIT_LIST_HEAD(&cur_trans->pending_ordered);
 	INIT_LIST_HEAD(&cur_trans->dirty_bgs);
+	cur_trans->num_dirty_bgs = 0;
 	spin_lock_init(&cur_trans->dirty_bgs_lock);
 	list_add_tail(&cur_trans->list, &fs_info->trans_list);
 	extent_io_tree_init(&cur_trans->dirty_pages,
@@ -2068,8 +2069,12 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 
 	kmem_cache_free(btrfs_trans_handle_cachep, trans);
 
-	if (current != root->fs_info->transaction_kthread)
+	if (current != root->fs_info->transaction_kthread) {
 		btrfs_run_delayed_iputs(root);
+		/* make sure that all running delayed iput are done */
+		down_write(&root->fs_info->delayed_iput_sem);
+		up_write(&root->fs_info->delayed_iput_sem);
+	}
 
 	return ret;
 

@@ -1112,7 +1112,7 @@ cleanup_write_cache_enospc(struct inode *inode,
  *
  * This function writes out a free space cache struct to disk for quick recovery
  * on mount.  This will return 0 if it was successfull in writing the cache out,
- * and -1 if it was not.
+ * or an errno if it was not.
  */
 static int __btrfs_write_out_cache(struct btrfs_root *root, struct inode *inode,
 				   struct btrfs_free_space_ctl *ctl,
@@ -1128,11 +1128,11 @@ static int __btrfs_write_out_cache(struct btrfs_root *root, struct inode *inode,
 	int ret;
 
 	if (!i_size_read(inode))
-		return -1;
+		return -EIO;
 
 	ret = io_ctl_init(&io_ctl, inode, root, 1);
 	if (ret)
-		return -1;
+		return ret;
 
 	if (block_group && (block_group->flags & BTRFS_BLOCK_GROUP_DATA)) {
 		down_write(&block_group->data_rwsem);
@@ -1149,7 +1149,9 @@ static int __btrfs_write_out_cache(struct btrfs_root *root, struct inode *inode,
 	}
 
 	/* Lock all pages first so we can lock the extent safely. */
-	io_ctl_prepare_pages(&io_ctl, inode, 0);
+	ret = io_ctl_prepare_pages(&io_ctl, inode, 0);
+	if (ret)
+		goto out;
 
 	lock_extent_bits(&BTRFS_I(inode)->io_tree, 0, i_size_read(inode) - 1,
 			 0, &cached_state);

@@ -1901,7 +1901,10 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	if (ret)
 		return ret;
 
-	mutex_lock(&inode->i_mutex);
+	if (S_ISDIR(inode->i_mode))
+		mutex_lock_nested(&inode->i_mutex, I_MUTEX_PARENT);
+	else
+		mutex_lock(&inode->i_mutex);
 	atomic_inc(&root->log_batch);
 	full_sync = test_bit(BTRFS_INODE_NEEDS_FULL_SYNC,
 			     &BTRFS_I(inode)->runtime_flags);
@@ -1968,14 +1971,67 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	}
 
 	/*
-	 * if the last transaction that changed this file was before
-	 * the current transaction, we can bail out now without any
-	 * syncing
+	 * If the last transaction that changed this file was before the current
+	 * transaction and we have the full sync flag set in our inode, we can
+	 * bail out now without any syncing.
+	 *
+	 * Note that we can't bail out if the full sync flag isn't set. This is
+	 * because when the full sync flag is set we start all ordered extents
+	 * and wait for them to fully complete - when they complete they update
+	 * the inode's last_trans field through:
+	 *
+	 *     btrfs_finish_ordered_io() ->
+	 *         btrfs_update_inode_fallback() ->
+	 *             btrfs_update_inode() ->
+	 *                 btrfs_set_inode_last_trans()
+	 *
+	 * So we are sure that last_trans is up to date and can do this check to
+	 * bail out safely. For the fast path, when the full sync flag is not
+	 * set in our inode, we can not do it because we start only our ordered
+	 * extents and don't wait for them to complete (that is when
+	 * btrfs_finish_ordered_io runs) - if we rely on the speculative value
+	 * for inode->last_trans set by btrfs_file_write_iter we lose data in
+	 * the following scenario:
+	 *
+	 * 1. fs_info->last_trans_committed == N - 1 and current transaction is
+	 *    transaction N (fs_info->generation == N);
+	 *
+	 * 2. do a buffered write;
+	 *
+	 * 3. fsync our inode, this clears our inode's full sync flag, starts
+	 *    an ordered extent and waits for it to complete - when it completes
+	 *    at btrfs_finish_ordered_io(), the inode's last_trans is set to
+	 *    the value N;
+	 *
+	 * 4. transaction N is committed, so fs_info->last_trans_committed is
+	 *    now set to the value N and fs_info->generation remains with the
+	 *    value N;
+	 *
+	 * 5. do another buffered write, when this happens btrfs_file_write_iter
+	 *    sets our inode's last_trans to the value N + 1;
+	 *
+	 * 6. transaction N + 1 is started and fs_info->generation now has the
+	 *    value N + 1;
+	 *
+	 * 7. transaction N + 1 is committed, so fs_info->last_trans_committed
+	 *    is set to the value N + 1;
+	 *
+	 * 8. fsync our inode - because it doesn't have the full sync flag set,
+	 *    we only start the ordered extent, we don't wait for it to complete
+	 *    (only in a later phase) therefore its last_trans field has the
+	 *    value N + 1 set previously by btrfs_file_write_iter(), and so we
+	 *    have:
+	 *
+	 *        inode->last_trans <= fs_info->last_trans_committed
+	 *            (N + 1)              (N + 1)
+	 *
+	 *    Which would make us not log the last buffered write, resulting in
+	 *    data loss after a crash.
 	 */
 	smp_mb();
 	if (btrfs_inode_in_log(inode, root->fs_info->generation) ||
-	    BTRFS_I(inode)->last_trans <=
-	    root->fs_info->last_trans_committed) {
+	    (full_sync && BTRFS_I(inode)->last_trans <=
+	     root->fs_info->last_trans_committed)) {
 		BTRFS_I(inode)->last_trans = 0;
 
 		/*
@@ -2276,6 +2332,8 @@ static int btrfs_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 	bool same_page;
 	bool no_holes = btrfs_fs_incompat(root->fs_info, NO_HOLES);
 	u64 ino_size;
+	bool truncated_page = false;
+	bool updated_inode = false;
 
 	ret = btrfs_wait_ordered_range(inode, offset, len);
 	if (ret)
@@ -2307,13 +2365,18 @@ static int btrfs_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 	 * entire page.
 	 */
 	if (same_page && len < PAGE_CACHE_SIZE) {
-		if (offset < ino_size)
+		if (offset < ino_size) {
+			truncated_page = true;
 			ret = btrfs_truncate_page(inode, offset, len, 0);
+		} else {
+			ret = 0;
+		}
 		goto out_only_mutex;
 	}
 
 	/* zero back part of the first page */
 	if (offset < ino_size) {
+		truncated_page = true;
 		ret = btrfs_truncate_page(inode, offset, 0, 0);
 		if (ret) {
 			mutex_unlock(&inode->i_mutex);
@@ -2349,6 +2412,7 @@ static int btrfs_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 		if (!ret) {
 			/* zero the front end of the last page */
 			if (tail_start + tail_len < ino_size) {
+				truncated_page = true;
 				ret = btrfs_truncate_page(inode,
 						tail_start + tail_len, 0, 1);
 				if (ret)
@@ -2358,8 +2422,8 @@ static int btrfs_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 	}
 
 	if (lockend < lockstart) {
-		mutex_unlock(&inode->i_mutex);
-		return 0;
+		ret = 0;
+		goto out_only_mutex;
 	}
 
 	while (1) {
@@ -2507,6 +2571,7 @@ out_trans:
 
 	trans->block_rsv = &root->fs_info->trans_block_rsv;
 	ret = btrfs_update_inode(trans, root, inode);
+	updated_inode = true;
 	btrfs_end_transaction(trans, root);
 	btrfs_btree_balance_dirty(root);
 out_free:
@@ -2516,6 +2581,22 @@ out:
 	unlock_extent_cached(&BTRFS_I(inode)->io_tree, lockstart, lockend,
 			     &cached_state, GFP_NOFS);
 out_only_mutex:
+	if (!updated_inode && truncated_page && !ret && !err) {
+		/*
+		 * If we only end up zeroing part of a page, we still need to
+		 * update the inode item, so that all the time fields are
+		 * updated as well as the necessary btrfs inode in memory fields
+		 * for detecting, at fsync time, if the inode isn't yet in the
+		 * log tree or it's there but not up to date.
+		 */
+		trans = btrfs_start_transaction(root, 1);
+		if (IS_ERR(trans)) {
+			err = PTR_ERR(trans);
+		} else {
+			err = btrfs_update_inode(trans, root, inode);
+			ret = btrfs_end_transaction(trans, root);
+		}
+	}
 	mutex_unlock(&inode->i_mutex);
 	if (ret && !err)
 		err = ret;
