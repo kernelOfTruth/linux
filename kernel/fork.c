@@ -75,6 +75,7 @@
 #include <linux/aio.h>
 #include <linux/compiler.h>
 #include <linux/delay.h>
+#include <linux/sysctl.h>
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -87,6 +88,16 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/task.h>
+
+/*
+ * Minimum number of threads to boot the kernel
+ */
+#define MIN_THREADS 20
+
+/*
+ * Maximum number of threads
+ */
+#define MAX_THREADS FUTEX_TID_MASK
 
 /*
  * Protected counters by write_lock_irq(&tasklist_lock)
@@ -254,7 +265,33 @@ EXPORT_SYMBOL_GPL(__put_task_struct);
 
 void __init __weak arch_task_cache_init(void) { }
 
-void __init fork_init(unsigned long mempages)
+/*
+ * set_max_threads tries to set the default limit to the suggested value.
+ */
+static void set_max_threads(unsigned int max_threads_suggested)
+{
+	u64 threads;
+
+	/*
+	 * The number of threads shall be limited such that the thread
+	 * structures may only consume a small part of the available memory.
+	 */
+	threads = div64_u64((u64) totalram_pages * (u64) PAGE_SIZE,
+			    (u64) THREAD_SIZE * 8UL);
+
+	if (threads > max_threads_suggested)
+		threads = max_threads_suggested;
+
+	if (threads > MAX_THREADS)
+		threads = MAX_THREADS;
+
+	if (threads < MIN_THREADS)
+		threads = MIN_THREADS;
+
+	max_threads = (int) threads;
+}
+
+void __init fork_init(void)
 {
 #ifndef CONFIG_ARCH_TASK_STRUCT_ALLOCATOR
 #ifndef ARCH_MIN_TASKALIGN
@@ -269,18 +306,7 @@ void __init fork_init(unsigned long mempages)
 	/* do the arch specific task caches init */
 	arch_task_cache_init();
 
-	/*
-	 * The default maximum number of threads is set to a safe
-	 * value: the thread structures can take up at most half
-	 * of memory.
-	 */
-	max_threads = mempages / (8 * THREAD_SIZE / PAGE_SIZE);
-
-	/*
-	 * we need to allow at least 20 threads to boot a system
-	 */
-	if (max_threads < 20)
-		max_threads = 20;
+	set_max_threads(UINT_MAX);
 
 	init_task.signal->rlim[RLIMIT_NPROC].rlim_cur = max_threads/2;
 	init_task.signal->rlim[RLIMIT_NPROC].rlim_max = max_threads/2;
@@ -2008,5 +2034,28 @@ int unshare_files(struct files_struct **displaced)
 	task_lock(task);
 	task->files = copy;
 	task_unlock(task);
+	return 0;
+}
+
+int sysctl_max_threads(struct ctl_table *table, int write,
+		       void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	struct ctl_table t;
+	int ret;
+	int threads = max_threads;
+	int min = MIN_THREADS;
+	int max = MAX_THREADS;
+
+	t = *table;
+	t.data = &threads;
+	t.extra1 = &min;
+	t.extra2 = &max;
+
+	ret = proc_dointvec_minmax(&t, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	set_max_threads(threads);
+
 	return 0;
 }
