@@ -306,7 +306,7 @@ static int compat_restore_sigframe(struct pt_regs *regs,
 	err = get_sigset_t(&set, &sf->uc.uc_sigmask);
 	if (err == 0) {
 		sigdelsetmask(&set, ~_BLOCKABLE);
-		set_current_blocked(&set);
+		unblock_current(&set);
 	}
 
 	__get_user_error(regs->regs[0], &sf->uc.uc_mcontext.arm_r0, err);
