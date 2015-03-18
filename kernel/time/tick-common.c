@@ -19,6 +19,7 @@
 #include <linux/profile.h>
 #include <linux/sched.h>
 #include <linux/module.h>
+#include <linux/suspend.h>
 
 #include <asm/irq_regs.h>
 
@@ -49,6 +50,16 @@ ktime_t tick_period;
  *    procedure also covers cpu hotplug.
  */
 int tick_do_timer_cpu __read_mostly = TICK_DO_TIMER_BOOT;
+
+/*
+ * Tick device is per CPU device, when we freeze the timekeeping stuff, we
+ * want to freeze the tick device on all of the online CPUs.
+ *
+ * tick_freeze_target_depth is a counter used for freezing tick device, the
+ * initial value of it is online CPU number. When it is counted down to ZERO,
+ * all of the tick devices are freezed.
+ */
+static unsigned int tick_freeze_target_depth;
 
 /*
  * Debugging: see timer_list.c
@@ -375,15 +386,21 @@ void tick_shutdown(unsigned int *cpup)
 void tick_suspend(void)
 {
 	struct tick_device *td = this_cpu_ptr(&tick_cpu_device);
+	struct clock_event_device *dev = td->evtdev;
 
+	dev->real_handler = dev->event_handler;
+	dev->event_handler = clockevents_handle_noop;
 	clockevents_shutdown(td->evtdev);
 }
 
 void tick_resume(void)
 {
 	struct tick_device *td = this_cpu_ptr(&tick_cpu_device);
+	struct clock_event_device *dev = td->evtdev;
 	int broadcast = tick_resume_broadcast();
 
+	dev->event_handler = dev->real_handler;
+	dev->real_handler = NULL;
 	clockevents_set_mode(td->evtdev, CLOCK_EVT_MODE_RESUME);
 
 	if (!broadcast) {
@@ -391,6 +408,42 @@ void tick_resume(void)
 			tick_setup_periodic(td->evtdev, 0);
 		else
 			tick_resume_oneshot();
+	}
+}
+
+void tick_freeze_prepare(void)
+{
+	tick_freeze_target_depth = num_online_cpus();
+}
+
+void tick_freeze(void)
+{
+	/*
+	 * This is serialized against a concurrent wakeup
+	 * via clockevents_lock
+	 */
+	tick_freeze_target_depth--;
+	tick_suspend();
+
+	/*
+	 * the last tick_suspend CPU suspends timekeeping
+	 */
+	if (!tick_freeze_target_depth)
+		timekeeping_freeze();
+}
+
+void tick_unfreeze(void)
+{
+	/*
+	 * the first wakeup CPU resumes timekeeping
+	 */
+	if (timekeeping_suspended) {
+		timekeeping_unfreeze();
+		touch_softlockup_watchdog();
+		tick_resume();
+		hrtimers_resume();
+	} else {
+		tick_resume();
 	}
 }
 

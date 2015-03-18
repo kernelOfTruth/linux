@@ -1163,14 +1163,7 @@ void timekeeping_inject_sleeptime64(struct timespec64 *delta)
 	clock_was_set();
 }
 
-/**
- * timekeeping_resume - Resumes the generic timekeeping subsystem.
- *
- * This is for the generic clocksource timekeeping.
- * xtime/wall_to_monotonic/jiffies/etc are
- * still managed by arch specific suspend/resume code.
- */
-static void timekeeping_resume(void)
+static void timekeeping_resume_compensate_time(void)
 {
 	struct timekeeper *tk = &tk_core.timekeeper;
 	struct clocksource *clock = tk->tkr.clock;
@@ -1182,9 +1175,6 @@ static void timekeeping_resume(void)
 
 	read_persistent_clock(&tmp);
 	ts_new = timespec_to_timespec64(tmp);
-
-	clockevents_resume();
-	clocksource_resume();
 
 	raw_spin_lock_irqsave(&timekeeper_lock, flags);
 	write_seqcount_begin(&tk_core.seq);
@@ -1242,16 +1232,9 @@ static void timekeeping_resume(void)
 	timekeeping_update(tk, TK_MIRROR | TK_CLOCK_WAS_SET);
 	write_seqcount_end(&tk_core.seq);
 	raw_spin_unlock_irqrestore(&timekeeper_lock, flags);
-
-	touch_softlockup_watchdog();
-
-	clockevents_notify(CLOCK_EVT_NOTIFY_RESUME, NULL);
-
-	/* Resume hrtimers */
-	hrtimers_resume();
 }
 
-static int timekeeping_suspend(void)
+static void timekeeping_suspend_get_time(void)
 {
 	struct timekeeper *tk = &tk_core.timekeeper;
 	unsigned long flags;
@@ -1298,11 +1281,65 @@ static int timekeeping_suspend(void)
 	timekeeping_update(tk, TK_MIRROR);
 	write_seqcount_end(&tk_core.seq);
 	raw_spin_unlock_irqrestore(&timekeeper_lock, flags);
+}
 
+/*
+ * The following operations:
+ *	clockevents_notify(CLOCK_EVT_NOTIFY_SUSPEND, NULL);
+ *	clockevents_notify(CLOCK_EVT_NOTIFY_RESUME, NULL);
+ * are moved out of
+ *	timekeeping_freeze() and timekeeping_unfreeze()
+ * and, replaced by
+ *	tick_suspend() and tick_resume()
+ * and, put into:
+ *	tick_freeze() and tick_unfreeze()
+ * so we avoid clockevents_lock multiple access
+ */
+void timekeeping_freeze(void)
+{
+	/*
+	 * clockevents_lock being held
+	 */
+	timekeeping_suspend_get_time();
+	clocksource_suspend();
+	clockevents_suspend();
+}
+
+void timekeeping_unfreeze(void)
+{
+	/*
+	 * clockevents_lock being held
+	 */
+	clockevents_resume();
+	clocksource_resume();
+	timekeeping_resume_compensate_time();
+}
+
+/**
+ * timekeeping_resume - Resumes the generic timekeeping subsystem.
+ *
+ * This is for the generic clocksource timekeeping.
+ * xtime/wall_to_monotonic/jiffies/etc are
+ * still managed by arch specific suspend/resume code.
+ */
+static void timekeeping_resume(void)
+{
+	clockevents_resume();
+	clocksource_resume();
+	timekeeping_resume_compensate_time();
+
+	touch_softlockup_watchdog();
+	clockevents_notify(CLOCK_EVT_NOTIFY_RESUME, NULL);
+	/* Resume hrtimers */
+	hrtimers_resume();
+}
+
+static int timekeeping_suspend(void)
+{
+	timekeeping_suspend_get_time();
 	clockevents_notify(CLOCK_EVT_NOTIFY_SUSPEND, NULL);
 	clocksource_suspend();
 	clockevents_suspend();
-
 	return 0;
 }
 
