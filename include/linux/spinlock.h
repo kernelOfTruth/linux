@@ -140,6 +140,21 @@ do {								\
 #define smp_mb__after_unlock_lock()	do { } while (0)
 #endif
 
+/*
+ * spin_unlock_wait() and !spin_is_locked() are not memory barriers, they
+ * are only control barriers, thus a memory barrier is required if the
+ * operation should act as an acquire memory barrier, i.e. if it should
+ * pair with the release memory barrier from the spin_unlock() that released
+ * the spinlock.
+ * smp_rmb() is sufficient, as writes cannot pass the implicit control barrier.
+ */
+#ifndef smp_acquire__after_spin_unlock_wait
+#define smp_acquire__after_spin_unlock_wait()	smp_rmb()
+#endif
+#ifndef smp_acquire__after_spin_is_unlocked
+#define smp_acquire__after_spin_is_unlocked()	smp_rmb()
+#endif
+
 /**
  * raw_spin_unlock_wait - wait until the spinlock gets unlocked
  * @lock: the spinlock in question.
