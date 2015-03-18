@@ -177,6 +177,7 @@ config CFG80211_INTERNAL_REGDB
 config CFG80211_WEXT
 	bool "cfg80211 wireless extensions compatibility"
 	depends on CFG80211
+	default y
 	select WEXT_CORE
 	help
 	  Enable this option if you need old userspace for wireless
