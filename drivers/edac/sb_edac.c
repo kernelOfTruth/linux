@@ -2447,6 +2447,7 @@ static int sbridge_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		rc = sbridge_get_all_devices(&num_mc, pci_dev_descr_ibridge_table);
 		type = IVY_BRIDGE;
 		break;
+	case PCI_DEVICE_ID_INTEL_SBRIDGE_IMC_TA:
 	case PCI_DEVICE_ID_INTEL_SBRIDGE_IMC_HA0:
 		rc = sbridge_get_all_devices(&num_mc, pci_dev_descr_sbridge_table);
 		type = SANDY_BRIDGE;
