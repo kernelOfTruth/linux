@@ -38,6 +38,7 @@
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/tty.h>
+#include <linux/tty_flip.h>
 #include <linux/timer.h>
 #include <linux/ctype.h>
 #include <linux/mm.h>
@@ -2207,7 +2208,8 @@ static ssize_t n_tty_read(struct tty_struct *tty, struct file *file,
 			ldata->minimum_to_wake = (minimum - (b - buf));
 
 		if (!input_available_p(tty, 0)) {
-			if (test_bit(TTY_OTHER_CLOSED, &tty->flags)) {
+			if (test_bit(TTY_OTHER_CLOSED, &tty->flags) &&
+			    !tty_data_pending_to_ldisc(tty)) {
 				retval = -EIO;
 				break;
 			}
