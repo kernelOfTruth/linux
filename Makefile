@@ -1,7 +1,7 @@
 VERSION = 3
 PATCHLEVEL = 19
-SUBLEVEL = 1
-EXTRAVERSION = -plus-v8-r12
+SUBLEVEL = 2
+EXTRAVERSION = -plus-v8-r14
 NAME = Toothless white fanged stegodon
 
 # *DOCUMENTATION*
