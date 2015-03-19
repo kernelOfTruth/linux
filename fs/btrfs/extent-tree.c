@@ -5005,9 +5005,9 @@ static unsigned drop_outstanding_extent(struct inode *inode, u64 num_bytes)
 	unsigned dropped_extents = 0;
 	unsigned num_extents = 0;
 
-	num_extents = (num_bytes > BTRFS_MAX_EXTENT_SIZE) ?
-		(unsigned)btrfs_num_extents(num_bytes) : 1;
-
+	num_extents = (unsigned)div64_u64(num_bytes +
+					  BTRFS_MAX_EXTENT_SIZE - 1,
+					  BTRFS_MAX_EXTENT_SIZE);
 	ASSERT(num_extents);
 	ASSERT(BTRFS_I(inode)->outstanding_extents >= num_extents);
 	BTRFS_I(inode)->outstanding_extents -= num_extents;
@@ -5271,6 +5271,9 @@ void btrfs_delalloc_release_metadata(struct inode *inode, u64 num_bytes)
 	spin_unlock(&BTRFS_I(inode)->lock);
 	if (dropped > 0)
 		to_free += btrfs_calc_trans_metadata_size(root, dropped);
+
+	if (btrfs_test_is_dummy_root(root))
+		return;
 
 	trace_btrfs_space_reservation(root->fs_info, "delalloc",
 				      btrfs_ino(inode), to_free, 0);

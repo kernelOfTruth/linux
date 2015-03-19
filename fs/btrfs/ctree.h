@@ -199,12 +199,6 @@ static int btrfs_csum_sizes[] = { 4, 0 };
 #define BTRFS_DIRTY_METADATA_THRESH	(32 * 1024 * 1024)
 
 #define BTRFS_MAX_EXTENT_SIZE (128 * 1024 * 1024)
-#define BTRFS_MAX_EXTENT_BIT 27
-
-static inline u64 btrfs_num_extents(u64 num_bytes)
-{
-	return (num_bytes + BTRFS_MAX_EXTENT_SIZE - 1) >> BTRFS_MAX_EXTENT_BIT;
-}
 
 /*
  * The key defines the order in the tree, and so it also defines (optimal)
@@ -3917,6 +3911,9 @@ int btrfs_prealloc_file_range_trans(struct inode *inode,
 				    loff_t actual_len, u64 *alloc_hint);
 int btrfs_inode_check_errors(struct inode *inode);
 extern const struct dentry_operations btrfs_dentry_operations;
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+void btrfs_test_inode_set_ops(struct inode *inode);
+#endif
 
 /* ioctl.c */
 long btrfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
