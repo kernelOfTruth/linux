@@ -7437,7 +7437,24 @@ unlock:
 		if (start + len > i_size_read(inode))
 			i_size_write(inode, start + len);
 
-		if (len < orig_len) {
+		/*
+		 * direct_io can send down chunks > BTRFS_MAX_EXTENT_SIZE, so we
+		 * don't want to jack up outstanding_extents if we're just
+		 * allocating the largest extent we can for a range that we've
+		 * already reserved the approriate number of outstanding_extents
+		 * for.
+		 *
+		 * So if orig_len <= BTRFS_MAX_EXTENT_SIZE and our allocated len
+		 * is less than orig_len then we know we're going to end up with
+		 * more extents than we reserved.
+		 *
+		 * If orig_len > BTRFS_MAX_EXTENT_SIZE but we weren't able to
+		 * allocate a BTRFS_MAX_EXTENT_SIZE extent then we know we have
+		 * to add another outstanding extent.
+		 */
+		if (len < orig_len &&
+		    (orig_len <= BTRFS_MAX_EXTENT_SIZE ||
+		     len < BTRFS_MAX_EXTENT_SIZE)) {
 			spin_lock(&BTRFS_I(inode)->lock);
 			BTRFS_I(inode)->outstanding_extents++;
 			spin_unlock(&BTRFS_I(inode)->lock);
