@@ -424,6 +424,25 @@ receive_buf(struct tty_struct *tty, struct tty_buffer *head, int count)
 	return count;
 }
 
+int tty_data_pending_to_ldisc(struct tty_struct *tty)
+{
+	struct tty_bufhead *buf = &tty->port->buf;
+	struct tty_buffer *head = buf->head;
+
+	struct tty_buffer *next;
+	int count;
+
+	next = head->next;
+	/* paired w/ barrier in __tty_buffer_request_room();
+	 * ensures commit value read is not stale if the head
+	 * is advancing to the next buffer
+	 */
+	smp_rmb();
+	count = head->commit - head->read;
+
+	return (count || next);
+}
+
 /**
  *	flush_to_ldisc
  *	@work: tty structure passed from work queue.
