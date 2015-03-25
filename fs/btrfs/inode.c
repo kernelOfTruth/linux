@@ -1553,9 +1553,6 @@ static void btrfs_split_extent_hook(struct inode *inode,
 		 * applies here, just in reverse.
 		 */
 		new_size = orig->end - split + 1;
-		if ((split - orig->start) > new_size)
-			new_size = split - orig->start;
-
 		num_extents = div64_u64(new_size + BTRFS_MAX_EXTENT_SIZE - 1,
 					BTRFS_MAX_EXTENT_SIZE);
 		new_size = split - orig->start;
