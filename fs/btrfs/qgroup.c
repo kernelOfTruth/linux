@@ -1256,13 +1256,13 @@ static int comp_oper(struct btrfs_qgroup_operation *oper1,
 		return -1;
 	if (oper1->bytenr > oper2->bytenr)
 		return 1;
-	if (oper1->seq < oper2->seq)
-		return -1;
-	if (oper1->seq > oper2->seq)
-		return -1;
 	if (oper1->ref_root < oper2->ref_root)
 		return -1;
 	if (oper1->ref_root > oper2->ref_root)
+		return 1;
+	if (oper1->seq < oper2->seq)
+		return -1;
+	if (oper1->seq > oper2->seq)
 		return 1;
 	if (oper1->type < oper2->type)
 		return -1;
@@ -1431,9 +1431,8 @@ static int qgroup_excl_accounting(struct btrfs_fs_info *fs_info,
 		qgroup = u64_to_ptr(unode->aux);
 		qgroup->rfer += sign * oper->num_bytes;
 		qgroup->rfer_cmpr += sign * oper->num_bytes;
+		WARN_ON(sign < 0 && qgroup->excl < oper->num_bytes);
 		qgroup->excl += sign * oper->num_bytes;
-		if (sign < 0)
-			WARN_ON(qgroup->excl < oper->num_bytes);
 		qgroup->excl_cmpr += sign * oper->num_bytes;
 		qgroup_dirty(fs_info, qgroup);
 
