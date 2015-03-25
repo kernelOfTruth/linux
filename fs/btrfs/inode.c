@@ -29,6 +29,7 @@
 #include <linux/backing-dev.h>
 #include <linux/mpage.h>
 #include <linux/swap.h>
+#include <linux/uio.h>
 #include <linux/writeback.h>
 #include <linux/statfs.h>
 #include <linux/compat.h>
