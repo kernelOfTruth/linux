@@ -20,6 +20,7 @@
 #include <linux/hrtimer.h>
 #include <linux/module.h>
 #include <trace/events/power.h>
+#include <linux/suspend.h>
 
 #include "cpuidle.h"
 
@@ -118,6 +119,18 @@ int cpuidle_enter_state(struct cpuidle_device *dev, struct cpuidle_driver *drv,
 	struct cpuidle_state *target_state = &drv->states[index];
 	ktime_t time_start, time_end;
 	s64 diff;
+
+	/*
+	 * under the freeze scenario, the timekeeping is suspended
+	 * as well as the clock source device, so we bypass the idle
+	 * counter update in freeze idle
+	 */
+	if (in_freeze()) {
+		entered_state = target_state->enter(dev, drv, index);
+		if (!cpuidle_state_is_coupled(dev, drv, entered_state))
+			local_irq_enable();
+		return entered_state;
+	}
 
 	trace_cpu_idle_rcuidle(index, dev->cpu);
 	time_start = ktime_get();

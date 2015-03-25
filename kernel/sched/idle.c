@@ -7,6 +7,7 @@
 #include <linux/tick.h>
 #include <linux/mm.h>
 #include <linux/stackprotector.h>
+#include <linux/suspend.h>
 
 #include <asm/tlb.h>
 
@@ -186,6 +187,45 @@ exit_idle:
 }
 
 /*
+ * cpu idle freeze function
+ */
+static void cpu_idle_freeze(void)
+{
+	struct cpuidle_device *dev = __this_cpu_read(cpuidle_devices);
+	struct cpuidle_driver *drv = cpuidle_get_cpu_driver(dev);
+
+	/*
+	 * suspend tick, the last CPU suspend timekeeping
+	 */
+	clockevents_notify(CLOCK_EVT_NOTIFY_FREEZE, NULL);
+	/*
+	 * idle loop here if idle_should_freeze()
+	 */
+	while (idle_should_freeze()) {
+		int next_state;
+		/*
+		 * interrupt must be disabled before cpu enters idle
+		 */
+		local_irq_disable();
+
+		next_state = cpuidle_select(drv, dev);
+		if (next_state < 0) {
+			arch_cpu_idle();
+			continue;
+		}
+		/*
+		 * cpuidle_enter will return with interrupt enabled
+		 */
+		cpuidle_enter(drv, dev, next_state);
+	}
+
+	/*
+	 * resume tick, the first wakeup CPU resume timekeeping
+	 */
+	clockevents_notify(CLOCK_EVT_NOTIFY_UNFREEZE, NULL);
+}
+
+/*
  * Generic idle loop implementation
  *
  * Called with polling cleared.
@@ -211,6 +251,11 @@ static void cpu_idle_loop(void)
 
 			if (cpu_is_offline(smp_processor_id()))
 				arch_cpu_idle_dead();
+
+			if (idle_should_freeze()) {
+				cpu_idle_freeze();
+				continue;
+			}
 
 			local_irq_disable();
 			arch_cpu_idle_enter();

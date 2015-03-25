@@ -28,6 +28,7 @@
 #include <linux/ftrace.h>
 #include <trace/events/power.h>
 #include <linux/compiler.h>
+#include <linux/clockchips.h>
 
 #include "power.h"
 
@@ -37,7 +38,15 @@ const char *pm_states[PM_SUSPEND_MAX];
 static const struct platform_suspend_ops *suspend_ops;
 static const struct platform_freeze_ops *freeze_ops;
 static DECLARE_WAIT_QUEUE_HEAD(suspend_freeze_wait_head);
-static bool suspend_freeze_wake;
+
+/* freeze state machine */
+enum freeze_state {
+	FREEZE_STATE_NONE,      /* not in freeze */
+	FREEZE_STATE_ENTER,     /* enter freeze */
+	FREEZE_STATE_WAKE,      /* in freeze wakeup context */
+};
+
+static enum freeze_state suspend_freeze_state;
 
 void freeze_set_ops(const struct platform_freeze_ops *ops)
 {
@@ -46,23 +55,56 @@ void freeze_set_ops(const struct platform_freeze_ops *ops)
 	unlock_system_sleep();
 }
 
+bool in_freeze(void)
+{
+	return (suspend_freeze_state > FREEZE_STATE_NONE);
+}
+EXPORT_SYMBOL_GPL(in_freeze);
+
+bool idle_should_freeze(void)
+{
+	return (suspend_freeze_state == FREEZE_STATE_ENTER);
+}
+EXPORT_SYMBOL_GPL(idle_should_freeze);
+
 static void freeze_begin(void)
 {
-	suspend_freeze_wake = false;
+	suspend_freeze_state = FREEZE_STATE_NONE;
 }
 
 static void freeze_enter(void)
 {
+	suspend_freeze_state = FREEZE_STATE_ENTER;
+	get_online_cpus();
 	cpuidle_use_deepest_state(true);
 	cpuidle_resume();
-	wait_event(suspend_freeze_wait_head, suspend_freeze_wake);
+	clockevents_notify(CLOCK_EVT_NOTIFY_FREEZE_PREPARE, NULL);
+	/*
+	 * push all the CPUs into freeze idle loop
+	 */
+	wake_up_all_idle_cpus();
+	printk(KERN_INFO "PM: suspend to idle\n");
+	/*
+	 * put the current CPU into wait queue so that this CPU
+	 * is able to enter freeze idle loop as well
+	 */
+	wait_event(suspend_freeze_wait_head,
+		(suspend_freeze_state == FREEZE_STATE_WAKE));
+	printk(KERN_INFO "PM: resume from freeze\n");
 	cpuidle_pause();
 	cpuidle_use_deepest_state(false);
+	put_online_cpus();
+	suspend_freeze_state = FREEZE_STATE_NONE;
 }
 
 void freeze_wake(void)
 {
-	suspend_freeze_wake = true;
+	if (!in_freeze())
+		return;
+	/*
+	 * wake freeze task up
+	 */
+	suspend_freeze_state = FREEZE_STATE_WAKE;
 	wake_up(&suspend_freeze_wait_head);
 }
 EXPORT_SYMBOL_GPL(freeze_wake);
