@@ -476,7 +476,7 @@ long sys_sigreturn(void)
 	    copy_from_user(&set.sig[1], extramask, sig_size))
 		goto segfault;
 
-	set_current_blocked(&set);
+	unblock_current(&set);
 
 	if (copy_sc_from_user(&current->thread.regs, sc))
 		goto segfault;
@@ -584,7 +584,7 @@ long sys_rt_sigreturn(void)
 	if (copy_from_user(&set, &uc->uc_sigmask, sizeof(set)))
 		goto segfault;
 
-	set_current_blocked(&set);
+	unblock_current(&set);
 
 	if (copy_sc_from_user(&current->thread.regs, &uc->uc_mcontext))
 		goto segfault;
