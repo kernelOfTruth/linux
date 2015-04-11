@@ -3254,6 +3254,7 @@ process_slot:
 			u64 datao = 0, datal = 0;
 			u8 comp;
 			u64 drop_start;
+			u64 next_key_min_offset;
 
 			extent = btrfs_item_ptr(leaf, slot,
 						struct btrfs_file_extent_item);
@@ -3498,9 +3499,11 @@ process_slot:
 				goto out;
 			if (new_key.offset + datal >= destoff + len)
 				break;
+			key.offset = next_key_min_offset;
+		} else {
+			key.offset++;
 		}
 		btrfs_release_path(path);
-		key.offset = next_key_min_offset;
 	}
 	ret = 0;
 
