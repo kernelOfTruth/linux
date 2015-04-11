@@ -4713,6 +4713,13 @@ void btrfs_free_block_rsv(struct btrfs_root *root,
 	kfree(rsv);
 }
 
+void __btrfs_free_block_rsv(struct btrfs_block_rsv *rsv)
+{
+	if (!rsv)
+		return;
+	kfree(rsv);
+}
+
 int btrfs_block_rsv_add(struct btrfs_root *root,
 			struct btrfs_block_rsv *block_rsv, u64 num_bytes,
 			enum btrfs_reserve_flush_enum flush)
@@ -7108,9 +7115,9 @@ static int alloc_reserved_tree_block(struct btrfs_trans_handle *trans,
 	ret = btrfs_insert_empty_item(trans, fs_info->extent_root, path,
 				      ins, size);
 	if (ret) {
+		btrfs_free_path(path);
 		btrfs_free_and_pin_reserved_extent(root, ins->objectid,
 						   root->nodesize);
-		btrfs_free_path(path);
 		return ret;
 	}
 
