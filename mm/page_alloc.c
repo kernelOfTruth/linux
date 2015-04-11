@@ -3234,32 +3234,18 @@ out:
 
 #define K(x) ((x) << (PAGE_SHIFT-10))
 
-static void show_migration_types(unsigned char type)
-{
-	static const char types[MIGRATE_TYPES] = {
-		[MIGRATE_UNMOVABLE]	= 'U',
-		[MIGRATE_RECLAIMABLE]	= 'E',
-		[MIGRATE_MOVABLE]	= 'M',
-		[MIGRATE_RESERVE]	= 'R',
+char * const migratetype_names[MIGRATE_TYPES] = {
+	"Unmovable",
+	"Reclaimable",
+	"Movable",
+	"Reserve",
 #ifdef CONFIG_CMA
-		[MIGRATE_CMA]		= 'C',
+	"CMA",
 #endif
 #ifdef CONFIG_MEMORY_ISOLATION
-		[MIGRATE_ISOLATE]	= 'I',
+	"Isolate",
 #endif
-	};
-	char tmp[MIGRATE_TYPES + 1];
-	char *p = tmp;
-	int i;
-
-	for (i = 0; i < MIGRATE_TYPES; i++) {
-		if (type & (1 << i))
-			*p++ = types[i];
-	}
-
-	*p = '\0';
-	printk("(%s) ", tmp);
-}
+};
 
 /*
  * Show free area list (used inside shift_scroll-lock stuff)
@@ -3391,7 +3377,7 @@ void show_free_areas(unsigned int filter)
 
 	for_each_populated_zone(zone) {
 		unsigned long nr[MAX_ORDER], flags, order, total = 0;
-		unsigned char types[MAX_ORDER];
+		unsigned long nr_free[MAX_ORDER][MIGRATE_TYPES], mtype;
 
 		if (skip_free_areas_node(filter, zone_to_nid(zone)))
 			continue;
@@ -3401,24 +3387,35 @@ void show_free_areas(unsigned int filter)
 		spin_lock_irqsave(&zone->lock, flags);
 		for (order = 0; order < MAX_ORDER; order++) {
 			struct free_area *area = &zone->free_area[order];
+			struct list_head *curr;
 			int type;
 
 			nr[order] = area->nr_free;
 			total += nr[order] << order;
 
-			types[order] = 0;
 			for (type = 0; type < MIGRATE_TYPES; type++) {
+				nr_free[order][type] = 0;
 				if (!list_empty(&area->free_list[type]))
-					types[order] |= 1 << type;
+					list_for_each(curr, &area->free_list[type])
+						nr_free[order][type]++;
 			}
 		}
 		spin_unlock_irqrestore(&zone->lock, flags);
-		for (order = 0; order < MAX_ORDER; order++) {
+		for (order = 0; order < MAX_ORDER; order++)
 			printk("%lu*%lukB ", nr[order], K(1UL) << order);
-			if (nr[order])
-				show_migration_types(types[order]);
-		}
 		printk("= %lukB\n", K(total));
+
+		printk("%12s: ", "orders");
+		for (order = 0; order < MAX_ORDER; order++)
+			printk("%6lu ", order);
+		printk("\n");
+
+		for (mtype = 0; mtype < MIGRATE_TYPES; mtype++) {
+			printk("%12s: ", migratetype_names[mtype]);
+			for (order = 0; order < MAX_ORDER; order++)
+				printk("%6lu ", nr_free[order][mtype]);
+			printk("\n");
+		}
 	}
 
 	hugetlb_show_meminfo();

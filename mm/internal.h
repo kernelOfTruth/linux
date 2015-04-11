@@ -14,6 +14,8 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 
+extern char * const migratetype_names[MIGRATE_TYPES];
+
 void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *start_vma,
 		unsigned long floor, unsigned long ceiling);
 
