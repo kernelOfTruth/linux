@@ -88,6 +88,7 @@ struct tvec_base {
 	struct tvec tv3;
 	struct tvec tv4;
 	struct tvec tv5;
+	int tv1_cnt;	/* number of newly inserted timers in tv1 */
 } ____cacheline_aligned;
 
 struct tvec_base boot_tvec_bases;
@@ -363,6 +364,7 @@ __internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 	if (idx < TVR_SIZE) {
 		int i = expires & TVR_MASK;
 		vec = base->tv1.vec + i;
+		base->tv1_cnt++;
 	} else if (idx < 1 << (TVR_BITS + TVN_BITS)) {
 		int i = (expires >> TVR_BITS) & TVN_MASK;
 		vec = base->tv2.vec + i;
@@ -378,6 +380,7 @@ __internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 		 * or you set a timer to go off in the past
 		 */
 		vec = base->tv1.vec + (base->timer_jiffies & TVR_MASK);
+		base->tv1_cnt++;
 	} else {
 		int i;
 		/* If the timeout is larger than MAX_TVAL (on 64-bit
@@ -1174,6 +1177,7 @@ static inline void __run_timers(struct tvec_base *base)
 		spin_unlock_irq(&base->lock);
 		return;
 	}
+
 	while (time_after_eq(jiffies, base->timer_jiffies)) {
 		struct list_head work_list;
 		struct list_head *head = &work_list;
@@ -1182,11 +1186,29 @@ static inline void __run_timers(struct tvec_base *base)
 		/*
 		 * Cascade timers:
 		 */
-		if (!index &&
-			(!cascade(base, &base->tv2, INDEX(0))) &&
-				(!cascade(base, &base->tv3, INDEX(1))) &&
-					!cascade(base, &base->tv4, INDEX(2)))
-			cascade(base, &base->tv5, INDEX(3));
+		if (unlikely(!index)) {
+			if (!cascade(base, &base->tv2, INDEX(0))) {
+				if ((!cascade(base, &base->tv3, INDEX(1))) &&
+						!cascade(base, &base->tv4, INDEX(2)))
+					cascade(base, &base->tv5, INDEX(3));
+			}
+
+			/*
+			 * We are just crossing the boundary of tv1 (usually 256 jiffies).
+			 * Since there was no new timers inserted to tv1 and all the old
+			 * timers have been processed, it is guaranteed that tv1 has no
+			 * pending timers, so jiffie can jump to the next boundary at
+			 * most.
+			 */
+			if (base->tv1_cnt == 0) {
+				base->timer_jiffies += min_t(unsigned long,
+						TVR_SIZE - index, jiffies - base->timer_jiffies + 1);
+					continue;
+			}
+
+			base->tv1_cnt = 0;
+		}
+
 		++base->timer_jiffies;
 		list_replace_init(base->tv1.vec + index, head);
 		while (!list_empty(head)) {
