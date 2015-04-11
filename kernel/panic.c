@@ -23,6 +23,7 @@
 #include <linux/sysrq.h>
 #include <linux/init.h>
 #include <linux/nmi.h>
+#include <asm/cacheflush.h>
 
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
@@ -56,6 +57,8 @@ EXPORT_SYMBOL(panic_blink);
  */
 void __weak panic_smp_self_stop(void)
 {
+	flush_cache_all();
+
 	while (1)
 		cpu_relax();
 }
