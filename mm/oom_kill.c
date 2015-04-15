@@ -416,7 +416,7 @@ void note_oom_kill(void)
 }
 
 /**
- * mark_tsk_oom_victim - marks the given taks as OOM victim.
+ * mark_tsk_oom_victim - marks the given task as OOM victim.
  * @tsk: task to mark
  */
 void mark_tsk_oom_victim(struct task_struct *tsk)
