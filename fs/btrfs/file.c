@@ -1906,8 +1906,13 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 		 * start and finish before we start logging the inode, so that
 		 * all extents are persisted and the respective file extent
 		 * items are in the fs/subvol btree.
+		 *
+		 * We also need to do the whole range, we set FULL_SYNC if we
+		 * truncated, and we could have some previous version of the
+		 * inode in the log, so we need to write and log all the things.
 		 */
-		ret = btrfs_wait_ordered_range(inode, start, len);
+		end = (u64)-1;
+		ret = btrfs_wait_ordered_range(inode, start, end);
 	} else {
 		/*
 		 * Start any new ordered operations before starting to log the
