@@ -910,8 +910,12 @@ static int __unmap_and_move(struct page *page, struct page *newpage,
 
 	/* Establish migration ptes or remove ptes */
 	if (page_mapped(page)) {
-		try_to_unmap(page,
-			TTU_MIGRATION|TTU_IGNORE_MLOCK|TTU_IGNORE_ACCESS);
+		int ttu_retval = try_to_unmap(page,
+			TTU_MIGRATION|TTU_IGNORE_MLOCK|TTU_IGNORE_ACCESS|TTU_BATCH_FLUSH);
+
+		/* Must flush before copy in case of a writable TLB entry */
+		if (ttu_retval == SWAP_SUCCESS_CACHED)
+			try_to_unmap_flush();
 		page_was_mapped = 1;
 	}
 
@@ -1131,6 +1135,8 @@ int migrate_pages(struct list_head *from, new_page_t get_new_page,
 	if (!swapwrite)
 		current->flags |= PF_SWAPWRITE;
 
+	alloc_tlb_ubc();
+
 	for(pass = 0; pass < 10 && retry; pass++) {
 		retry = 0;
 
@@ -1169,6 +1175,9 @@ int migrate_pages(struct list_head *from, new_page_t get_new_page,
 	}
 	rc = nr_failed + retry;
 out:
+	/* Must flush before any potential frees */
+	try_to_unmap_flush();
+
 	while (!list_empty(&putback_list)) {
 		page = list_entry(putback_list.prev, struct page, lru);
 		list_del(&page->lru);

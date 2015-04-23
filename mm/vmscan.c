@@ -2715,7 +2715,7 @@ out:
  * Allocate the control structure for batch TLB flushing. An allocation
  * failure is harmless as the reclaimer will send IPIs where necessary.
  */
-static inline void alloc_tlb_ubc(void)
+void alloc_tlb_ubc(void)
 {
 	if (current->tlb_ubc)
 		return;
@@ -2727,10 +2727,6 @@ static inline void alloc_tlb_ubc(void)
 
 	cpumask_clear(&current->tlb_ubc->cpumask);
 	current->tlb_ubc->nr_pages = 0;
-}
-#else
-static inline void alloc_tlb_ubc(void)
-{
 }
 #endif /* CONFIG_ARCH_SUPPORTS_LOCAL_TLB_PFN_FLUSH */
 

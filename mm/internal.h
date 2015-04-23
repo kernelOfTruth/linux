@@ -412,8 +412,13 @@ struct tlbflush_unmap_batch;
 
 #ifdef CONFIG_ARCH_SUPPORTS_LOCAL_TLB_PFN_FLUSH
 void try_to_unmap_flush(void);
+void alloc_tlb_ubc(void);
 #else
 static inline void try_to_unmap_flush(void)
+{
+}
+
+static inline void alloc_tlb_ubc(void)
 {
 }
 
