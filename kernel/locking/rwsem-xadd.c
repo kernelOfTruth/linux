@@ -107,6 +107,35 @@ enum rwsem_wake_type {
 	RWSEM_WAKE_READ_OWNED	/* Waker thread holds the read lock */
 };
 
+#ifdef CONFIG_RWSEM_SPIN_ON_OWNER
+/*
+ * return true if there is an active writer by checking the owner field which
+ * should be set if there is one.
+ */
+static inline bool rwsem_has_active_writer(struct rw_semaphore *sem)
+{
+	return READ_ONCE(sem->owner) != NULL;
+}
+
+/*
+ * Return true if the rwsem has active spinner
+ */
+static inline bool rwsem_has_spinner(struct rw_semaphore *sem)
+{
+	return osq_is_locked(&sem->osq);
+}
+#else /* CONFIG_RWSEM_SPIN_ON_OWNER */
+static inline bool rwsem_has_active_writer(struct rw_semaphore *sem)
+{
+	return false;	/* Assume it has no active writer */
+}
+
+static inline bool rwsem_has_spinner(struct rw_semaphore *sem)
+{
+	return false;
+}
+#endif /* CONFIG_RWSEM_SPIN_ON_OWNER */
+
 /*
  * handle the lock release when processes blocked on it that can now run
  * - if we come here from up_xxxx(), then:
@@ -124,6 +153,14 @@ __rwsem_do_wake(struct rw_semaphore *sem, enum rwsem_wake_type wake_type)
 	struct task_struct *tsk;
 	struct list_head *next;
 	long oldcount, woken, loop, adjustment;
+
+	/*
+	 * up_write() cleared the owner field before calling this function.
+	 * If that field is now set, a writer must have stolen the lock and
+	 * the wakeup operation should be aborted.
+	 */
+	if (rwsem_has_active_writer(sem))
+		goto out;
 
 	waiter = list_entry(sem->wait_list.next, struct rwsem_waiter, list);
 	if (waiter->type == RWSEM_WAITING_FOR_WRITE) {
@@ -479,7 +516,40 @@ struct rw_semaphore *rwsem_wake(struct rw_semaphore *sem)
 {
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&sem->wait_lock, flags);
+	/*
+	 * If a spinner is present, it is not necessary to do the wakeup.
+	 * Try to do wakeup only if the trylock succeeds to minimize
+	 * spinlock contention which may introduce too much delay in the
+	 * unlock operation.
+	 *
+	 *    spinning writer		up_write/up_read caller
+	 *    ---------------		-----------------------
+	 * [S]   osq_unlock()		[L]   osq
+	 *	 MB			      MB
+	 * [RmW] rwsem_try_write_lock() [RmW] spin_trylock(wait_lock)
+	 *
+	 * Here, it is important to make sure that there won't be a missed
+	 * wakeup while the rwsem is free and the only spinning writer goes
+	 * to sleep without taking the rwsem. In case the spinning writer is
+	 * just going to break out of the waiting loop, it will still do a
+	 * trylock in rwsem_down_write_failed() before sleeping. IOW, if
+	 * rwsem_has_spinner() is true, it will  guarantee at least one
+	 * trylock attempt on the rwsem.
+	 */
+	if (!rwsem_has_spinner(sem)) {
+		raw_spin_lock_irqsave(&sem->wait_lock, flags);
+	} else {
+		/*
+		 * rwsem_has_spinner() is an atomic read while spin_trylock
+		 * does not guarantee a full memory barrier. Insert a memory
+		 * barrier here to make sure that wait_lock isn't read until
+		 * after osq.
+		 * Note: smp_rmb__after_atomic() should be used if available.
+		 */
+		smp_mb__after_atomic();
+		if (!raw_spin_trylock_irqsave(&sem->wait_lock, flags))
+			return sem;
+	}
 
 	/* do nothing if list empty */
 	if (!list_empty(&sem->wait_list))
