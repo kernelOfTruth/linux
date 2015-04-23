@@ -938,7 +938,7 @@ out:
  */
 static int unmap_and_move(new_page_t get_new_page, free_page_t put_new_page,
 			unsigned long private, struct page *page, int force,
-			enum migrate_mode mode)
+			enum migrate_mode mode, struct list_head *putback_list)
 {
 	int rc = 0;
 	int *result = NULL;
@@ -969,7 +969,7 @@ out:
 		list_del(&page->lru);
 		dec_zone_page_state(page, NR_ISOLATED_ANON +
 				page_is_file_cache(page));
-		putback_lru_page(page);
+		list_add(&page->lru, putback_list);
 	}
 
 	/*
@@ -1118,6 +1118,7 @@ int migrate_pages(struct list_head *from, new_page_t get_new_page,
 		free_page_t put_new_page, unsigned long private,
 		enum migrate_mode mode, int reason)
 {
+	LIST_HEAD(putback_list);
 	int retry = 1;
 	int nr_failed = 0;
 	int nr_succeeded = 0;
@@ -1142,7 +1143,8 @@ int migrate_pages(struct list_head *from, new_page_t get_new_page,
 						pass > 2, mode);
 			else
 				rc = unmap_and_move(get_new_page, put_new_page,
-						private, page, pass > 2, mode);
+						private, page, pass > 2, mode,
+						&putback_list);
 
 			switch(rc) {
 			case -ENOMEM:
@@ -1167,6 +1169,12 @@ int migrate_pages(struct list_head *from, new_page_t get_new_page,
 	}
 	rc = nr_failed + retry;
 out:
+	while (!list_empty(&putback_list)) {
+		page = list_entry(putback_list.prev, struct page, lru);
+		list_del(&page->lru);
+		putback_lru_page(page);
+	}
+
 	if (nr_succeeded)
 		count_vm_events(PGMIGRATE_SUCCESS, nr_succeeded);
 	if (nr_failed)
