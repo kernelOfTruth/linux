@@ -110,9 +110,10 @@ extern void warn_slowpath_null(const char *file, const int line);
 	static bool __section(.data.unlikely) __warned;		\
 	int __ret_warn_once = !!(condition);			\
 								\
-	if (unlikely(__ret_warn_once))				\
-		if (WARN_ON(!__warned)) 			\
-			__warned = true;			\
+	if (unlikely(__ret_warn_once) && !__warned) {		\
+		__warned = true;				\
+		WARN_ON(true);					\
+	}							\
 	unlikely(__ret_warn_once);				\
 })
 
@@ -120,9 +121,10 @@ extern void warn_slowpath_null(const char *file, const int line);
 	static bool __section(.data.unlikely) __warned;		\
 	int __ret_warn_once = !!(condition);			\
 								\
-	if (unlikely(__ret_warn_once))				\
-		if (WARN(!__warned, format)) 			\
-			__warned = true;			\
+	if (unlikely(__ret_warn_once) && !__warned) {		\
+		__warned = true;				\
+		WARN(true, format);				\
+	}							\
 	unlikely(__ret_warn_once);				\
 })
 
@@ -130,9 +132,10 @@ extern void warn_slowpath_null(const char *file, const int line);
 	static bool __section(.data.unlikely) __warned;		\
 	int __ret_warn_once = !!(condition);			\
 								\
-	if (unlikely(__ret_warn_once))				\
-		if (WARN_TAINT(!__warned, taint, format))	\
-			__warned = true;			\
+	if (unlikely(__ret_warn_once) && !__warned) {		\
+		__warned = true;				\
+		WARN_TAINT(true, taint, format);		\
+	}							\
 	unlikely(__ret_warn_once);				\
 })
 
