@@ -819,6 +819,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 	unsigned long nr_reclaimed = 0;
 	unsigned long nr_writeback = 0;
 	unsigned long nr_immediate = 0;
+	bool tlb_flush_required = false;
 
 	cond_resched();
 
@@ -991,6 +992,9 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 				goto keep_locked;
 			case SWAP_MLOCK:
 				goto cull_mlocked;
+			case SWAP_SUCCESS_CACHED:
+				/* Must flush before free, fall through */
+				tlb_flush_required = true;
 			case SWAP_SUCCESS:
 				; /* try to free the page below */
 			}
@@ -1135,7 +1139,8 @@ keep:
 	}
 
 	mem_cgroup_uncharge_list(&free_pages);
-	try_to_unmap_flush();
+	if (tlb_flush_required)
+		try_to_unmap_flush();
 	free_hot_cold_page_list(&free_pages, true);
 
 	list_splice(&ret_pages, page_list);
@@ -1172,6 +1177,7 @@ unsigned long reclaim_clean_pages_from_list(struct zone *zone,
 	ret = shrink_page_list(&clean_pages, zone, &sc,
 			TTU_UNMAP|TTU_IGNORE_ACCESS,
 			&dummy1, &dummy2, &dummy3, &dummy4, &dummy5, true);
+	try_to_unmap_flush();
 	list_splice(&clean_pages, page_list);
 	mod_zone_page_state(zone, NR_ISOLATED_FILE, -ret);
 	return ret;
@@ -2180,6 +2186,7 @@ static void shrink_lruvec(struct lruvec *lruvec, int swappiness,
 		scan_adjusted = true;
 	}
 	blk_finish_plug(&plug);
+	try_to_unmap_flush();
 	sc->nr_reclaimed += nr_reclaimed;
 
 	/*

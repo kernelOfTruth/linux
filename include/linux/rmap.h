@@ -292,9 +292,11 @@ static inline int page_mkclean(struct page *page)
 /*
  * Return values of try_to_unmap
  */
-#define SWAP_SUCCESS	0
-#define SWAP_AGAIN	1
-#define SWAP_FAIL	2
-#define SWAP_MLOCK	3
+#define SWAP_SUCCESS		0
+#define SWAP_SUCCESS_CACHED	1
+#define SWAP_AGAIN		2
+#define SWAP_AGAIN_CACHED	3
+#define SWAP_FAIL		4
+#define SWAP_MLOCK		5
 
 #endif	/* _LINUX_RMAP_H */

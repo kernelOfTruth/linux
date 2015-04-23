@@ -1267,6 +1267,7 @@ static int try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 	spinlock_t *ptl;
 	int ret = SWAP_AGAIN;
 	bool deferred;
+	bool dirty_cached = false;
 	enum ttu_flags flags = (enum ttu_flags)arg;
 
 	pte = page_check_address(page, mm, address, &ptl, 0);
@@ -1314,12 +1315,13 @@ static int try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 	if (pte_dirty(pteval)) {
 		/*
 		 * If the PTE was dirty then it's best to assume it's writable.
-		 * The TLB must be flushed before the page is unlocked as IO
-		 * can start in parallel. Without the flush, writes could
-		 * happen and data be potentially lost.
+		 * Inform the caller that it is possible there is a writable
+		 * cached TLB entry. It is the responsibility of the caller
+		 * to flush the TLB before the page is freed or any IO is
+		 * initiated.
 		 */
 		if (deferred)
-			flush_tlb_page(vma, address);
+			dirty_cached = true;
 
 		set_page_dirty(page);
 	}
@@ -1393,6 +1395,9 @@ static int try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 
 	page_remove_rmap(page);
 	page_cache_release(page);
+
+	if (dirty_cached)
+		ret = SWAP_AGAIN_CACHED;
 
 out_unmap:
 	pte_unmap_unlock(pte, ptl);
@@ -1661,10 +1666,11 @@ static int page_not_mapped(struct page *page)
  * page, used in the pageout path.  Caller must hold the page lock.
  * Return values are:
  *
- * SWAP_SUCCESS	- we succeeded in removing all mappings
- * SWAP_AGAIN	- we missed a mapping, try again later
- * SWAP_FAIL	- the page is unswappable
- * SWAP_MLOCK	- page is mlocked.
+ * SWAP_SUCCESS	       - we succeeded in removing all mappings
+ * SWAP_SUCCESS_CACHED - Like SWAP_SUCCESS but a writable TLB entry may exist
+ * SWAP_AGAIN	       - we missed a mapping, try again later
+ * SWAP_FAIL	       - the page is unswappable
+ * SWAP_MLOCK	       - page is mlocked.
  */
 int try_to_unmap(struct page *page, enum ttu_flags flags)
 {
@@ -1693,7 +1699,8 @@ int try_to_unmap(struct page *page, enum ttu_flags flags)
 	ret = rmap_walk(page, &rwc);
 
 	if (ret != SWAP_MLOCK && !page_mapped(page))
-		ret = SWAP_SUCCESS;
+		ret = (ret == SWAP_AGAIN_CACHED) ? SWAP_SUCCESS_CACHED : SWAP_SUCCESS;
+
 	return ret;
 }
 
@@ -1795,15 +1802,24 @@ static int rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc)
 	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root, pgoff, pgoff) {
 		struct vm_area_struct *vma = avc->vma;
 		unsigned long address = vma_address(page, vma);
+		int this_ret;
 
 		if (rwc->invalid_vma && rwc->invalid_vma(vma, rwc->arg))
 			continue;
 
-		ret = rwc->rmap_one(page, vma, address, rwc->arg);
-		if (ret != SWAP_AGAIN)
+		this_ret = rwc->rmap_one(page, vma, address, rwc->arg);
+		if (this_ret != SWAP_AGAIN && this_ret != SWAP_AGAIN_CACHED) {
+			ret = this_ret;
 			break;
-		if (rwc->done && rwc->done(page))
+		}
+		if (rwc->done && rwc->done(page)) {
+			ret = this_ret;
 			break;
+		}
+
+		/* Remember if there is possible a writable TLB entry */
+		if (this_ret == SWAP_AGAIN_CACHED)
+			ret = SWAP_AGAIN_CACHED;
 	}
 	anon_vma_unlock_read(anon_vma);
 	return ret;
@@ -1844,15 +1860,24 @@ static int rmap_walk_file(struct page *page, struct rmap_walk_control *rwc)
 	i_mmap_lock_read(mapping);
 	vma_interval_tree_foreach(vma, &mapping->i_mmap, pgoff, pgoff) {
 		unsigned long address = vma_address(page, vma);
+		int this_ret;
 
 		if (rwc->invalid_vma && rwc->invalid_vma(vma, rwc->arg))
 			continue;
 
-		ret = rwc->rmap_one(page, vma, address, rwc->arg);
-		if (ret != SWAP_AGAIN)
+		this_ret = rwc->rmap_one(page, vma, address, rwc->arg);
+		if (this_ret != SWAP_AGAIN && this_ret != SWAP_AGAIN_CACHED) {
+			ret = this_ret;
 			goto done;
-		if (rwc->done && rwc->done(page))
+		}
+		if (rwc->done && rwc->done(page)) {
+			ret = this_ret;
 			goto done;
+		}
+
+		/* Remember if there is possible a writable TLB entry */
+		if (this_ret == SWAP_AGAIN_CACHED)
+			ret = SWAP_AGAIN_CACHED;
 	}
 
 	if (!rwc->file_nonlinear)
