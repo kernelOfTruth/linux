@@ -246,6 +246,11 @@ void __put_task_struct(struct task_struct *tsk)
 	delayacct_tsk_free(tsk);
 	put_signal_struct(tsk->signal);
 
+#ifdef CONFIG_ARCH_SUPPORTS_LOCAL_TLB_PFN_FLUSH
+	kfree(tsk->tlb_ubc);
+	tsk->tlb_ubc = NULL;
+#endif
+
 	if (!profile_handoff_task(tsk))
 		free_task(tsk);
 }

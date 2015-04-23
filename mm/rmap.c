@@ -60,6 +60,8 @@
 
 #include <asm/tlbflush.h>
 
+#include <trace/events/tlb.h>
+
 #include "internal.h"
 
 static struct kmem_cache *anon_vma_cachep;
@@ -580,6 +582,79 @@ vma_address(struct page *page, struct vm_area_struct *vma)
 
 	return address;
 }
+
+#ifdef CONFIG_ARCH_SUPPORTS_LOCAL_TLB_PFN_FLUSH
+static void percpu_flush_tlb_batch_pages(void *data)
+{
+	struct tlbflush_unmap_batch *tlb_ubc = data;
+	int i;
+
+	count_vm_tlb_event(NR_TLB_REMOTE_FLUSH_RECEIVED);
+	for (i = 0; i < tlb_ubc->nr_pages; i++)
+		flush_local_tlb_addr(tlb_ubc->pfns[i] << PAGE_SHIFT);
+}
+
+/*
+ * Flush any pending IPIs. It is important that if a PTE was dirty at the time
+ * it was unmapped at the flush occurs before any IO is initiated on the page
+ * or is about to be freed to prevent lost writes or leakage respectively
+ */
+void try_to_unmap_flush(void)
+{
+	struct tlbflush_unmap_batch *tlb_ubc = current->tlb_ubc;
+
+	if (!tlb_ubc || !tlb_ubc->nr_pages)
+		return;
+
+	trace_tlb_flush(TLB_REMOTE_SHOOTDOWN, tlb_ubc->nr_pages);
+	smp_call_function_many(&tlb_ubc->cpumask, percpu_flush_tlb_batch_pages,
+		(void *)tlb_ubc, true);
+	cpumask_clear(&tlb_ubc->cpumask);
+	tlb_ubc->nr_pages = 0;
+}
+
+static void set_tlb_ubc_flush_pending(struct mm_struct *mm,
+		struct page *page)
+{
+	struct tlbflush_unmap_batch *tlb_ubc = current->tlb_ubc;
+
+	cpumask_or(&tlb_ubc->cpumask, &tlb_ubc->cpumask, mm_cpumask(mm));
+	tlb_ubc->pfns[tlb_ubc->nr_pages] = page_to_pfn(page);
+	tlb_ubc->nr_pages++;
+
+	if (tlb_ubc->nr_pages == BATCH_TLBFLUSH_SIZE)
+		try_to_unmap_flush();
+}
+
+/*
+ * Returns true if the TLB flush should be deferred to the end of a batch of
+ * unmap operations to reduce IPIs.
+ */
+static bool should_defer_flush(struct mm_struct *mm, enum ttu_flags flags)
+{
+	bool should_defer = false;
+
+	if (!current->tlb_ubc || !(flags & TTU_BATCH_FLUSH))
+		return false;
+
+	/* If remote CPUs need to be flushed then defer batch the flush */
+	if (cpumask_any_but(mm_cpumask(mm), get_cpu()) < nr_cpu_ids)
+		should_defer = true;
+	put_cpu();
+
+	return should_defer;
+}
+#else
+static void set_tlb_ubc_flush_pending(struct mm_struct *mm,
+		struct page *page)
+{
+}
+
+static bool should_defer_flush(struct mm_struct *mm, enum ttu_flags flags)
+{
+	return false;
+}
+#endif /* CONFIG_ARCH_SUPPORTS_LOCAL_TLB_PFN_FLUSH */
 
 /*
  * At what user virtual address is page expected in vma?
@@ -1191,6 +1266,7 @@ static int try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 	pte_t pteval;
 	spinlock_t *ptl;
 	int ret = SWAP_AGAIN;
+	bool deferred;
 	enum ttu_flags flags = (enum ttu_flags)arg;
 
 	pte = page_check_address(page, mm, address, &ptl, 0);
@@ -1218,11 +1294,35 @@ static int try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 
 	/* Nuke the page table entry. */
 	flush_cache_page(vma, address, page_to_pfn(page));
-	pteval = ptep_clear_flush(vma, address, pte);
+	deferred = should_defer_flush(mm, flags);
+	if (deferred) {
+		/*
+		 * We clear the PTE but do not flush so potentially a remote
+		 * CPU could still be writing to the page. If the entry was
+		 * previously clean then the architecture must guarantee that
+		 * a clear->dirty transition on a cached TLB entry is written
+		 * through and traps if the PTE is unmapped. If the entry is
+		 * writable then it's handled below.
+		 */
+		pteval = ptep_get_and_clear(mm, address, pte);
+		set_tlb_ubc_flush_pending(mm, page);
+	} else {
+		pteval = ptep_clear_flush(vma, address, pte);
+	}
 
 	/* Move the dirty bit to the physical page now the pte is gone. */
-	if (pte_dirty(pteval))
+	if (pte_dirty(pteval)) {
+		/*
+		 * If the PTE was dirty then it's best to assume it's writable.
+		 * The TLB must be flushed before the page is unlocked as IO
+		 * can start in parallel. Without the flush, writes could
+		 * happen and data be potentially lost.
+		 */
+		if (deferred)
+			flush_tlb_page(vma, address);
+
 		set_page_dirty(page);
+	}
 
 	/* Update high watermark before we lower rss */
 	update_hiwater_rss(mm);

@@ -83,6 +83,8 @@ static inline void __flush_tlb_one(unsigned long addr)
  * and page-granular flushes are available only on i486 and up.
  */
 
+#define flush_local_tlb_addr(addr) __flush_tlb_one(addr)
+
 #ifndef CONFIG_SMP
 
 /* "_up" is for UniProcessor.

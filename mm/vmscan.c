@@ -983,7 +983,8 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		 * processes. Try to unmap it here.
 		 */
 		if (page_mapped(page) && mapping) {
-			switch (try_to_unmap(page, ttu_flags)) {
+			switch (try_to_unmap(page,
+					ttu_flags|TTU_BATCH_FLUSH)) {
 			case SWAP_FAIL:
 				goto activate_locked;
 			case SWAP_AGAIN:
@@ -1134,6 +1135,7 @@ keep:
 	}
 
 	mem_cgroup_uncharge_list(&free_pages);
+	try_to_unmap_flush();
 	free_hot_cold_page_list(&free_pages, true);
 
 	list_splice(&ret_pages, page_list);
@@ -2701,6 +2703,30 @@ out:
 	return false;
 }
 
+#ifdef CONFIG_ARCH_SUPPORTS_LOCAL_TLB_PFN_FLUSH
+/*
+ * Allocate the control structure for batch TLB flushing. An allocation
+ * failure is harmless as the reclaimer will send IPIs where necessary.
+ */
+static inline void alloc_tlb_ubc(void)
+{
+	if (current->tlb_ubc)
+		return;
+
+	current->tlb_ubc = kmalloc(sizeof(struct tlbflush_unmap_batch),
+						GFP_ATOMIC | __GFP_NOWARN);
+	if (!current->tlb_ubc)
+		return;
+
+	cpumask_clear(&current->tlb_ubc->cpumask);
+	current->tlb_ubc->nr_pages = 0;
+}
+#else
+static inline void alloc_tlb_ubc(void)
+{
+}
+#endif /* CONFIG_ARCH_SUPPORTS_LOCAL_TLB_PFN_FLUSH */
+
 unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 				gfp_t gfp_mask, nodemask_t *nodemask)
 {
@@ -2728,6 +2754,7 @@ unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 				sc.may_writepage,
 				gfp_mask);
 
+	alloc_tlb_ubc();
 	nr_reclaimed = do_try_to_free_pages(zonelist, &sc);
 
 	trace_mm_vmscan_direct_reclaim_end(nr_reclaimed);
@@ -3302,6 +3329,8 @@ static int kswapd(void *p)
 	const struct cpumask *cpumask = cpumask_of_node(pgdat->node_id);
 
 	lockdep_set_current_reclaim_state(GFP_KERNEL);
+
+	alloc_tlb_ubc();
 
 	if (!cpumask_empty(cpumask))
 		set_cpus_allowed_ptr(tsk, cpumask);

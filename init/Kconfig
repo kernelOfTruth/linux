@@ -882,6 +882,14 @@ config ARCH_SUPPORTS_NUMA_BALANCING
 	bool
 
 #
+# For architectures that have a local TLB flush for a PFN without knowledge
+# of the VMA. The architecture must provide guarantees on what happens if
+# a clean TLB cache entry is written after the unmap. Details are in mm/rmap.c
+# near the check for should_defer_flush.
+config ARCH_SUPPORTS_LOCAL_TLB_PFN_FLUSH
+	bool
+
+#
 # For architectures that know their GCC __int128 support is sound
 #
 config ARCH_SUPPORTS_INT128
