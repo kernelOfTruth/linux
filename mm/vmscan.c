@@ -2714,14 +2714,15 @@ out:
 /*
  * Allocate the control structure for batch TLB flushing. An allocation
  * failure is harmless as the reclaimer will send IPIs where necessary.
+ * If the allocation size changes then update BATCH_TLBFLUSH_SIZE.
  */
 void alloc_tlb_ubc(void)
 {
 	if (current->tlb_ubc)
 		return;
 
-	current->tlb_ubc = kmalloc(sizeof(struct tlbflush_unmap_batch),
-						GFP_ATOMIC | __GFP_NOWARN);
+	current->tlb_ubc = (struct tlbflush_unmap_batch *)
+				__get_free_page(GFP_KERNEL | __GFP_NOWARN);
 	if (!current->tlb_ubc)
 		return;
 

@@ -1271,15 +1271,16 @@ enum perf_event_task_context {
 	perf_nr_task_contexts,
 };
 
-/* Matches SWAP_CLUSTER_MAX but refined to limit header dependencies */
-#define BATCH_TLBFLUSH_SIZE 32UL
-
 /* Track pages that require TLB flushes */
 struct tlbflush_unmap_batch {
 	struct cpumask cpumask;
 	unsigned long nr_pages;
-	unsigned long pfns[BATCH_TLBFLUSH_SIZE];
+	unsigned long pfns[0];
 };
+
+/* alloc_tlb_ubc() always allocates a page */
+#define BATCH_TLBFLUSH_SIZE \
+	((PAGE_SIZE - sizeof(struct tlbflush_unmap_batch)) / sizeof(unsigned long))
 
 struct task_struct {
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
