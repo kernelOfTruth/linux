@@ -62,22 +62,22 @@ static inline void native_halt(void)
 #ifndef __ASSEMBLY__
 #include <linux/types.h>
 
-static inline notrace unsigned long arch_local_save_flags(void)
+static __always_inline notrace unsigned long arch_local_save_flags(void)
 {
 	return native_save_fl();
 }
 
-static inline notrace void arch_local_irq_restore(unsigned long flags)
+static __always_inline notrace void arch_local_irq_restore(unsigned long flags)
 {
 	native_restore_fl(flags);
 }
 
-static inline notrace void arch_local_irq_disable(void)
+static __always_inline notrace void arch_local_irq_disable(void)
 {
 	native_irq_disable();
 }
 
-static inline notrace void arch_local_irq_enable(void)
+static __always_inline notrace void arch_local_irq_enable(void)
 {
 	native_irq_enable();
 }

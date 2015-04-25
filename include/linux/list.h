@@ -102,7 +102,7 @@ static inline void __list_del_entry(struct list_head *entry)
 	__list_del(entry->prev, entry->next);
 }
 
-static inline void list_del(struct list_head *entry)
+static __always_inline void list_del(struct list_head *entry)
 {
 	__list_del(entry->prev, entry->next);
 	entry->next = LIST_POISON1;
@@ -140,7 +140,7 @@ static inline void list_replace_init(struct list_head *old,
  * list_del_init - deletes entry from list and reinitialize it.
  * @entry: the element to delete from the list.
  */
-static inline void list_del_init(struct list_head *entry)
+static __always_inline void list_del_init(struct list_head *entry)
 {
 	__list_del_entry(entry);
 	INIT_LIST_HEAD(entry);
