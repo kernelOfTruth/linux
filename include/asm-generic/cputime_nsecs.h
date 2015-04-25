@@ -21,6 +21,9 @@
 typedef u64 __nocast cputime_t;
 typedef u64 __nocast cputime64_t;
 
+typedef s64 signed_cputime_t;
+typedef s64 signed_cputime64_t;
+
 #define cmpxchg_cputime(ptr, old, new) cmpxchg64(ptr, old, new)
 
 #define cputime_one_jiffy		jiffies_to_cputime(1)
