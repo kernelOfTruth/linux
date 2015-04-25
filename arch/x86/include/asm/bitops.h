@@ -201,7 +201,7 @@ static inline void change_bit(long nr, volatile unsigned long *addr)
  * This operation is atomic and cannot be reordered.
  * It also implies a memory barrier.
  */
-static inline int test_and_set_bit(long nr, volatile unsigned long *addr)
+static __always_inline int test_and_set_bit(long nr, volatile unsigned long *addr)
 {
 	GEN_BINARY_RMWcc(LOCK_PREFIX "bts", *addr, "Ir", nr, "%0", "c");
 }
@@ -247,7 +247,7 @@ static inline int __test_and_set_bit(long nr, volatile unsigned long *addr)
  * This operation is atomic and cannot be reordered.
  * It also implies a memory barrier.
  */
-static inline int test_and_clear_bit(long nr, volatile unsigned long *addr)
+static __always_inline int test_and_clear_bit(long nr, volatile unsigned long *addr)
 {
 	GEN_BINARY_RMWcc(LOCK_PREFIX "btr", *addr, "Ir", nr, "%0", "c");
 }
