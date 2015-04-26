@@ -126,29 +126,23 @@ static void __acct_update_integrals(struct task_struct *tsk,
 	if (likely(tsk->mm)) {
 		cputime_t time, dtime;
 		struct timeval value;
+		unsigned long flags;
 		u64 delta;
 
+		local_irq_save(flags);
 		time = stime + utime;
-		dtime = time - READ_ONCE(tsk->acct_timexpd);
-		/*
-		 * This code is called both from irq context and from
-		 * task context. There is a race where irq context advances
-		 * tsk->acct_timexpd to a value larger than time, creating
-		 * a negative value. In that case, the irq has already
-		 * updated the statistics.
-		 */
-		if (unlikely((signed_cputime_t)dtime <= 0))
-			return;
-
+		dtime = time - tsk->acct_timexpd;
 		jiffies_to_timeval(cputime_to_jiffies(dtime), &value);
 		delta = value.tv_sec;
 		delta = delta * USEC_PER_SEC + value.tv_usec;
 
 		if (delta == 0)
-			return;
+			goto out;
 		tsk->acct_timexpd = time;
 		tsk->acct_rss_mem1 += delta * get_mm_rss(tsk->mm);
 		tsk->acct_vm_mem1 += delta * tsk->mm->total_vm;
+	out:
+		local_irq_restore(flags);
 	}
 }
 

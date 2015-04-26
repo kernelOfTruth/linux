@@ -2,7 +2,6 @@
 #define _ASM_GENERIC_CPUTIME_JIFFIES_H
 
 typedef unsigned long __nocast cputime_t;
-typedef signed long signed_cputime_t;
 
 #define cmpxchg_cputime(ptr, old, new) cmpxchg(ptr, old, new)
 
@@ -12,7 +11,6 @@ typedef signed long signed_cputime_t;
 #define jiffies_to_cputime(__hz)	(__force cputime_t)(__hz)
 
 typedef u64 __nocast cputime64_t;
-typedef s64 signed_cputime_t;
 
 #define cputime64_to_jiffies64(__ct)	(__force u64)(__ct)
 #define jiffies64_to_cputime64(__jif)	(__force cputime64_t)(__jif)
