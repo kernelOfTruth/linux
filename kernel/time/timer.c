@@ -1640,6 +1640,9 @@ static int init_timers_cpu(int cpu)
 		base = per_cpu(tvec_bases, cpu);
 	}
 
+	if (unlikely(!base))
+		return -EINVAL;
+	spin_lock_irq(&base->lock);
 
 	for (j = 0; j < TVN_SIZE; j++) {
 		INIT_LIST_HEAD(base->tv5.vec + j);
@@ -1655,6 +1658,7 @@ static int init_timers_cpu(int cpu)
 	base->next_timer = base->timer_jiffies;
 	base->active_timers = 0;
 	base->all_timers = 0;
+	spin_unlock_irq(&base->lock);
 	return 0;
 }
 
