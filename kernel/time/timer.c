@@ -78,6 +78,8 @@ struct tvec_root {
 struct tvec_base {
 	spinlock_t lock;
 	struct timer_list *running_timer;
+	struct list_head migration_list;
+	struct tvec_base *preferred_target;
 	unsigned long timer_jiffies;
 	unsigned long next_timer;
 	unsigned long active_timers;
@@ -788,10 +790,18 @@ __mod_timer(struct timer_list *timer, unsigned long expires,
 		 * We are trying to schedule the timer on the local CPU.
 		 * However we can't change timer's base while it is running,
 		 * otherwise del_timer_sync() can't detect that the timer's
-		 * handler yet has not finished. This also guarantees that
-		 * the timer is serialized wrt itself.
+		 * handler yet has not finished.
+		 *
+		 * Move timer to migration_list which can be processed after all
+		 * expired timers are serviced.  This also guarantees that the
+		 * timer is serialized wrt itself.
 		 */
-		if (likely(base->running_timer != timer)) {
+		if (unlikely(base->running_timer == timer)) {
+			timer->expires = expires;
+			base->preferred_target = new_base;
+			list_add_tail(&timer->entry, &base->migration_list);
+			goto out_unlock;
+		} else {
 			/* See the comment in lock_timer_base() */
 			timer_set_base(timer, NULL);
 			spin_unlock(&base->lock);
@@ -1238,6 +1248,41 @@ static inline void __run_timers(struct tvec_base *base)
 		}
 	}
 	base->running_timer = NULL;
+
+	/*
+	 * Process timers from migration list, as their handlers have finished
+	 * now.
+	 */
+	if (unlikely(!list_empty(&base->migration_list))) {
+		struct tvec_base *new_base = base->preferred_target;
+
+		if (!idle_cpu(base->cpu)) {
+			/* Local CPU isn't idle anymore */
+			new_base = base;
+		} else if (idle_cpu(new_base->cpu)) {
+			/* Re-evaluate base, target CPU has gone idle */
+			new_base = per_cpu(tvec_bases, get_nohz_timer_target(false));
+		}
+
+		do {
+			timer = list_first_entry(&base->migration_list,
+						 struct timer_list, entry);
+
+			__list_del(timer->entry.prev, timer->entry.next);
+
+			/* See the comment in lock_timer_base() */
+			timer_set_base(timer, NULL);
+			spin_unlock(&base->lock);
+
+			spin_lock(&new_base->lock);
+			timer_set_base(timer, new_base);
+			internal_add_timer(new_base, timer);
+			spin_unlock(&new_base->lock);
+
+			spin_lock(&base->lock);
+		} while (!list_empty(&base->migration_list));
+	}
+
 	spin_unlock_irq(&base->lock);
 }
 
@@ -1605,6 +1650,7 @@ static int init_timers_cpu(int cpu)
 	for (j = 0; j < TVR_SIZE; j++)
 		INIT_LIST_HEAD(base->tv1.vec + j);
 
+	INIT_LIST_HEAD(&base->migration_list);
 	base->timer_jiffies = jiffies;
 	base->next_timer = base->timer_jiffies;
 	base->active_timers = 0;
