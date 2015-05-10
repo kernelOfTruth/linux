@@ -630,3 +630,13 @@ config SANITIZE_FREED_PAGES
 	  Depending on your workload it will greatly reduce performance.
 
 	  If unsure, say N.
+
+config SANITIZE_FREED_PAGES_DEBUG
+	bool "Debug sanitize pages feature"
+	default n
+	depends on SANITIZE_FREED_PAGES && DEBUG_KERNEL
+	help
+	  This option adds some debugging code for the SANITIZE_FREED_PAGES
+	  option, as well as verification code to ensure pages are really
+	  zeroed. Don't enable unless you want to debug this feature.
+	  If unsure, say N.
