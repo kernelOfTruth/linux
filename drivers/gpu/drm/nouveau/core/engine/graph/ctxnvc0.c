@@ -1002,19 +1002,15 @@ nvc0_grctx_mmio_item(struct nvc0_grctx *info, u32 addr, u32 data,
 		     int shift, int buffer)
 {
 	if (info->data) {
-		if (shift >= 0) {
-			info->mmio->addr = addr;
-			info->mmio->data = data;
-			info->mmio->shift = shift;
-			info->mmio->buffer = buffer;
-			if (buffer >= 0)
-				data |= info->buffer[buffer] >> shift;
-			info->mmio++;
-		} else
-			return;
+		info->mmio->addr = addr;
+		info->mmio->data = data;
+		info->mmio->shift = shift;
+		info->mmio->buffer = buffer;
+		if (buffer >= 0 && shift > 0)
+			data |= info->buffer[buffer] >> shift;
+		info->mmio++;
 	} else {
-		if (buffer >= 0)
-			return;
+		return;
 	}
 
 	nv_wr32(info->priv, addr, data);
