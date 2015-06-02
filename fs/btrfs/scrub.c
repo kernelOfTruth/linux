@@ -317,9 +317,9 @@ static void scrub_pending_bio_inc(struct scrub_ctx *sctx)
 
 static void scrub_pending_bio_dec(struct scrub_ctx *sctx)
 {
+	scrub_put_ctx(sctx);
 	atomic_dec(&sctx->bios_in_flight);
 	wake_up(&sctx->list_wait);
-	scrub_put_ctx(sctx);
 }
 
 static void __scrub_blocked_if_needed(struct btrfs_fs_info *fs_info)
