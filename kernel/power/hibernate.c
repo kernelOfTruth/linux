@@ -305,9 +305,14 @@ static int create_image(int platform_mode)
 			error);
 	/* Restore control flow magically appears here */
 	restore_processor_state();
-	if (!in_suspend)
+	if (!in_suspend) {
 		events_check_enabled = false;
 
+#ifdef CONFIG_SANITIZE_FREED_PAGES
+		clear_free_pages();
+		printk(KERN_INFO "PM: free pages cleared after restore\n");
+#endif
+	}
 	platform_leave(platform_mode);
 
  Power_up:
