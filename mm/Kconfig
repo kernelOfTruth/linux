@@ -654,3 +654,15 @@ config DEFERRED_STRUCT_PAGE_INIT
 	  when kswapd starts. This has a potential performance impact on
 	  processes running early in the lifetime of the systemm until kswapd
 	  finishes the initialisation.
+
+config SANITIZE_FREED_PAGES
+	bool "Sanitize memory pages after free"
+	default n
+	help
+	  This option is used to make sure all pages freed are zeroed. This is
+	  quite low-level and doesn't handle your slab buffers.
+	  It has various applications, from preventing some info leaks to
+	  helping kernel same-page merging in virtualised environments.
+	  Depending on your workload it will greatly reduce performance.
+
+	  If unsure, say N.
