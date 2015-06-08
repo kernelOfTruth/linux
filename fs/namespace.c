@@ -1080,6 +1080,14 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 	if (flag & CL_MAKE_SHARED)
 		set_mnt_shared(mnt);
 
+	/*
+	 * We set the flag directly because the mount point is not yet visible.
+	 * This means there are no writers that require the checks in
+	 * mnt_make_readonly().
+	 */
+	if (flag & CL_MAKE_RDONLY)
+		mnt->mnt.mnt_flags |= MNT_READONLY;
+
 	/* stick the duplicate mount on the same expiry list
 	 * as the original if that was on one */
 	if (flag & CL_EXPIRE) {
@@ -2199,11 +2207,13 @@ static bool has_locked_children(struct mount *mnt, struct dentry *dentry)
  * do loopback mount.
  */
 static int do_loopback(struct path *path, const char *old_name,
-				int recurse)
+				unsigned long flags)
 {
 	struct path old_path;
 	struct mount *mnt = NULL, *old, *parent;
 	struct mountpoint *mp;
+	int recurse = flags & MS_REC;
+	int clflags = (flags & MS_RDONLY) ? CL_MAKE_RDONLY : 0;
 	int err;
 	if (!old_name || !*old_name)
 		return -EINVAL;
@@ -2237,9 +2247,10 @@ static int do_loopback(struct path *path, const char *old_name,
 		goto out2;
 
 	if (recurse)
-		mnt = copy_tree(old, old_path.dentry, CL_COPY_MNT_NS_FILE);
+		mnt = copy_tree(old, old_path.dentry, CL_COPY_MNT_NS_FILE |
+			clflags);
 	else
-		mnt = clone_mnt(old, old_path.dentry, 0);
+		mnt = clone_mnt(old, old_path.dentry, clflags);
 
 	if (IS_ERR(mnt)) {
 		err = PTR_ERR(mnt);
@@ -2828,7 +2839,8 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 		retval = do_remount(&path, flags & ~MS_REMOUNT, mnt_flags,
 				    data_page);
 	else if (flags & MS_BIND)
-		retval = do_loopback(&path, dev_name, flags & MS_REC);
+		retval = do_loopback(&path, dev_name, flags & (MS_REC |
+							       MS_RDONLY));
 	else if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE))
 		retval = do_change_type(&path, flags);
 	else if (flags & MS_MOVE)
