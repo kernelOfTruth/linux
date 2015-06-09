@@ -1330,7 +1330,7 @@ static inline void __skb_queue_head_init(struct sk_buff_head *list)
  * network layer or drivers should need annotation to consolidate the
  * main types of usage into 3 classes.
  */
-static inline void skb_queue_head_init(struct sk_buff_head *list)
+static __always_inline void skb_queue_head_init(struct sk_buff_head *list)
 {
 	spin_lock_init(&list->lock);
 	__skb_queue_head_init(list);
@@ -1724,7 +1724,7 @@ static inline unsigned char *pskb_pull(struct sk_buff *skb, unsigned int len)
 	return unlikely(len > skb->len) ? NULL : __pskb_pull(skb, len);
 }
 
-static inline int pskb_may_pull(struct sk_buff *skb, unsigned int len)
+static __always_inline int pskb_may_pull(struct sk_buff *skb, unsigned int len)
 {
 	if (likely(len <= skb_headlen(skb)))
 		return 1;
