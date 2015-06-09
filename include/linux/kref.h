@@ -38,7 +38,7 @@ static inline void kref_init(struct kref *kref)
  * kref_get - increment refcount for object.
  * @kref: object.
  */
-static inline void kref_get(struct kref *kref)
+static __always_inline void kref_get(struct kref *kref)
 {
 	/* If refcount was 0 before incrementing then we have a race
 	 * condition when this kref is freeing by some other thread right now.

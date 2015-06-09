@@ -111,7 +111,7 @@ extern const struct cpumask *const cpu_active_mask;
 #endif
 
 /* verify cpu argument to cpumask_* operators */
-static inline unsigned int cpumask_check(unsigned int cpu)
+static __always_inline unsigned int cpumask_check(unsigned int cpu)
 {
 #ifdef CONFIG_DEBUG_PER_CPU_MAPS
 	WARN_ON_ONCE(cpu >= nr_cpumask_bits);
@@ -181,7 +181,7 @@ static inline unsigned int cpumask_first(const struct cpumask *srcp)
  *
  * Returns >= nr_cpu_ids if no further cpus set.
  */
-static inline unsigned int cpumask_next(int n, const struct cpumask *srcp)
+static __always_inline unsigned int cpumask_next(int n, const struct cpumask *srcp)
 {
 	/* -1 is a legal arg here. */
 	if (n != -1)
@@ -471,7 +471,7 @@ static inline bool cpumask_full(const struct cpumask *srcp)
  * cpumask_weight - Count of bits in *srcp
  * @srcp: the cpumask to count bits (< nr_cpu_ids) in.
  */
-static inline unsigned int cpumask_weight(const struct cpumask *srcp)
+static __always_inline unsigned int cpumask_weight(const struct cpumask *srcp)
 {
 	return bitmap_weight(cpumask_bits(srcp), nr_cpumask_bits);
 }
