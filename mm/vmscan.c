@@ -1433,6 +1433,12 @@ static int __too_many_isolated(struct zone *zone, int file,
  * allocation, such sleeping direct reclaimers may keep piling up on each CPU,
  * the LRU list will go small and be scanned faster than necessary, leading to
  * unnecessary swapping, thrashing and OOM.
+ *
+ * However, there is no guarantee that somebody else is reclaiming memory when
+ * current thread is looping, for even kswapd can be blocked waiting for
+ * somebody doing memory allocation to release a lock. Therefore, we cannot
+ * wait forever, for current_is_kswapd() bypass logic does not help if kswapd
+ * is blocked at e.g. shrink_slab().
  */
 static int too_many_isolated(struct zone *zone, int file,
 			     struct scan_control *sc)
@@ -1441,6 +1447,13 @@ static int too_many_isolated(struct zone *zone, int file,
 		return 0;
 
 	if (!global_reclaim(sc))
+		return 0;
+
+	/*
+	 * Check me: Are there paths which call this function without
+	 * initializing current->memalloc_start at __alloc_pages_slowpath() ?
+	 */
+	if (check_memalloc_delay())
 		return 0;
 
 	/*
