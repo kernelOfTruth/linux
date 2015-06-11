@@ -502,7 +502,21 @@ void btrfs_wait_logged_extents(struct btrfs_trans_handle *trans,
 		wait_event(ordered->wait, test_bit(BTRFS_ORDERED_IO_DONE,
 						   &ordered->flags));
 
-		list_add_tail(&ordered->trans_list, &trans->ordered);
+		/*
+		 * If our ordered extent completed it means it updated the
+		 * fs/subvol and csum trees already, so no need to make the
+		 * current transaction's commit wait for it, as we end up
+		 * holding memory unnecessarily and delaying the inode's iput
+		 * until the transaction commit (we schedule an iput for the
+		 * inode when the ordered extent's refcount drops to 0), which
+		 * prevents it from being evictable until the transaction
+		 * commits.
+		 */
+		if (test_bit(BTRFS_ORDERED_COMPLETE, &ordered->flags))
+			btrfs_put_ordered_extent(ordered);
+		else
+			list_add_tail(&ordered->trans_list, &trans->ordered);
+
 		spin_lock_irq(&log->log_extents_lock[index]);
 	}
 	spin_unlock_irq(&log->log_extents_lock[index]);
@@ -835,6 +849,20 @@ out:
 		atomic_inc(&entry->refs);
 	spin_unlock_irq(&tree->lock);
 	return entry;
+}
+
+bool btrfs_have_ordered_extents_in_range(struct inode *inode,
+					 u64 file_offset,
+					 u64 len)
+{
+	struct btrfs_ordered_extent *oe;
+
+	oe = btrfs_lookup_ordered_range(inode, file_offset, len);
+	if (oe) {
+		btrfs_put_ordered_extent(oe);
+		return true;
+	}
+	return false;
 }
 
 /*
