@@ -9,9 +9,9 @@
 TRACE_EVENT(mm_khugepaged_scan_pmd,
 
 	TP_PROTO(struct mm_struct *mm, unsigned long vm_start, bool writable,
-		bool referenced, int none_or_zero, int collapse),
+		bool referenced, int none_or_zero, int collapse, int unmapped),
 
-	TP_ARGS(mm, vm_start, writable, referenced, none_or_zero, collapse),
+	TP_ARGS(mm, vm_start, writable, referenced, none_or_zero, collapse, unmapped),
 
 	TP_STRUCT__entry(
 		__field(struct mm_struct *, mm)
@@ -20,6 +20,7 @@ TRACE_EVENT(mm_khugepaged_scan_pmd,
 		__field(bool, referenced)
 		__field(int, none_or_zero)
 		__field(int, collapse)
+		__field(int, unmapped)
 	),
 
 	TP_fast_assign(
@@ -29,15 +30,17 @@ TRACE_EVENT(mm_khugepaged_scan_pmd,
 		__entry->referenced = referenced;
 		__entry->none_or_zero = none_or_zero;
 		__entry->collapse = collapse;
+		__entry->unmapped = unmapped;
 	),
 
-	TP_printk("mm=%p, vm_start=%04lx, writable=%d, referenced=%d, none_or_zero=%d, collapse=%d",
+	TP_printk("mm=%p, vm_start=%04lx, writable=%d, referenced=%d, none_or_zero=%d, collapse=%d, unmapped=%d",
 		__entry->mm,
 		__entry->vm_start,
 		__entry->writable,
 		__entry->referenced,
 		__entry->none_or_zero,
-		__entry->collapse)
+		__entry->collapse,
+		__entry->unmapped)
 );
 
 TRACE_EVENT(mm_collapse_huge_page,
