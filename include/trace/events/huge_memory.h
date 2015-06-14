@@ -95,5 +95,29 @@ TRACE_EVENT(mm_collapse_huge_page_isolate,
 		__entry->writable)
 );
 
+TRACE_EVENT(mm_collapse_huge_page_swapin,
+
+	TP_PROTO(struct mm_struct *mm, unsigned long vm_start, int swap_pte),
+
+	TP_ARGS(mm, vm_start, swap_pte),
+
+	TP_STRUCT__entry(
+		__field(struct mm_struct *, mm)
+		__field(unsigned long, vm_start)
+		__field(int, swap_pte)
+	),
+
+	TP_fast_assign(
+		__entry->mm = mm;
+		__entry->vm_start = vm_start;
+		__entry->swap_pte = swap_pte;
+	),
+
+	TP_printk("mm=%p, vm_start=%04lx, swap_pte=%d",
+		__entry->mm,
+		__entry->vm_start,
+		__entry->swap_pte)
+);
+
 #endif /* __HUGE_MEMORY_H */
 #include <trace/define_trace.h>
