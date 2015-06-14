@@ -28,6 +28,9 @@
 #include <asm/pgalloc.h>
 #include "internal.h"
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/huge_memory.h>
+
 /*
  * By default transparent hugepage support is disabled in order that avoid
  * to risk increase the memory footprint of applications without a guaranteed
@@ -2205,6 +2208,8 @@ static int __collapse_huge_page_isolate(struct vm_area_struct *vma,
 	if (likely(referenced && writable))
 		return 1;
 out:
+	trace_mm_collapse_huge_page_isolate(vma->vm_start, none_or_zero,
+					    referenced, writable);
 	release_pte_pages(pte, _pte);
 	return 0;
 }
@@ -2440,7 +2445,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 	pgtable_t pgtable;
 	struct page *new_page;
 	spinlock_t *pmd_ptl, *pte_ptl;
-	int isolated;
+	int isolated = 0;
 	unsigned long hstart, hend;
 	struct mem_cgroup *memcg;
 	unsigned long mmun_start;	/* For mmu_notifiers */
@@ -2558,6 +2563,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 	khugepaged_pages_collapsed++;
 out_up_write:
 	up_write(&mm->mmap_sem);
+	trace_mm_collapse_huge_page(mm, vma->vm_start, isolated);
 	return;
 
 out:
@@ -2632,6 +2638,8 @@ static int khugepaged_scan_pmd(struct mm_struct *mm,
 		ret = 1;
 out_unmap:
 	pte_unmap_unlock(pte, ptl);
+	trace_mm_khugepaged_scan_pmd(mm, vma->vm_start, writable, referenced,
+				     none_or_zero, ret);
 	if (ret) {
 		node = khugepaged_find_target_node();
 		/* collapse_huge_page will return with the mmap_sem released */
