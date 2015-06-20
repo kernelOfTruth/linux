@@ -490,8 +490,20 @@ retry:
 			}
 			BUG();
 		}
-		if (IS_ERR(page))
+		if (IS_ERR(page)) {
+			/*
+			 * No page may be associated with VM_MIXEDMAP. Proceed
+			 * FOLL_POPULATE when the translation is set but its
+			 * page does not exist (-EFAULT), and @pages is not
+			 * requested by the caller.
+			 */
+			if ((PTR_ERR(page) == -EFAULT) && (!pages) &&
+			    (gup_flags & FOLL_POPULATE) &&
+			    (vma->vm_flags & VM_MIXEDMAP))
+				goto next_page;
+
 			return i ? i : PTR_ERR(page);
+		}
 		if (pages) {
 			pages[i] = page;
 			flush_anon_page(vma, page, start);
