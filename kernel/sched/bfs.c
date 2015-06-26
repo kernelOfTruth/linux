@@ -3945,7 +3945,7 @@ static void __setscheduler_params(struct task_struct *p,
 
 /* Actually do priority change: must hold grq lock. */
 static void __setscheduler(struct rq *rq, struct task_struct *p,
-			   const struct sched_attr *attr)
+			   const struct sched_attr *attr, bool keep_boost)
 {
 	int oldrtprio = p->rt_priority;
 	int oldprio = p->prio;
@@ -3953,10 +3953,13 @@ static void __setscheduler(struct rq *rq, struct task_struct *p,
 	__setscheduler_params(p, attr);
 
 	/*
-	 * If we get here, there was no pi waiters boosting the
-	 * task. It is safe to use the normal prio.
+	 * Keep a potential priority boosting if called from
+	 * sched_setscheduler().
 	 */
-	p->prio = normal_prio(p);
+	if (keep_boost)
+		p->prio = rt_mutex_get_effective_prio(p, normal_prio(p));
+	else
+		p->prio = normal_prio(p);
 
 	if (task_running(p)) {
 		reset_rq_task(rq, p);
@@ -3988,7 +3991,7 @@ static int __sched_setscheduler(struct task_struct *p,
 {
 	int newprio = MAX_RT_PRIO - 1 - attr->sched_priority;
 	int retval, oldprio, oldpolicy = -1;
-	int policy = attr->sched_policy;
+	int new_effective_prio, policy = attr->sched_policy;
 	unsigned long flags;
 	struct rq *rq;
 	int reset_on_fork;
@@ -4006,6 +4009,9 @@ recheck:
 		if (!SCHED_RANGE(policy))
 			return -EINVAL;
 	}
+
+	if (attr->sched_flags & ~(SCHED_FLAG_RESET_ON_FORK))
+		return -EINVAL;
 
 	/*
 	 * Valid priorities for SCHED_FIFO and SCHED_RR are
@@ -4120,22 +4126,21 @@ recheck:
 	oldprio = p->prio;
 
 	/*
-	 * Special case for priority boosted tasks.
-	 *
-	 * If the new priority is lower or equal (user space view)
-	 * than the current (boosted) priority, we just store the new
+	 * Take priority boosted tasks into account. If the new
+	 * effective priority is unchanged, we just store the new
 	 * normal parameters and do not touch the scheduler class and
 	 * the runqueue. This will be done when the task deboost
 	 * itself.
 	 */
-	if (rt_mutex_check_prio(p, newprio)) {
+	new_effective_prio = rt_mutex_get_effective_prio(p, newprio);
+	if (new_effective_prio == oldprio) {
 		__setscheduler_params(p, attr);
 		__task_grq_unlock();
 		raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 		return 0;
 	}
 
-	__setscheduler(rq, p, attr);
+	__setscheduler(rq, p, attr, true);
 
 	check_task_changed(rq, p, oldprio);
 
@@ -7211,7 +7216,7 @@ static void normalize_task(struct rq *rq, struct task_struct *p)
 	};
 	int old_prio = p->prio;
 
-	__setscheduler(rq, p, &attr);
+	__setscheduler(rq, p, &attr, false);
 
 	check_task_changed(rq, p, old_prio);
 }
