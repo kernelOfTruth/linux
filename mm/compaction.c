@@ -129,6 +129,23 @@ static struct page *pageblock_pfn_to_page(unsigned long start_pfn,
 
 /* Do not skip compaction more than 64 times */
 #define COMPACT_MAX_DEFER_SHIFT 6
+#define COMPACT_MIN_DEPLETE_THRESHOLD 1UL
+
+static bool compaction_depleted(struct zone *zone)
+{
+	unsigned long threshold;
+	unsigned long success = zone->compact_success;
+
+	/*
+	 * Now, to imitate current compaction deferring approach,
+	 * choose threshold to 1. It will be changed in the future.
+	 */
+	threshold = COMPACT_MIN_DEPLETE_THRESHOLD;
+	if (success >= threshold)
+		return false;
+
+	return true;
+}
 
 /*
  * Compaction is deferred when compaction fails to result in a page
@@ -225,6 +242,10 @@ static void __reset_isolation_suitable(struct zone *zone)
 	zone->compact_cached_migrate_pfn[1] = start_pfn;
 	zone->compact_cached_free_pfn = end_pfn;
 	zone->compact_blockskip_flush = false;
+
+	if (compaction_depleted(zone))
+		set_bit(ZONE_COMPACTION_DEPLETED, &zone->flags);
+	zone->compact_success = 0;
 
 	/* Walk the zone and mark every pageblock as suitable for isolation */
 	for (pfn = start_pfn; pfn < end_pfn; pfn += pageblock_nr_pages) {
@@ -1196,22 +1217,28 @@ static int __compact_finished(struct zone *zone, struct compact_control *cc,
 		bool can_steal;
 
 		/* Job done if page is free of the right migratetype */
-		if (!list_empty(&area->free_list[migratetype]))
+		if (!list_empty(&area->free_list[migratetype])) {
+			zone->compact_success++;
 			return COMPACT_PARTIAL;
+		}
 
 #ifdef CONFIG_CMA
 		/* MIGRATE_MOVABLE can fallback on MIGRATE_CMA */
 		if (migratetype == MIGRATE_MOVABLE &&
-			!list_empty(&area->free_list[MIGRATE_CMA]))
+			!list_empty(&area->free_list[MIGRATE_CMA])) {
+			zone->compact_success++;
 			return COMPACT_PARTIAL;
+		}
 #endif
 		/*
 		 * Job done if allocation would steal freepages from
 		 * other migratetype buddy lists.
 		 */
 		if (find_suitable_fallback(area, order, migratetype,
-						true, &can_steal) != -1)
+						true, &can_steal) != -1) {
+			zone->compact_success++;
 			return COMPACT_PARTIAL;
+		}
 	}
 
 	return COMPACT_NO_SUITABLE_PAGE;
@@ -1450,6 +1477,11 @@ out:
 
 	trace_mm_compaction_end(start_pfn, cc->migrate_pfn,
 				cc->free_pfn, end_pfn, sync, ret);
+
+	if (test_bit(ZONE_COMPACTION_DEPLETED, &zone->flags)) {
+		if (!compaction_depleted(zone))
+			clear_bit(ZONE_COMPACTION_DEPLETED, &zone->flags);
+	}
 
 	return ret;
 }
