@@ -265,7 +265,6 @@ static void update_pageblock_skip(struct compact_control *cc,
 			unsigned long curr_pfn, bool migrate_scanner)
 {
 	struct zone *zone = cc->zone;
-	unsigned long pfn;
 
 	if (cc->ignore_skip_hint)
 		return;
@@ -285,18 +284,16 @@ static void update_pageblock_skip(struct compact_control *cc,
 
 	set_pageblock_skip(page);
 
-	pfn = page_to_pfn(page);
-
 	/* Update where async and sync compaction should restart */
 	if (migrate_scanner) {
-		if (pfn > zone->compact_cached_migrate_pfn[0])
-			zone->compact_cached_migrate_pfn[0] = pfn;
+		if (end_pfn > zone->compact_cached_migrate_pfn[0])
+			zone->compact_cached_migrate_pfn[0] = end_pfn;
 		if (cc->mode != MIGRATE_ASYNC &&
-		    pfn > zone->compact_cached_migrate_pfn[1])
-			zone->compact_cached_migrate_pfn[1] = pfn;
+		    end_pfn > zone->compact_cached_migrate_pfn[1])
+			zone->compact_cached_migrate_pfn[1] = end_pfn;
 	} else {
-		if (pfn < zone->compact_cached_free_pfn)
-			zone->compact_cached_free_pfn = pfn;
+		if (start_pfn < zone->compact_cached_free_pfn)
+			zone->compact_cached_free_pfn = start_pfn;
 	}
 }
 #else
