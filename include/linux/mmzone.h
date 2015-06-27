@@ -518,6 +518,7 @@ struct zone {
 	unsigned int		compact_defer_shift;
 	int			compact_order_failed;
 	unsigned long		compact_success;
+	unsigned long		compact_depletion_depth;
 #endif
 
 #if defined CONFIG_COMPACTION || defined CONFIG_CMA

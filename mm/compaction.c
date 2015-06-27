@@ -130,6 +130,7 @@ static struct page *pageblock_pfn_to_page(unsigned long start_pfn,
 /* Do not skip compaction more than 64 times */
 #define COMPACT_MAX_DEFER_SHIFT 6
 #define COMPACT_MIN_DEPLETE_THRESHOLD 1UL
+#define COMPACT_MIN_SCAN_LIMIT (pageblock_nr_pages)
 
 static bool compaction_depleted(struct zone *zone)
 {
@@ -147,6 +148,48 @@ static bool compaction_depleted(struct zone *zone)
 	return true;
 }
 
+static void set_migration_scan_limit(struct compact_control *cc)
+{
+	struct zone *zone = cc->zone;
+	int order = cc->order;
+	unsigned long limit;
+
+	cc->migration_scan_limit = LONG_MAX;
+	if (order < 0)
+		return;
+
+	if (!test_bit(ZONE_COMPACTION_DEPLETED, &zone->flags))
+		return;
+
+	if (!zone->compact_depletion_depth)
+		return;
+
+	/* Stop async migration if depleted */
+	if (cc->mode == MIGRATE_ASYNC) {
+		cc->migration_scan_limit = -1;
+		return;
+	}
+
+	/*
+	 * Deferred compaction restart compaction every 64 compaction
+	 * attempts and it rescans whole zone range. If we limit
+	 * migration scanner to scan 1/64 range when depleted, 64
+	 * compaction attempts will rescan whole zone range as same
+	 * as deferred compaction.
+	 */
+	limit = zone->managed_pages >> 6;
+
+	/*
+	 * We don't do async compaction. Instead, give extra credit
+	 * to sync compaction
+	 */
+	limit <<= 1;
+	limit = max(limit, COMPACT_MIN_SCAN_LIMIT);
+
+	/* Degradation scan limit according to depletion depth. */
+	limit >>= zone->compact_depletion_depth;
+	cc->migration_scan_limit = max(limit, COMPACT_CLUSTER_MAX);
+}
 /*
  * Compaction is deferred when compaction fails to result in a page
  * allocation success. 1 << compact_defer_limit compactions are skipped up
@@ -243,8 +286,14 @@ static void __reset_isolation_suitable(struct zone *zone)
 	zone->compact_cached_free_pfn = end_pfn;
 	zone->compact_blockskip_flush = false;
 
-	if (compaction_depleted(zone))
-		set_bit(ZONE_COMPACTION_DEPLETED, &zone->flags);
+	if (compaction_depleted(zone)) {
+		if (test_bit(ZONE_COMPACTION_DEPLETED, &zone->flags))
+			zone->compact_depletion_depth++;
+		else {
+			set_bit(ZONE_COMPACTION_DEPLETED, &zone->flags);
+			zone->compact_depletion_depth = 0;
+		}
+	}
 	zone->compact_success = 0;
 
 	/* Walk the zone and mark every pageblock as suitable for isolation */
@@ -838,6 +887,7 @@ isolate_success:
 	if (locked)
 		spin_unlock_irqrestore(&zone->lru_lock, flags);
 
+	cc->migration_scan_limit -= nr_scanned;
 	if (low_pfn == end_pfn && cc->mode != MIGRATE_ASYNC) {
 		int sync = cc->mode != MIGRATE_ASYNC;
 
@@ -1197,6 +1247,9 @@ static int __compact_finished(struct zone *zone, struct compact_control *cc,
 		return COMPACT_COMPLETE;
 	}
 
+	if (cc->migration_scan_limit < 0)
+		return COMPACT_PARTIAL;
+
 	/*
 	 * order == -1 is expected when compacting via
 	 * /proc/sys/vm/compact_memory
@@ -1371,6 +1424,10 @@ static int compact_zone(struct zone *zone, struct compact_control *cc)
 		zone->compact_cached_migrate_pfn[0] = cc->migrate_pfn;
 		zone->compact_cached_migrate_pfn[1] = cc->migrate_pfn;
 	}
+
+	set_migration_scan_limit(cc);
+	if (cc->migration_scan_limit < 0)
+		return COMPACT_SKIPPED;
 
 	trace_mm_compaction_begin(start_pfn, cc->migrate_pfn,
 				cc->free_pfn, end_pfn, sync);
