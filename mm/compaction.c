@@ -904,12 +904,8 @@ static bool suitable_migration_target(struct page *page)
 			return false;
 	}
 
-	/* If the block is MIGRATE_MOVABLE or MIGRATE_CMA, allow migration */
-	if (migrate_async_suitable(get_pageblock_migratetype(page)))
-		return true;
-
-	/* Otherwise skip the block */
-	return false;
+	/* Otherwise scan the block */
+	return true;
 }
 
 /*
