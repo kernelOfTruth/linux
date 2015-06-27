@@ -188,8 +188,11 @@ void compaction_defer_reset(struct zone *zone, int order,
 }
 
 /* Returns true if restarting compaction after many failures */
-bool compaction_restarting(struct zone *zone, int order)
+static bool compaction_direct_restarting(struct zone *zone, int order)
 {
+	if (current_is_kswapd())
+		return false;
+
 	if (order < zone->compact_order_failed)
 		return false;
 
@@ -1326,7 +1329,7 @@ static int compact_zone(struct zone *zone, struct compact_control *cc)
 	 * is about to be retried after being deferred. kswapd does not do
 	 * this reset as it'll reset the cached information when going to sleep.
 	 */
-	if (compaction_restarting(zone, cc->order) && !current_is_kswapd())
+	if (compaction_direct_restarting(zone, cc->order))
 		__reset_isolation_suitable(zone);
 
 	/*
