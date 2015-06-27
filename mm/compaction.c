@@ -128,7 +128,7 @@ static struct page *pageblock_pfn_to_page(unsigned long start_pfn,
 #ifdef CONFIG_COMPACTION
 
 /* Do not skip compaction more than 64 times */
-#define COMPACT_MAX_DEFER_SHIFT 6
+#define COMPACT_MAX_FAILED 4
 #define COMPACT_MIN_DEPLETE_THRESHOLD 1UL
 #define COMPACT_MIN_SCAN_LIMIT (pageblock_nr_pages)
 
@@ -190,61 +190,28 @@ static void set_migration_scan_limit(struct compact_control *cc)
 	limit >>= zone->compact_depletion_depth;
 	cc->migration_scan_limit = max(limit, COMPACT_CLUSTER_MAX);
 }
-/*
- * Compaction is deferred when compaction fails to result in a page
- * allocation success. 1 << compact_defer_limit compactions are skipped up
- * to a limit of 1 << COMPACT_MAX_DEFER_SHIFT
- */
-void defer_compaction(struct zone *zone, int order)
-{
-	zone->compact_considered = 0;
-	zone->compact_defer_shift++;
 
-	if (order < zone->compact_order_failed)
+void fail_compaction(struct zone *zone, int order)
+{
+	if (order < zone->compact_order_failed) {
+		zone->compact_failed = 0;
 		zone->compact_order_failed = order;
+	} else
+		zone->compact_failed++;
 
-	if (zone->compact_defer_shift > COMPACT_MAX_DEFER_SHIFT)
-		zone->compact_defer_shift = COMPACT_MAX_DEFER_SHIFT;
-
-	trace_mm_compaction_defer_compaction(zone, order);
+	trace_mm_compaction_fail_compaction(zone, order);
 }
 
-/* Returns true if compaction should be skipped this time */
-bool compaction_deferred(struct zone *zone, int order)
-{
-	unsigned long defer_limit = 1UL << zone->compact_defer_shift;
-
-	if (order < zone->compact_order_failed)
-		return false;
-
-	/* Avoid possible overflow */
-	if (++zone->compact_considered > defer_limit)
-		zone->compact_considered = defer_limit;
-
-	if (zone->compact_considered >= defer_limit)
-		return false;
-
-	trace_mm_compaction_deferred(zone, order);
-
-	return true;
-}
-
-/*
- * Update defer tracking counters after successful compaction of given order,
- * which means an allocation either succeeded (alloc_success == true) or is
- * expected to succeed.
- */
-void compaction_defer_reset(struct zone *zone, int order,
+void compaction_failed_reset(struct zone *zone, int order,
 		bool alloc_success)
 {
-	if (alloc_success) {
-		zone->compact_considered = 0;
-		zone->compact_defer_shift = 0;
-	}
+	if (alloc_success)
+		zone->compact_failed = 0;
+
 	if (order >= zone->compact_order_failed)
 		zone->compact_order_failed = order + 1;
 
-	trace_mm_compaction_defer_reset(zone, order);
+	trace_mm_compaction_failed_reset(zone, order);
 }
 
 /* Returns true if restarting compaction after many failures */
@@ -256,8 +223,7 @@ static bool compaction_direct_restarting(struct zone *zone, int order)
 	if (order < zone->compact_order_failed)
 		return false;
 
-	return zone->compact_defer_shift == COMPACT_MAX_DEFER_SHIFT &&
-		zone->compact_considered >= 1UL << zone->compact_defer_shift;
+	return zone->compact_failed < COMPACT_MAX_FAILED ? false : true;
 }
 
 /* Returns true if the pageblock should be scanned for pages to isolate. */
@@ -295,6 +261,7 @@ static void __reset_isolation_suitable(struct zone *zone)
 		}
 	}
 	zone->compact_success = 0;
+	zone->compact_failed = 0;
 
 	/* Walk the zone and mark every pageblock as suitable for isolation */
 	for (pfn = start_pfn; pfn < end_pfn; pfn += pageblock_nr_pages) {
@@ -1609,9 +1576,6 @@ unsigned long try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
 		int status;
 		int zone_contended;
 
-		if (compaction_deferred(zone, order))
-			continue;
-
 		status = compact_zone_order(zone, order, gfp_mask, mode,
 				&zone_contended, alloc_flags,
 				ac->classzone_idx);
@@ -1631,7 +1595,7 @@ unsigned long try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
 			 * will repeat this with true if allocation indeed
 			 * succeeds in this zone.
 			 */
-			compaction_defer_reset(zone, order, false);
+			compaction_failed_reset(zone, order, false);
 			/*
 			 * It is possible that async compaction aborted due to
 			 * need_resched() and the watermarks were ok thanks to
@@ -1652,7 +1616,7 @@ unsigned long try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
 			 * so we defer compaction there. If it ends up
 			 * succeeding after all, it will be reset.
 			 */
-			defer_compaction(zone, order);
+			fail_compaction(zone, order);
 		}
 
 		/*
@@ -1714,13 +1678,13 @@ static void __compact_pgdat(pg_data_t *pgdat, struct compact_control *cc)
 		if (cc->order == -1)
 			__reset_isolation_suitable(zone);
 
-		if (cc->order == -1 || !compaction_deferred(zone, cc->order))
+		if (cc->order == -1)
 			compact_zone(zone, cc);
 
 		if (cc->order > 0) {
 			if (zone_watermark_ok(zone, cc->order,
 						low_wmark_pages(zone), 0, 0))
-				compaction_defer_reset(zone, cc->order, false);
+				compaction_failed_reset(zone, cc->order, false);
 		}
 
 		VM_BUG_ON(!list_empty(&cc->freepages));
