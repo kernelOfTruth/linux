@@ -129,19 +129,24 @@ static struct page *pageblock_pfn_to_page(unsigned long start_pfn,
 
 /* Do not skip compaction more than 64 times */
 #define COMPACT_MAX_FAILED 4
-#define COMPACT_MIN_DEPLETE_THRESHOLD 1UL
+#define COMPACT_MIN_DEPLETE_THRESHOLD 4UL
 #define COMPACT_MIN_SCAN_LIMIT (pageblock_nr_pages)
 
 static bool compaction_depleted(struct zone *zone)
 {
-	unsigned long threshold;
+	unsigned long nr_possible;
 	unsigned long success = zone->compact_success;
+	unsigned long threshold;
 
-	/*
-	 * Now, to imitate current compaction deferring approach,
-	 * choose threshold to 1. It will be changed in the future.
-	 */
-	threshold = COMPACT_MIN_DEPLETE_THRESHOLD;
+	nr_possible = zone->managed_pages >> zone->compact_order_failed;
+
+	/* Migration scanner can scans more than 1/4 range of zone */
+	nr_possible >>= 2;
+
+	/* We hope to succeed more than 1/100 roughly */
+	threshold = nr_possible >> 7;
+
+	threshold = max(threshold, COMPACT_MIN_DEPLETE_THRESHOLD);
 	if (success >= threshold)
 		return false;
 
