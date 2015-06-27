@@ -261,7 +261,8 @@ void reset_isolation_suitable(pg_data_t *pgdat)
  */
 static void update_pageblock_skip(struct compact_control *cc,
 			struct page *page, unsigned long nr_isolated,
-			bool migrate_scanner)
+			unsigned long start_pfn, unsigned long end_pfn,
+			unsigned long curr_pfn, bool migrate_scanner)
 {
 	struct zone *zone = cc->zone;
 	unsigned long pfn;
@@ -273,6 +274,13 @@ static void update_pageblock_skip(struct compact_control *cc,
 		return;
 
 	if (nr_isolated)
+		return;
+
+	/* Update the pageblock-skip if the whole pageblock was scanned */
+	if (curr_pfn != end_pfn)
+		return;
+
+	if (start_pfn != round_down(end_pfn - 1, pageblock_nr_pages))
 		return;
 
 	set_pageblock_skip(page);
@@ -300,7 +308,8 @@ static inline bool isolation_suitable(struct compact_control *cc,
 
 static void update_pageblock_skip(struct compact_control *cc,
 			struct page *page, unsigned long nr_isolated,
-			bool migrate_scanner)
+			unsigned long start_pfn, unsigned long end_pfn,
+			unsigned long curr_pfn, bool migrate_scanner)
 {
 }
 #endif /* CONFIG_COMPACTION */
@@ -493,9 +502,6 @@ isolate_fail:
 	trace_mm_compaction_isolate_freepages(*start_pfn, blockpfn,
 					nr_scanned, total_isolated);
 
-	/* Record how far we have got within the block */
-	*start_pfn = blockpfn;
-
 	/*
 	 * If strict isolation is requested by CMA then check that all the
 	 * pages requested were isolated. If there were any failures, 0 is
@@ -507,9 +513,11 @@ isolate_fail:
 	if (locked)
 		spin_unlock_irqrestore(&cc->zone->lock, flags);
 
-	/* Update the pageblock-skip if the whole pageblock was scanned */
-	if (blockpfn == end_pfn)
-		update_pageblock_skip(cc, valid_page, total_isolated, false);
+	update_pageblock_skip(cc, valid_page, total_isolated,
+			*start_pfn, end_pfn, blockpfn, false);
+
+	/* Record how far we have got within the block */
+	*start_pfn = blockpfn;
 
 	count_compact_events(COMPACTFREE_SCANNED, nr_scanned);
 	if (total_isolated)
@@ -805,12 +813,8 @@ isolate_success:
 	if (locked)
 		spin_unlock_irqrestore(&zone->lru_lock, flags);
 
-	/*
-	 * Update the pageblock-skip information and cached scanner pfn,
-	 * if the whole pageblock was scanned without isolating any page.
-	 */
-	if (low_pfn == end_pfn)
-		update_pageblock_skip(cc, valid_page, nr_isolated, true);
+	update_pageblock_skip(cc, valid_page, nr_isolated,
+			start_pfn, end_pfn, low_pfn, true);
 
 	trace_mm_compaction_isolate_migratepages(start_pfn, low_pfn,
 						nr_scanned, nr_isolated);
