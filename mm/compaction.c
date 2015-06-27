@@ -510,6 +510,10 @@ isolate_fail:
 	if (locked)
 		spin_unlock_irqrestore(&cc->zone->lock, flags);
 
+	if (blockpfn == end_pfn &&
+		blockpfn > cc->zone->compact_cached_free_pfn)
+		cc->zone->compact_cached_free_pfn = blockpfn;
+
 	update_pageblock_skip(cc, valid_page, total_isolated,
 			*start_pfn, end_pfn, blockpfn, false);
 
@@ -809,6 +813,13 @@ isolate_success:
 
 	if (locked)
 		spin_unlock_irqrestore(&zone->lru_lock, flags);
+
+	if (low_pfn == end_pfn && cc->mode != MIGRATE_ASYNC) {
+		int sync = cc->mode != MIGRATE_ASYNC;
+
+		if (low_pfn > zone->compact_cached_migrate_pfn[sync])
+			zone->compact_cached_migrate_pfn[sync] = low_pfn;
+	}
 
 	update_pageblock_skip(cc, valid_page, nr_isolated,
 			start_pfn, end_pfn, low_pfn, true);
