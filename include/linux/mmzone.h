@@ -517,6 +517,7 @@ struct zone {
 	unsigned int		compact_considered;
 	unsigned int		compact_defer_shift;
 	int			compact_order_failed;
+	unsigned long		compact_success;
 #endif
 
 #if defined CONFIG_COMPACTION || defined CONFIG_CMA
@@ -543,6 +544,7 @@ enum zone_flags {
 					 * many pages under writeback
 					 */
 	ZONE_FAIR_DEPLETED,		/* fair zone policy batch depleted */
+	ZONE_COMPACTION_DEPLETED,	/* compaction possiblity depleted */
 };
 
 static inline unsigned long zone_end_pfn(const struct zone *zone)
