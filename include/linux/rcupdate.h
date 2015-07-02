@@ -446,7 +446,7 @@ static inline bool rcu_lockdep_current_cpu_online(void)
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 
-static inline void rcu_lock_acquire(struct lockdep_map *map)
+static __always_inline void rcu_lock_acquire(struct lockdep_map *map)
 {
 	lock_acquire(map, 0, 0, 2, 0, NULL, _THIS_IP_);
 }
@@ -907,7 +907,7 @@ static inline void rcu_preempt_sleep_check(void)
  * read-side critical sections may be preempted and they may also block, but
  * only when acquiring spinlocks that are subject to priority inheritance.
  */
-static inline void rcu_read_lock(void)
+static __always_inline void rcu_read_lock(void)
 {
 	__rcu_read_lock();
 	__acquire(RCU);
@@ -961,7 +961,7 @@ static inline void rcu_read_lock(void)
  *
  * See rcu_read_lock() for more information.
  */
-static inline void rcu_read_unlock(void)
+static __always_inline void rcu_read_unlock(void)
 {
 	rcu_lockdep_assert(rcu_is_watching(),
 			   "rcu_read_unlock() used illegally while idle");
