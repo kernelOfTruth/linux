@@ -3415,6 +3415,7 @@ static void __sched __schedule(void)
 	struct rq *rq;
 	int cpu;
 
+need_resched:
 	preempt_disable();
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
@@ -3461,6 +3462,18 @@ static void __sched __schedule(void)
 		}
 		switch_count = &prev->nvcsw;
 	}
+
+	/*
+	 * If we are going to sleep and we have plugged IO queued, make
+	 * sure to submit it to avoid deadlocks. This usually clears before
+	 * grabbing the lock but still may rarely happen here. */
+	if (unlikely(deactivate && blk_needs_flush_plug(prev))) {
+		grq_unlock_irq();
+		preempt_enable_no_resched();
+		blk_schedule_flush_plug(prev);
+		goto need_resched;
+	}
+
 
 	update_clocks(rq);
 	update_cpu_clock_switch(rq, prev);
