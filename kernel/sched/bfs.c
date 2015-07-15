@@ -1101,24 +1101,23 @@ void register_task_migration_notifier(struct notifier_block *n)
 #ifdef CONFIG_SMP
 void set_task_cpu(struct task_struct *p, unsigned int cpu)
 {
-	struct task_migration_notifier tmn;
 #ifdef CONFIG_LOCKDEP
 	/*
 	 * The caller should hold grq lock.
 	 */
 	WARN_ON_ONCE(debug_locks && !lockdep_is_held(&grq.lock));
 #endif
-	trace_sched_migrate_task(p, cpu);
-
 	if (task_cpu(p) == cpu)
 		return;
+	trace_sched_migrate_task(p, cpu);
 	perf_sw_event_sched(PERF_COUNT_SW_CPU_MIGRATIONS, 1, 0);
 
-	tmn.task = p;
-	tmn.from_cpu = task_cpu(p);
-	tmn.to_cpu = cpu;
-
-	atomic_notifier_call_chain(&task_migration_notifier, 0, &tmn);
+	/*
+	 * After ->cpu is set up to a new value, task_grq_lock(p, ...) can be
+	 * successfully executed on another CPU. We must ensure that updates of
+	 * per-task data have been completed by this moment.
+	 */
+	smp_wmb();
 	if (p->on_rq) {
 		task_rq(p)->soft_affined--;
 		cpu_rq(cpu)->soft_affined++;
