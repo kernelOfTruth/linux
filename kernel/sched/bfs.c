@@ -1091,26 +1091,34 @@ static inline void deactivate_task(struct task_struct *p, struct rq *rq)
 	clear_sticky(p);
 }
 
+static ATOMIC_NOTIFIER_HEAD(task_migration_notifier);
+
+void register_task_migration_notifier(struct notifier_block *n)
+{
+	atomic_notifier_chain_register(&task_migration_notifier, n);
+}
+
 #ifdef CONFIG_SMP
 void set_task_cpu(struct task_struct *p, unsigned int cpu)
 {
+	struct task_migration_notifier tmn;
 #ifdef CONFIG_LOCKDEP
 	/*
 	 * The caller should hold grq lock.
 	 */
 	WARN_ON_ONCE(debug_locks && !lockdep_is_held(&grq.lock));
 #endif
+	trace_sched_migrate_task(p, cpu);
+
 	if (task_cpu(p) == cpu)
 		return;
-	trace_sched_migrate_task(p, cpu);
 	perf_sw_event_sched(PERF_COUNT_SW_CPU_MIGRATIONS, 1, 0);
 
-	/*
-	 * After ->cpu is set up to a new value, task_grq_lock(p, ...) can be
-	 * successfully executed on another CPU. We must ensure that updates of
-	 * per-task data have been completed by this moment.
-	 */
-	smp_wmb();
+	tmn.task = p;
+	tmn.from_cpu = task_cpu(p);
+	tmn.to_cpu = cpu;
+
+	atomic_notifier_call_chain(&task_migration_notifier, 0, &tmn);
 	if (p->on_rq) {
 		task_rq(p)->soft_affined--;
 		cpu_rq(cpu)->soft_affined++;
@@ -3415,6 +3423,7 @@ static void __sched __schedule(void)
 	struct rq *rq;
 	int cpu;
 
+need_resched:
 	preempt_disable();
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
@@ -3461,6 +3470,18 @@ static void __sched __schedule(void)
 		}
 		switch_count = &prev->nvcsw;
 	}
+
+	/*
+	 * If we are going to sleep and we have plugged IO queued, make
+	 * sure to submit it to avoid deadlocks. This usually clears before
+	 * grabbing the lock but still may rarely happen here. */
+	if (unlikely(deactivate && blk_needs_flush_plug(prev))) {
+		grq_unlock_irq();
+		preempt_enable_no_resched();
+		blk_schedule_flush_plug(prev);
+		goto need_resched;
+	}
+
 
 	update_clocks(rq);
 	update_cpu_clock_switch(rq, prev);
@@ -3552,28 +3573,12 @@ rerun_prev_unlocked:
 	sched_preempt_enable_no_resched();
 }
 
-static inline void sched_submit_work(struct task_struct *tsk)
-{
-	if (!tsk->state || tsk_is_pi_blocked(tsk))
-		return;
-	/*
-	 * If we are going to sleep and we have plugged IO queued,
-	 * make sure to submit it to avoid deadlocks.
-	 */
-	if (blk_needs_flush_plug(tsk))
-		blk_schedule_flush_plug(tsk);
-}
-
 asmlinkage __visible void __sched schedule(void)
 {
-	struct task_struct *tsk = current;
-
-	sched_submit_work(tsk);
 	do {
 		__schedule();
 	} while (need_resched());
 }
-
 EXPORT_SYMBOL(schedule);
 
 #ifdef CONFIG_CONTEXT_TRACKING
