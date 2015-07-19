@@ -298,8 +298,8 @@ CONFIG_SHELL := $(shell if [ -x "$$BASH" ]; then echo $$BASH; \
 
 HOSTCC       = gcc
 HOSTCXX      = g++
-HOSTCFLAGS   = -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89
-HOSTCXXFLAGS = -O2
+HOSTCFLAGS   = -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -fdevirtualize-speculatively -ftree-loop-distribution -fgraphite-identity -fira-loop-pressure -fsched-pressure -fschedule-insns -fno-tree-reassoc -ftracer -fweb -fsched2-use-superblocks -fivopts -fpredictive-commoning -fgcse-after-reload -ftree-loop-im -funswitch-loops -ftree-loop-ivcanon -fvariable-expansion-in-unroller -fsplit-ivs-in-unroller -fgcse -fgcse-las -fgcse-sm -fmodulo-sched-allow-regmoves -freschedule-modulo-scheduled-loops -fmodulo-sched -fvect-cost-model -ftree-partial-pre
+HOSTCXXFLAGS = -O2 -fdevirtualize-speculatively -ftree-loop-distribution -fgraphite-identity -fira-loop-pressure -fsched-pressure -fschedule-insns -fno-tree-reassoc -ftracer -fweb -fsched2-use-superblocks -fivopts -fpredictive-commoning -fgcse-after-reload -ftree-loop-im -funswitch-loops -ftree-loop-ivcanon -fvariable-expansion-in-unroller -fsplit-ivs-in-unroller -fgcse -fgcse-las -fgcse-sm -fmodulo-sched-allow-regmoves -freschedule-modulo-scheduled-loops -fmodulo-sched -fvect-cost-model -ftree-partial-pre
 
 ifeq ($(shell $(HOSTCC) -v 2>&1 | grep -c "clang version"), 1)
 HOSTCFLAGS  += -Wno-unused-value -Wno-unused-parameter \
@@ -369,7 +369,7 @@ CHECK		= sparse
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
-CFLAGS_MODULE   =
+CFLAGS_MODULE   = -fdevirtualize-speculatively -ftree-loop-distribution -fgraphite-identity -fira-loop-pressure -fsched-pressure -fschedule-insns -fno-tree-reassoc -ftracer -fweb -fsched2-use-superblocks -fivopts -fpredictive-commoning -fgcse-after-reload -ftree-loop-im -funswitch-loops -ftree-loop-ivcanon -fvariable-expansion-in-unroller -fsplit-ivs-in-unroller -fgcse -fgcse-las -fgcse-sm -fmodulo-sched-allow-regmoves -freschedule-modulo-scheduled-loops -fmodulo-sched -fvect-cost-model -ftree-partial-pre
 AFLAGS_MODULE   =
 LDFLAGS_MODULE  =
 CFLAGS_KERNEL	=
@@ -401,7 +401,7 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
-		   -std=gnu89
+		   -std=gnu89 -fdevirtualize-speculatively -ftree-loop-distribution -fgraphite-identity -fira-loop-pressure -fsched-pressure -fschedule-insns -fno-tree-reassoc -ftracer -fweb -fsched2-use-superblocks -fivopts -fpredictive-commoning -fgcse-after-reload -ftree-loop-im -funswitch-loops -ftree-loop-ivcanon -fvariable-expansion-in-unroller -fsplit-ivs-in-unroller -fgcse -fgcse-las -fgcse-sm -fmodulo-sched-allow-regmoves -freschedule-modulo-scheduled-loops -fmodulo-sched -fvect-cost-model -ftree-partial-pre
 
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
