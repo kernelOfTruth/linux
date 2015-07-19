@@ -281,7 +281,7 @@ static inline void put_bh(struct buffer_head *bh)
         atomic_dec(&bh->b_count);
 }
 
-static inline void brelse(struct buffer_head *bh)
+static __always_inline void brelse(struct buffer_head *bh)
 {
 	if (bh)
 		__brelse(bh);

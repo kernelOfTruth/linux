@@ -799,27 +799,27 @@ static __always_inline void __ticket_unlock_kick(struct arch_spinlock *lock,
 #define __PV_IS_CALLEE_SAVE(func)			\
 	((struct paravirt_callee_save) { func })
 
-static inline notrace unsigned long arch_local_save_flags(void)
+static __always_inline notrace unsigned long arch_local_save_flags(void)
 {
 	return PVOP_CALLEE0(unsigned long, pv_irq_ops.save_fl);
 }
 
-static inline notrace void arch_local_irq_restore(unsigned long f)
+static __always_inline notrace void arch_local_irq_restore(unsigned long f)
 {
 	PVOP_VCALLEE1(pv_irq_ops.restore_fl, f);
 }
 
-static inline notrace void arch_local_irq_disable(void)
+static __always_inline notrace void arch_local_irq_disable(void)
 {
 	PVOP_VCALLEE0(pv_irq_ops.irq_disable);
 }
 
-static inline notrace void arch_local_irq_enable(void)
+static __always_inline notrace void arch_local_irq_enable(void)
 {
 	PVOP_VCALLEE0(pv_irq_ops.irq_enable);
 }
 
-static inline notrace unsigned long arch_local_irq_save(void)
+static __always_inline notrace unsigned long arch_local_irq_save(void)
 {
 	unsigned long f;
 

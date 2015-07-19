@@ -2900,7 +2900,7 @@ static inline u32 rtl_read_dword(struct rtl_priv *rtlpriv, u32 addr)
 	return rtlpriv->io.read32_sync(rtlpriv, addr);
 }
 
-static inline void rtl_write_byte(struct rtl_priv *rtlpriv, u32 addr, u8 val8)
+static __always_inline void rtl_write_byte(struct rtl_priv *rtlpriv, u32 addr, u8 val8)
 {
 	rtlpriv->io.write8_async(rtlpriv, addr, val8);
 
