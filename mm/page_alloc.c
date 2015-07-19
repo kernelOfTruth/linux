@@ -1649,6 +1649,8 @@ int __isolate_free_page(struct page *page, unsigned int order)
 	zone->free_area[order].nr_free--;
 	rmv_page_order(page);
 
+	set_page_owner(page, order, 0);
+
 	/* Set the pageblock if the isolated page is at least a pageblock */
 	if (order >= pageblock_order - 1) {
 		struct page *endpage = page + (1 << order) - 1;
@@ -1660,7 +1662,7 @@ int __isolate_free_page(struct page *page, unsigned int order)
 		}
 	}
 
-	set_page_owner(page, order, 0);
+
 	return 1UL << order;
 }
 
