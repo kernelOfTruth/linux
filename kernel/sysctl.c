@@ -144,6 +144,12 @@ static const int cap_last_cap = CAP_LAST_CAP;
 static unsigned long hung_task_timeout_max = (LONG_MAX/HZ);
 #endif
 
+/*
+ * Used by proc_doulongvec_minmax of sysctl_memdie_task_*_secs and
+ * sysctl_memalloc_task_*_secs
+ */
+static unsigned long wait_timeout_max = (LONG_MAX/HZ);
+
 #ifdef CONFIG_INOTIFY_USER
 #include <linux/inotify.h>
 #endif
@@ -1527,6 +1533,46 @@ static struct ctl_table vm_table[] = {
 		.maxlen		= sizeof(sysctl_admin_reserve_kbytes),
 		.mode		= 0644,
 		.proc_handler	= proc_doulongvec_minmax,
+	},
+	{
+		.procname       = "memdie_task_warn_secs",
+		.data           = &sysctl_memdie_task_warn_secs,
+		.maxlen         = sizeof(sysctl_memdie_task_warn_secs),
+		.mode           = 0644,
+		.proc_handler   = proc_doulongvec_minmax,
+		.extra2         = &wait_timeout_max,
+	},
+	{
+		.procname       = "memdie_task_skip_secs",
+		.data           = &sysctl_memdie_task_skip_secs,
+		.maxlen         = sizeof(sysctl_memdie_task_skip_secs),
+		.mode           = 0644,
+		.proc_handler   = proc_doulongvec_minmax,
+		.extra2         = &wait_timeout_max,
+	},
+	{
+		.procname       = "memdie_task_panic_secs",
+		.data           = &sysctl_memdie_task_panic_secs,
+		.maxlen         = sizeof(sysctl_memdie_task_panic_secs),
+		.mode           = 0644,
+		.proc_handler   = proc_doulongvec_minmax,
+		.extra2         = &wait_timeout_max,
+	},
+	{
+		.procname       = "memalloc_task_warn_secs",
+		.data           = &sysctl_memalloc_task_warn_secs,
+		.maxlen         = sizeof(sysctl_memalloc_task_warn_secs),
+		.mode           = 0644,
+		.proc_handler   = proc_doulongvec_minmax,
+		.extra2         = &wait_timeout_max,
+	},
+	{
+		.procname       = "memalloc_task_retry_secs",
+		.data           = &sysctl_memalloc_task_retry_secs,
+		.maxlen         = sizeof(sysctl_memalloc_task_retry_secs),
+		.mode           = 0644,
+		.proc_handler   = proc_doulongvec_minmax,
+		.extra2         = &wait_timeout_max,
 	},
 	{ }
 };
