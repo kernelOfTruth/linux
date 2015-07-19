@@ -937,20 +937,16 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		 *
 		 * 2) Global reclaim encounters a page, memcg encounters a
 		 *    page that is not marked for immediate reclaim or
-		 *    the caller does not have __GFP_IO. In this case mark
+		 *    the caller does not have __GFP_FS. In this case mark
 		 *    the page for immediate reclaim and continue scanning.
 		 *
-		 *    __GFP_IO is checked  because a loop driver thread might
-		 *    enter reclaim, and deadlock if it waits on a page for
-		 *    which it is needed to do the write (loop masks off
+		 *    Require __GFP_FS even though we are not entering fs
+		 *    because we are waiting for a fs activity and we might
+		 *    be in the middle of the writeout. Moreover a loop driver
+		 *    might enter reclaim, and deadlock of it waits on a page
+		 *    for which it is needed to do the write (loop masks off
 		 *    __GFP_IO|__GFP_FS for this reason); but more thought
 		 *    would probably show more reasons.
-		 *
-		 *    Don't require __GFP_FS, since we're not going into the
-		 *    FS, just waiting on its writeback completion. Worryingly,
-		 *    ext4 gfs2 and xfs allocate pages with
-		 *    grab_cache_page_write_begin(,,AOP_FLAG_NOFS), so testing
-		 *    may_enter_fs here is liable to OOM on them.
 		 *
 		 * 3) memcg encounters a page that is not already marked
 		 *    PageReclaim. memcg does not have any dirty pages
@@ -968,7 +964,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
 			/* Case 2 above */
 			} else if (global_reclaim(sc) ||
-			    !PageReclaim(page) || !(sc->gfp_mask & __GFP_IO)) {
+			    !PageReclaim(page) || !(sc->gfp_mask & __GFP_FS)) {
 				/*
 				 * This is slightly racy - end_page_writeback()
 				 * might have just cleared PageReclaim, then
@@ -985,10 +981,10 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
 				goto keep_locked;
 
-			/* Case 3 above */
-			} else {
-				wait_on_page_writeback(page);
 			}
+
+			/* Case 3 above */
+			wait_on_page_writeback(page);
 		}
 
 		if (!force_reclaim)
