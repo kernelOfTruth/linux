@@ -2304,7 +2304,7 @@ select_delayed_ref(struct btrfs_delayed_ref_head *head)
 	/*
 	 * Select a delayed ref of type BTRFS_ADD_DELAYED_REF first.
 	 * This is to prevent a ref count from going down to zero, which deletes
-	 * the extent item from the extent tree, when here still are references
+	 * the extent item from the extent tree, when there still are references
 	 * to add, which would fail because they would not find the extent item.
 	 */
 	list_for_each_entry(ref, &head->ref_list, list) {
