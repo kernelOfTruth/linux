@@ -635,3 +635,25 @@ config MAX_STACK_SIZE_MB
 	  changed to a smaller value in which case that is used.
 
 	  A sane initial value is 80 MB.
+
+config SANITIZE_FREED_PAGES
+	bool "Sanitize memory pages after free"
+	default n
+	help
+	  This option is used to make sure all pages freed are zeroed. This is
+	  quite low-level and doesn't handle your slab buffers.
+	  It has various applications, from preventing some info leaks to
+	  helping kernel same-page merging in virtualised environments.
+	  Depending on your workload it will greatly reduce performance.
+
+	  If unsure, say N.
+
+config SANITIZE_FREED_PAGES_DEBUG
+	bool "Debug sanitize pages feature"
+	default n
+	depends on SANITIZE_FREED_PAGES && DEBUG_KERNEL
+	help
+	  This option adds some debugging code for the SANITIZE_FREED_PAGES
+	  option, as well as verification code to ensure pages are really
+	  zeroed. Don't enable unless you want to debug this feature.
+	  If unsure, say N.
