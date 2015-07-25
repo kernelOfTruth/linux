@@ -520,6 +520,11 @@ static irqreturn_t pcie_isr(int irq, void *dev_id)
 	do {
 		pcie_capability_read_word(pdev, PCI_EXP_SLTSTA, &detected);
 
+		if (detected == (u16) ~0) {
+			ctrl_info(ctrl, "Device has gone away\n");
+			return IRQ_HANDLED;
+		}
+
 		detected &= (PCI_EXP_SLTSTA_ABP | PCI_EXP_SLTSTA_PFD |
 			     PCI_EXP_SLTSTA_MRLSC | PCI_EXP_SLTSTA_PDC |
 			     PCI_EXP_SLTSTA_CC | PCI_EXP_SLTSTA_DLLSC);
