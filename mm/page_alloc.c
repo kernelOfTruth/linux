@@ -921,7 +921,12 @@ static inline void expand(struct zone *zone, struct page *page,
 			set_page_guard(zone, &page[size], high, migratetype);
 			continue;
 		}
-		list_add(&page[size].lru, &area->free_list[migratetype]);
+		/*
+		 * Add the block to the tail of the list, so it's less likely
+		 * to be used soon and more likely to be merged when the page
+		 * is freed.
+		 */
+		list_add_tail(&page[size].lru, &area->free_list[migratetype]);
 		area->nr_free++;
 		set_page_order(&page[size], high);
 	}
