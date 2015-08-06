@@ -380,20 +380,6 @@ void prep_compound_page(struct page *page, unsigned long order)
 	}
 }
 
-static inline void prep_zero_page(struct page *page, unsigned int order,
-							gfp_t gfp_flags)
-{
-	int i;
-
-	/*
-	 * clear_highpage() will use KM_USER0, so it's a bug to use __GFP_ZERO
-	 * and __GFP_HIGHMEM from hard or soft interrupt context.
-	 */
-	VM_BUG_ON((gfp_flags & __GFP_HIGHMEM) && in_interrupt());
-	for (i = 0; i < (1 << order); i++)
-		clear_highpage(page + i);
-}
-
 #ifdef CONFIG_DEBUG_PAGEALLOC
 unsigned int _debug_guardpage_minorder;
 bool _debug_pagealloc_enabled __read_mostly;
@@ -809,6 +795,12 @@ static bool free_pages_prepare(struct page *page, unsigned int order)
 		debug_check_no_obj_freed(page_address(page),
 					   PAGE_SIZE << order);
 	}
+
+#ifdef CONFIG_SANITIZE_FREED_PAGES
+	for (i = 0; i < (1 << order); i++)
+		clear_highpage(page + i);
+#endif
+
 	arch_free_page(page, order);
 	kernel_map_pages(page, 1 << order, 0);
 
@@ -974,8 +966,33 @@ static int prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags,
 	kernel_map_pages(page, 1 << order, 1);
 	kasan_alloc_pages(page, order);
 
+#ifndef CONFIG_SANITIZE_FREED_PAGES
+	/* SANITIZE_FREED_PAGES relies implicitly on the fact that pages are
+	 * cleared before use, so we don't need gfp zero in the default case
+	 * because all pages go through the free_pages_prepare code path when
+	 * switching from bootmem to the default allocator */
 	if (gfp_flags & __GFP_ZERO)
-		prep_zero_page(page, order, gfp_flags);
+		for (i = 0; i < (1 << order); i++)
+			clear_highpage(page + i);
+#endif
+#ifdef CONFIG_SANITIZE_FREED_PAGES_DEBUG
+	for (i = 0; i < (1 << order); i++) {
+		struct page *p = page + i;
+		void *kaddr = kmap_atomic(p);
+		void *found = memchr_inv(kaddr, 0, PAGE_SIZE);
+		kunmap_atomic(kaddr);
+
+		if (found) {
+			pr_err("page %p is not zero on alloc! %s\n",
+					page_address(p), (gfp_flags &
+						__GFP_ZERO) ?
+					"fixing." : "");
+			if (gfp_flags & __GFP_ZERO) {
+				clear_highpage(p);
+			}
+		}
+	}
+#endif
 
 	if (order && (gfp_flags & __GFP_COMP))
 		prep_compound_page(page, order);
