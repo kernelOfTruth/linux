@@ -29,7 +29,7 @@ extern int panic_on_overflow;
 
 extern struct dma_map_ops *dma_ops;
 
-static inline struct dma_map_ops *get_dma_ops(struct device *dev)
+static __always_inline struct dma_map_ops *get_dma_ops(struct device *dev)
 {
 #ifndef CONFIG_X86_DEV_DMA_OPS
 	return dma_ops;
@@ -44,7 +44,7 @@ static inline struct dma_map_ops *get_dma_ops(struct device *dev)
 #include <asm-generic/dma-mapping-common.h>
 
 /* Make sure we keep the same behaviour */
-static inline int dma_mapping_error(struct device *dev, dma_addr_t dma_addr)
+static __always_inline int dma_mapping_error(struct device *dev, dma_addr_t dma_addr)
 {
 	struct dma_map_ops *ops = get_dma_ops(dev);
 	debug_dma_mapping_error(dev, dma_addr);
