@@ -1877,6 +1877,14 @@ static bool __zone_watermark_ok(struct zone *z, unsigned int order,
 		min -= min / 2;
 	if (alloc_flags & ALLOC_HARDER)
 		min -= min / 4;
+	/*
+	 * Allow all OOM-killed threads to access part of memory reserves
+	 * than allow only one OOM-killed thread to access entire memory
+	 * reserves.
+	 */
+	if (min == mark && sysctl_memdie_task_skip_secs &&
+	    unlikely(test_thread_flag(TIF_MEMDIE)))
+		min -= min / 4;
 #ifdef CONFIG_CMA
 	/* If allocation can't use CMA areas don't use free CMA pages */
 	if (!(alloc_flags & ALLOC_CMA))
@@ -2381,6 +2389,57 @@ should_alloc_retry(gfp_t gfp_mask, unsigned int order,
 	return 0;
 }
 
+/* Timer for avoiding flooding of warning messages. */
+static bool memalloc_delay_warned;
+static void memalloc_reset_warned(unsigned long arg)
+{
+	xchg(&memalloc_delay_warned, false);
+}
+static DEFINE_TIMER(memalloc_warn_timer, memalloc_reset_warned, 0, 0);
+
+/**
+ * check_memalloc_delay - check current thread should invoke OOM killer.
+ *
+ * This function starts the OOM killer timer so that memory allocator can
+ * eventually invoke the OOM killer after timeout. Otherwise, we can end up
+ * with a system locked up forever because there is no guarantee that somebody
+ * else will volunteer some memory while we keep looping. This is critically
+ * important when there are OOM victims (i.e. atomic_read(&oom_victims) > 0)
+ * which means that there may be OOM victims which are waiting for current
+ * thread doing !__GFP_FS allocation to release locks while there is already
+ * unlikely reclaimable memory.
+ *
+ * If current thread continues failed to allocate memory for
+ * /proc/sys/vm/memalloc_task_warn_secs seconds, this function emits warning.
+ * Setting 0 to this interface disables this check.
+ *
+ * If current thread continues failed to allocate memory for
+ * /proc/sys/vm/memalloc_task_retry_secs seconds, this function returns true.
+ * As a result, the OOM killer will be invoked at the risk of killing some
+ * process when there is still reclaimable memory. Setting 0 to this interface
+ * disables this check.
+ *
+ * Note that unless you set non-0 value to /proc/sys/vm/memdie_task_skip_secs
+ * and/or /proc/sys/vm/memdie_task_panic_secs interfaces in addition to this
+ * interface, the possibility of stalling the system for unpredictable duration
+ * (presumably forever) will remain. See is_killable_memdie_task() for OOM
+ * deadlock.
+ */
+bool check_memalloc_delay(void)
+{
+	unsigned long spent = jiffies - current->memalloc_start;
+	unsigned long timeout = sysctl_memalloc_task_warn_secs;
+
+	if (timeout && time_after(spent, timeout * HZ) &&
+	    !xchg(&memalloc_delay_warned, true)) {
+		pr_warn("MemAlloc: %s (%u) is retrying for %lu seconds.\n",
+			current->comm, current->pid, spent / HZ);
+		mod_timer(&memalloc_warn_timer, jiffies + timeout * HZ);
+	}
+	timeout = sysctl_memalloc_task_retry_secs;
+	return timeout && time_after(spent, timeout * HZ);
+}
+
 static inline struct page *
 __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 	const struct alloc_context *ac, unsigned long *did_some_progress)
@@ -2427,7 +2486,8 @@ __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 			 * keep looping as per should_alloc_retry().
 			 */
 			*did_some_progress = 1;
-			goto out;
+			if (!check_memalloc_delay())
+				goto out;
 		}
 		/* The OOM killer may not free memory on a specific node */
 		if (gfp_mask & __GFP_THISNODE)
@@ -2644,7 +2704,8 @@ gfp_to_alloc_flags(gfp_t gfp_mask)
 			alloc_flags |= ALLOC_NO_WATERMARKS;
 		else if (!in_interrupt() &&
 				((current->flags & PF_MEMALLOC) ||
-				 unlikely(test_thread_flag(TIF_MEMDIE))))
+				 (!sysctl_memdie_task_skip_secs &&
+				  unlikely(test_thread_flag(TIF_MEMDIE)))))
 			alloc_flags |= ALLOC_NO_WATERMARKS;
 	}
 #ifdef CONFIG_CMA
@@ -2670,6 +2731,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	unsigned long did_some_progress;
 	enum migrate_mode migration_mode = MIGRATE_ASYNC;
 	bool deferred_compaction = false;
+	bool stop_timer_on_return = false;
 	int contended_compaction = COMPACT_CONTENDED_NONE;
 
 	/*
@@ -2751,8 +2813,23 @@ retry:
 		goto nopage;
 
 	/* Avoid allocations with no watermarks from looping endlessly */
-	if (test_thread_flag(TIF_MEMDIE) && !(gfp_mask & __GFP_NOFAIL))
+	if (!sysctl_memdie_task_skip_secs &&
+	    test_thread_flag(TIF_MEMDIE) && !(gfp_mask & __GFP_NOFAIL))
 		goto nopage;
+
+	/*
+	 * Start memory allocation timer. Since this function might be called
+	 * recursively via memory shrinker functions, start timer only if this
+	 * function is not recursively called.
+	 */
+	if (!current->memalloc_start) {
+		unsigned long start = jiffies;
+
+		if (!start)
+			start = 1;
+		current->memalloc_start = start;
+		stop_timer_on_return = true;
+	}
 
 	/*
 	 * Try direct compaction. The first pass is asynchronous. Subsequent
@@ -2848,6 +2925,10 @@ retry:
 nopage:
 	warn_alloc_failed(gfp_mask, order, NULL);
 got_pg:
+	/* Stop memory allocation timer. */
+	if (stop_timer_on_return)
+		current->memalloc_start = 0;
+
 	return page;
 }
 
