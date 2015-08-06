@@ -3659,7 +3659,7 @@ cache_index:
 	 * against the inode was last made. So here we assume the inode might
 	 * have been evicted, and therefore the exact value of last_unlink_trans
 	 * lost, and set it to last_trans to avoid metadata inconsistencies
-	 * between the inode and its if the inode is fsync'ed and the log
+	 * between the inode and its parent if the inode is fsync'ed and the log
 	 * replayed. For example, in the scenario:
 	 *
 	 * touch mydir/foo
@@ -3678,7 +3678,8 @@ cache_index:
 	 *
 	 * Setting last_unlink_trans to last_trans is a pessimistic approach,
 	 * but it guarantees correctness at the expense of ocassional full
-	 * transaction commits on fsync.
+	 * transaction commits on fsync if our inode is a directory, or if our
+	 * inode is not a directory, logging its parent unnecessarily.
 	 */
 	BTRFS_I(inode)->last_unlink_trans = BTRFS_I(inode)->last_trans;
 
