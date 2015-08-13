@@ -466,8 +466,8 @@ extern void show_workqueue_state(void);
  * We queue the work to the CPU on which it was submitted, but if the CPU dies
  * it can be processed by another CPU.
  */
-static inline bool queue_work(struct workqueue_struct *wq,
-			      struct work_struct *work)
+static __always_inline bool queue_work(struct workqueue_struct *wq,
+				       struct work_struct *work)
 {
 	return queue_work_on(WORK_CPU_UNBOUND, wq, work);
 }
@@ -525,7 +525,7 @@ static inline bool schedule_work_on(int cpu, struct work_struct *work)
  * queued and leaves it in the same position on the kernel-global
  * workqueue otherwise.
  */
-static inline bool schedule_work(struct work_struct *work)
+static __always_inline bool schedule_work(struct work_struct *work)
 {
 	return queue_work(system_wq, work);
 }
@@ -553,8 +553,8 @@ static inline bool schedule_delayed_work_on(int cpu, struct delayed_work *dwork,
  * After waiting for a given time this puts a job in the kernel-global
  * workqueue.
  */
-static inline bool schedule_delayed_work(struct delayed_work *dwork,
-					 unsigned long delay)
+static __always_inline bool schedule_delayed_work(struct delayed_work *dwork,
+						  unsigned long delay)
 {
 	return queue_delayed_work(system_wq, dwork, delay);
 }

@@ -1619,7 +1619,7 @@ void sock_init_data(struct socket *sock, struct sock *sk);
  */
 
 /* Ungrab socket and destroy it, if it was the last reference. */
-static inline void sock_put(struct sock *sk)
+static __always_inline void sock_put(struct sock *sk)
 {
 	if (atomic_dec_and_test(&sk->sk_refcnt))
 		sk_free(sk);

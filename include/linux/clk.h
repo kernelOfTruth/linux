@@ -450,7 +450,7 @@ static inline struct clk *clk_get_parent(struct clk *clk)
 #endif
 
 /* clk_prepare_enable helps cases using clk_enable in non-atomic context. */
-static inline int clk_prepare_enable(struct clk *clk)
+static __always_inline int clk_prepare_enable(struct clk *clk)
 {
 	int ret;
 
