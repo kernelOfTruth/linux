@@ -127,6 +127,17 @@ static void blk_rq_check_expired(struct request *rq, unsigned long *next_timeout
 	}
 }
 
+/*
+ * With SSDs it gets realistic to set a short timeout of 1s.  But if
+ * every timeout gets rounded up by as much as a second, the effective
+ * limit is 2s.  Round jiffies a bit more precisely to about 100ms
+ * instead.
+ */
+static unsigned long round_jiffies_up_100ms(unsigned long j)
+{
+	return round_up(j, rounddown_pow_of_two(HZ / 10));
+}
+
 void blk_rq_timed_out_timer(unsigned long data)
 {
 	struct request_queue *q = (struct request_queue *) data;
@@ -140,7 +151,7 @@ void blk_rq_timed_out_timer(unsigned long data)
 		blk_rq_check_expired(rq, &next, &next_set);
 
 	if (next_set)
-		mod_timer(&q->timeout, round_jiffies_up(next));
+		mod_timer(&q->timeout, round_jiffies_up_100ms(next));
 
 	spin_unlock_irqrestore(q->queue_lock, flags);
 }
@@ -170,7 +181,7 @@ unsigned long blk_rq_timeout(unsigned long timeout)
 {
 	unsigned long maxt;
 
-	maxt = round_jiffies_up(jiffies + BLK_MAX_TIMEOUT);
+	maxt = round_jiffies_up_100ms(jiffies + BLK_MAX_TIMEOUT);
 	if (time_after(timeout, maxt))
 		timeout = maxt;
 
@@ -215,7 +226,7 @@ void blk_add_timer(struct request *req)
 	 * than an existing one, modify the timer. Round up to next nearest
 	 * second.
 	 */
-	expiry = blk_rq_timeout(round_jiffies_up(req->deadline));
+	expiry = blk_rq_timeout(round_jiffies_up_100ms(req->deadline));
 
 	if (!timer_pending(&q->timeout) ||
 	    time_before(expiry, q->timeout.expires)) {
