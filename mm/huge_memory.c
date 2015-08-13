@@ -23,10 +23,14 @@
 #include <linux/pagemap.h>
 #include <linux/migrate.h>
 #include <linux/hashtable.h>
+#include <linux/swapops.h>
 
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
 #include "internal.h"
+
+#define CREATE_TRACE_POINTS
+#include <trace/events/huge_memory.h>
 
 /*
  * By default transparent hugepage support is disabled in order that avoid
@@ -2205,6 +2209,8 @@ static int __collapse_huge_page_isolate(struct vm_area_struct *vma,
 	if (likely(referenced && writable))
 		return 1;
 out:
+	trace_mm_collapse_huge_page_isolate(vma->vm_start, none_or_zero,
+					    referenced, writable);
 	release_pte_pages(pte, _pte);
 	return 0;
 }
@@ -2429,6 +2435,39 @@ static bool hugepage_vma_check(struct vm_area_struct *vma)
 	return true;
 }
 
+/*
+ * Bring missing pages in from swap, to complete THP collapse.
+ * Only done if khugepaged_scan_pmd believes it is worthwhile.
+ *
+ * Called and returns without pte mapped or spinlocks held,
+ * but with mmap_sem held to protect against vma changes.
+ */
+
+static void __collapse_huge_page_swapin(struct mm_struct *mm,
+					struct vm_area_struct *vma,
+					unsigned long address, pmd_t *pmd,
+					pte_t *pte)
+{
+	unsigned long _address;
+	pte_t pteval = *pte;
+	int swap_pte = 0;
+
+	pte = pte_offset_map(pmd, address);
+	for (_address = address; _address < address + HPAGE_PMD_NR*PAGE_SIZE;
+	     pte++, _address += PAGE_SIZE) {
+		pteval = *pte;
+		if (is_swap_pte(pteval)) {
+			swap_pte++;
+			do_swap_page(mm, vma, _address, pte, pmd, 0x0, pteval);
+			/* pte is unmapped now, we need to map it */
+			pte = pte_offset_map(pmd, _address);
+		}
+	}
+	pte--;
+	pte_unmap(pte);
+	trace_mm_collapse_huge_page_swapin(mm, vma->vm_start, swap_pte);
+}
+
 static void collapse_huge_page(struct mm_struct *mm,
 				   unsigned long address,
 				   struct page **hpage,
@@ -2440,7 +2479,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 	pgtable_t pgtable;
 	struct page *new_page;
 	spinlock_t *pmd_ptl, *pte_ptl;
-	int isolated;
+	int isolated = 0;
 	unsigned long hstart, hend;
 	struct mem_cgroup *memcg;
 	unsigned long mmun_start;	/* For mmu_notifiers */
@@ -2483,6 +2522,8 @@ static void collapse_huge_page(struct mm_struct *mm,
 	pmd = mm_find_pmd(mm, address);
 	if (!pmd)
 		goto out;
+
+	__collapse_huge_page_swapin(mm, vma, address, pmd, pte);
 
 	anon_vma_lock_write(vma->anon_vma);
 
@@ -2558,6 +2599,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 	khugepaged_pages_collapsed++;
 out_up_write:
 	up_write(&mm->mmap_sem);
+	trace_mm_collapse_huge_page(mm, vma->vm_start, isolated);
 	return;
 
 out:
@@ -2572,11 +2614,11 @@ static int khugepaged_scan_pmd(struct mm_struct *mm,
 {
 	pmd_t *pmd;
 	pte_t *pte, *_pte;
-	int ret = 0, none_or_zero = 0;
+	int ret = 0, none_or_zero = 0, unmapped = 0;
 	struct page *page;
 	unsigned long _address;
 	spinlock_t *ptl;
-	int node = NUMA_NO_NODE;
+	int node = NUMA_NO_NODE, max_ptes_swap = HPAGE_PMD_NR/8;
 	bool writable = false, referenced = false;
 
 	VM_BUG_ON(address & ~HPAGE_PMD_MASK);
@@ -2590,6 +2632,12 @@ static int khugepaged_scan_pmd(struct mm_struct *mm,
 	for (_address = address, _pte = pte; _pte < pte+HPAGE_PMD_NR;
 	     _pte++, _address += PAGE_SIZE) {
 		pte_t pteval = *_pte;
+		if (is_swap_pte(pteval)) {
+			if (++unmapped <= max_ptes_swap)
+				continue;
+			else
+				goto out_unmap;
+		}
 		if (pte_none(pteval) || is_zero_pfn(pte_pfn(pteval))) {
 			if (++none_or_zero <= khugepaged_max_ptes_none)
 				continue;
@@ -2632,6 +2680,8 @@ static int khugepaged_scan_pmd(struct mm_struct *mm,
 		ret = 1;
 out_unmap:
 	pte_unmap_unlock(pte, ptl);
+	trace_mm_khugepaged_scan_pmd(mm, vma->vm_start, writable, referenced,
+				     none_or_zero, ret, unmapped);
 	if (ret) {
 		node = khugepaged_find_target_node();
 		/* collapse_huge_page will return with the mmap_sem released */
