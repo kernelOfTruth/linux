@@ -1613,6 +1613,9 @@ static bool name_in_log_ref(struct btrfs_root *log_root,
  * not exist in the FS, it is skipped.  fsyncs on directories
  * do not force down inodes inside that directory, just changes to the
  * names or unlinks in a directory.
+ *
+ * Returns < 0 on error, 0 if the name wasn't replayed (dentry points to a
+ * non-existing inode) and 1 if the name was replayed.
  */
 static noinline int replay_one_name(struct btrfs_trans_handle *trans,
 				    struct btrfs_root *root,
@@ -1631,6 +1634,7 @@ static noinline int replay_one_name(struct btrfs_trans_handle *trans,
 	int exists;
 	int ret = 0;
 	bool update_size = (key->type == BTRFS_DIR_INDEX_KEY);
+	bool name_added = false;
 
 	dir = read_one_inode(root, key->objectid);
 	if (!dir)
@@ -1708,6 +1712,8 @@ out:
 	}
 	kfree(name);
 	iput(dir);
+	if (!ret && name_added)
+		ret = 1;
 	return ret;
 
 insert:
@@ -1723,6 +1729,8 @@ insert:
 			      name, name_len, log_type, &log_key);
 	if (ret && ret != -ENOENT && ret != -EEXIST)
 		goto out;
+	if (!ret)
+		name_added = true;
 	update_size = false;
 	ret = 0;
 	goto out;
@@ -1756,8 +1764,8 @@ static noinline int replay_one_dir_item(struct btrfs_trans_handle *trans,
 			return -EIO;
 		name_len = btrfs_dir_name_len(eb, di);
 		ret = replay_one_name(trans, root, path, eb, di, key);
-		if (ret)
-			return ret;
+		if (ret < 0)
+			break;
 		ptr = (unsigned long)(di + 1);
 		ptr += name_len;
 
@@ -1788,9 +1796,7 @@ static noinline int replay_one_dir_item(struct btrfs_trans_handle *trans,
 		 * make it impossible to ever delete the parent directory has
 		 * it would result in stale dentries that can never be deleted.
 		 */
-		if (btrfs_dir_type(eb, di) != BTRFS_FT_DIR &&
-		    btrfs_dir_transid(eb, di) >
-		    root->fs_info->last_trans_committed) {
+		if (ret == 1 && btrfs_dir_type(eb, di) != BTRFS_FT_DIR) {
 			struct btrfs_key di_key;
 
 			if (!fixup_path) {
@@ -1807,6 +1813,7 @@ static noinline int replay_one_dir_item(struct btrfs_trans_handle *trans,
 			if (ret)
 				break;
 		}
+		ret = 0;
 	}
 	btrfs_free_path(fixup_path);
 	return ret;
