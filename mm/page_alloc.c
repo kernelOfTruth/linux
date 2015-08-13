@@ -2544,7 +2544,7 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
 		struct zone *zone = page_zone(page);
 
 		zone->compact_blockskip_flush = false;
-		compaction_defer_reset(zone, order, true);
+		compaction_failed_reset(zone, order, true);
 		count_vm_event(COMPACTSUCCESS);
 		return page;
 	}

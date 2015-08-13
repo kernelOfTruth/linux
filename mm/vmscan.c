@@ -2468,10 +2468,10 @@ static inline bool compaction_ready(struct zone *zone, int order)
 	watermark_ok = zone_watermark_ok_safe(zone, 0, watermark, 0, 0);
 
 	/*
-	 * If compaction is deferred, reclaim up to a point where
+	 * If compaction is depleted, reclaim up to a point where
 	 * compaction will have a chance of success when re-enabled
 	 */
-	if (compaction_deferred(zone, order))
+	if (test_bit(ZONE_COMPACTION_DEPLETED, &zone->flags))
 		return watermark_ok;
 
 	/*
