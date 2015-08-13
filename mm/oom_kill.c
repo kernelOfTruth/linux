@@ -42,6 +42,11 @@
 int sysctl_panic_on_oom;
 int sysctl_oom_kill_allocating_task;
 int sysctl_oom_dump_tasks = 1;
+unsigned long sysctl_memdie_task_warn_secs;
+unsigned long sysctl_memdie_task_skip_secs;
+unsigned long sysctl_memdie_task_panic_secs;
+unsigned long sysctl_memalloc_task_warn_secs;
+unsigned long sysctl_memalloc_task_retry_secs;
 static DEFINE_SPINLOCK(zone_scan_lock);
 
 #ifdef CONFIG_NUMA
@@ -117,6 +122,69 @@ found:
 	return t;
 }
 
+/* Timer for avoiding flooding of warning messages. */
+static bool memdie_delay_warned;
+static void memdie_reset_warned(unsigned long arg)
+{
+	xchg(&memdie_delay_warned, false);
+}
+static DEFINE_TIMER(memdie_warn_timer, memdie_reset_warned, 0, 0);
+
+/**
+ * is_killable_memdie_task - check task is not stuck with TIF_MEMDIE flag set.
+ * @p: Pointer to "struct task_struct".
+ *
+ * Setting TIF_MEMDIE flag to @p disables the OOM killer. However, @p could get
+ * stuck due to dependency which is invisible to the OOM killer. When @p got
+ * stuck, the system will stall for unpredictable duration (presumably forever)
+ * because the OOM killer is kept disabled.
+ *
+ * If @p remained stuck for /proc/sys/vm/memdie_task_warn_secs seconds, this
+ * function emits warning. Setting 0 to this interface disables this check.
+ *
+ * If @p remained stuck for /proc/sys/vm/memdie_task_skip_secs seconds, this
+ * function returns false as if TIF_MEMDIE flag was not set to @p. As a result,
+ * the OOM killer will try to find other killable processes at the risk of
+ * kernel panic when there is no other killable processes. Setting 0 to this
+ * interface disables this check.
+ *
+ * If @p remained stuck for /proc/sys/vm/memdie_task_panic_secs seconds, this
+ * function triggers kernel panic (for optionally taking vmcore for analysis).
+ * Setting 0 to this interface disables this check.
+ *
+ * Note that unless you set non-0 value to
+ * /proc/sys/vm/memalloc_task_retry_secs interface, the possibility of
+ * stalling the system for unpredictable duration (presumably forever) will
+ * remain. See check_memalloc_delay() for deadlock without the OOM killer.
+ */
+static bool is_killable_memdie_task(struct task_struct *p)
+{
+	const unsigned long start = p->memdie_start;
+	unsigned long spent;
+	unsigned long timeout;
+
+	/* If task does not have TIF_MEMDIE flag, there is nothing to do. */
+	if (!start)
+		return false;
+	spent = jiffies - start;
+	/* Trigger kernel panic after timeout. */
+	timeout = sysctl_memdie_task_panic_secs;
+	if (timeout && time_after(spent, timeout * HZ))
+		panic("Out of memory: %s (%u) did not die within %lu seconds.\n",
+		      p->comm, p->pid, timeout);
+	/* Emit warnings after timeout. */
+	timeout = sysctl_memdie_task_warn_secs;
+	if (timeout && time_after(spent, timeout * HZ) &&
+	    !xchg(&memdie_delay_warned, true)) {
+		pr_warn("Out of memory: %s (%u) can not die for %lu seconds.\n",
+			p->comm, p->pid, spent / HZ);
+		mod_timer(&memdie_warn_timer, jiffies + timeout * HZ);
+	}
+	/* Return true before timeout. */
+	timeout = sysctl_memdie_task_skip_secs;
+	return !timeout || time_before(spent, timeout * HZ);
+}
+
 /* return true if the task is not adequate as candidate victim task. */
 static bool oom_unkillable_task(struct task_struct *p,
 		struct mem_cgroup *memcg, const nodemask_t *nodemask)
@@ -134,7 +202,7 @@ static bool oom_unkillable_task(struct task_struct *p,
 	if (!has_intersects_mems_allowed(p, nodemask))
 		return true;
 
-	return false;
+	return is_killable_memdie_task(p);
 }
 
 /**
@@ -416,10 +484,17 @@ static DECLARE_RWSEM(oom_sem);
  */
 void mark_tsk_oom_victim(struct task_struct *tsk)
 {
+	unsigned long start;
+
 	WARN_ON(oom_killer_disabled);
 	/* OOM killer might race with memcg OOM */
 	if (test_and_set_tsk_thread_flag(tsk, TIF_MEMDIE))
 		return;
+	/* Set current time for is_killable_memdie_task() check. */
+	start = jiffies;
+	if (!start)
+		start = 1;
+	tsk->memdie_start = start;
 	/*
 	 * Make sure that the task is woken up from uninterruptible sleep
 	 * if it is frozen because OOM killer wouldn't be able to free
@@ -437,6 +512,7 @@ void mark_tsk_oom_victim(struct task_struct *tsk)
  */
 void unmark_oom_victim(void)
 {
+	current->memdie_start = 0;
 	if (!test_and_clear_thread_flag(TIF_MEMDIE))
 		return;
 
@@ -581,12 +657,11 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 
 	/*
 	 * Kill all user processes sharing victim->mm in other thread groups, if
-	 * any.  They don't get access to memory reserves, though, to avoid
-	 * depletion of all memory.  This prevents mm->mmap_sem livelock when an
-	 * oom killed thread cannot exit because it requires the semaphore and
-	 * its contended by another thread trying to allocate memory itself.
-	 * That thread will now get access to memory reserves since it has a
-	 * pending fatal signal.
+	 * any. This mitigates mm->mmap_sem livelock when an oom killed thread
+	 * cannot exit because it requires the semaphore and its contended by
+	 * another thread trying to allocate memory itself. Note that this does
+	 * not help if the contended process does not share victim->mm. In that
+	 * case, is_killable_memdie_task() will detect it and take actions.
 	 */
 	rcu_read_lock();
 	for_each_process(p)
@@ -600,6 +675,8 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 				task_pid_nr(p), p->comm);
 			task_unlock(p);
 			do_send_sig_info(SIGKILL, SEND_SIG_FORCED, p, true);
+			if (sysctl_memdie_task_skip_secs)
+				mark_tsk_oom_victim(p);
 		}
 	rcu_read_unlock();
 

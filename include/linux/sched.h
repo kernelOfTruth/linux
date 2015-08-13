@@ -1725,6 +1725,8 @@ struct task_struct {
 	unsigned long	task_state_change;
 #endif
 	unsigned long brute_expires;
+	unsigned long memalloc_start;
+	unsigned long memdie_start;
 };
 
 /* Future-safe accessor for struct task_struct's cpus_allowed. */

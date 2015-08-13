@@ -68,6 +68,7 @@ extern void oom_zonelist_unlock(struct zonelist *zonelist, gfp_t gfp_flags);
 extern void check_panic_on_oom(enum oom_constraint constraint, gfp_t gfp_mask,
 			       int order, const nodemask_t *nodemask,
 			       struct mem_cgroup *memcg);
+extern bool check_memalloc_delay(void);
 
 extern enum oom_scan_t oom_scan_process_thread(struct task_struct *task,
 		unsigned long totalpages, const nodemask_t *nodemask,
@@ -99,4 +100,9 @@ static inline bool task_will_free_mem(struct task_struct *task)
 extern int sysctl_oom_dump_tasks;
 extern int sysctl_oom_kill_allocating_task;
 extern int sysctl_panic_on_oom;
+extern unsigned long sysctl_memdie_task_warn_secs;
+extern unsigned long sysctl_memdie_task_skip_secs;
+extern unsigned long sysctl_memdie_task_panic_secs;
+extern unsigned long sysctl_memalloc_task_warn_secs;
+extern unsigned long sysctl_memalloc_task_retry_secs;
 #endif /* _INCLUDE_LINUX_OOM_H */
