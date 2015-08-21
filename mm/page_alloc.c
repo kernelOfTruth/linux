@@ -2762,6 +2762,8 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	if (IS_ENABLED(CONFIG_NUMA) && (gfp_mask & __GFP_THISNODE) && !wait)
 		goto nopage;
 
+	count_vm_event(SLOWPATH_ENTERED);
+
 retry:
 	if (!(gfp_mask & __GFP_NO_KSWAPD))
 		wake_all_kswapds(order, ac);
