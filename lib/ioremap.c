@@ -97,6 +97,7 @@ static inline int ioremap_pmd_range(pud_t *pud, unsigned long addr,
 
 		if (ioremap_pte_range(pmd, addr, next, phys_addr + addr, prot))
 			return -ENOMEM;
+		cond_resched();
 	} while (pmd++, addr = next, addr != end);
 	return 0;
 }
