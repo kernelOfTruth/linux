@@ -777,7 +777,7 @@ const char * const vmstat_text[] = {
 	"kswapd_high_wmark_hit_quickly",
 	"pageoutrun",
 	"allocstall",
-
+	"slowpath_entered",
 	"pgrotated",
 
 	"drop_pagecache",
