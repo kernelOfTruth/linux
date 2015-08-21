@@ -1723,6 +1723,7 @@ static inline int remap_pmd_range(struct mm_struct *mm, pud_t *pud,
 		if (remap_pte_range(mm, pmd, addr, next,
 				pfn + (addr >> PAGE_SHIFT), prot))
 			return -ENOMEM;
+		cond_resched();
 	} while (pmd++, addr = next, addr != end);
 	return 0;
 }
