@@ -2702,7 +2702,7 @@ static int __init proc_vmalloc_init(void)
 }
 module_init(proc_vmalloc_init);
 
-void get_vmalloc_info(struct vmalloc_info *vmi)
+static void calc_vmalloc_info(struct vmalloc_info *vmi)
 {
 	struct vmap_area *va;
 	unsigned long free_area_size;
@@ -2749,5 +2749,23 @@ void get_vmalloc_info(struct vmalloc_info *vmi)
 out:
 	rcu_read_unlock();
 }
-#endif
 
+void get_vmalloc_info(struct vmalloc_info *vmi)
+{
+	static struct vmalloc_info cached_info;
+
+	if (!vmap_info_changed) {
+		*vmi = cached_info;
+		return;
+	}
+
+	WRITE_ONCE(vmap_info_changed, 0);
+	barrier();
+
+	calc_vmalloc_info(vmi);
+
+	barrier();
+	cached_info = *vmi;
+}
+
+#endif
