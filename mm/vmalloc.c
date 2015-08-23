@@ -276,7 +276,9 @@ EXPORT_SYMBOL(vmalloc_to_pfn);
 #define VM_LAZY_FREEING	0x02
 #define VM_VM_AREA	0x04
 
-static DEFINE_SPINLOCK(vmap_area_lock);
+static __cacheline_aligned_in_smp DEFINE_SPINLOCK(vmap_area_lock);
+
+static int vmap_info_changed;
 
 static inline void vmap_lock(void)
 {
@@ -285,6 +287,7 @@ static inline void vmap_lock(void)
 
 static inline void vmap_unlock(void)
 {
+	vmap_info_changed = 1;
 	spin_unlock(&vmap_area_lock);
 }
 
