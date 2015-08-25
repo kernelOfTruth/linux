@@ -3855,8 +3855,10 @@ static inline void sched_submit_work(struct task_struct *tsk)
 
 asmlinkage __visible void __sched schedule(void)
 {
+	struct task_struct *tsk = current;
+
+	sched_submit_work(tsk);
 	do {
-		sched_submit_work(current);
 		__schedule();
 	} while (need_resched());
 }
