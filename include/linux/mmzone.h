@@ -517,9 +517,10 @@ struct zone {
 	 * are skipped before trying again. The number attempted since
 	 * last failure is tracked with compact_considered.
 	 */
-	unsigned int		compact_considered;
-	unsigned int		compact_defer_shift;
+	int			compact_failed;
 	int			compact_order_failed;
+	unsigned long		compact_success;
+	unsigned long		compact_depletion_depth;
 #endif
 
 #if defined CONFIG_COMPACTION || defined CONFIG_CMA
@@ -546,6 +547,7 @@ enum zone_flags {
 					 * many pages under writeback
 					 */
 	ZONE_FAIR_DEPLETED,		/* fair zone policy batch depleted */
+	ZONE_COMPACTION_DEPLETED,	/* compaction possiblity depleted */
 };
 
 static inline unsigned long zone_end_pfn(const struct zone *zone)
