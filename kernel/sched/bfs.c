@@ -7055,7 +7055,7 @@ static int cpuset_cpu_inactive(struct notifier_block *nfb, unsigned long action,
 #ifdef CONFIG_SCHED_SMT
 static const cpumask_t *thread_cpumask(int cpu)
 {
-	return topology_thread_cpumask(cpu);
+	return topology_sibling_cpumask(cpu);
 }
 #endif
 
