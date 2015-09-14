@@ -13,253 +13,479 @@
  * file.
  */
 
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 
-static DEFINE_MUTEX(bfqio_mutex);
-
-static bool bfqio_is_removed(struct bfqio_cgroup *bgrp)
-{
-	return bgrp ? !bgrp->online : false;
-}
-
-static struct bfqio_cgroup bfqio_root_cgroup = {
-	.weight = BFQ_DEFAULT_GRP_WEIGHT,
-	.ioprio = BFQ_DEFAULT_GRP_IOPRIO,
-	.ioprio_class = BFQ_DEFAULT_GRP_CLASS,
+/* bfqg stats flags */
+enum bfqg_stats_flags {
+	BFQG_stats_waiting = 0,
+	BFQG_stats_idling,
+	BFQG_stats_empty,
 };
 
-static inline void bfq_init_entity(struct bfq_entity *entity,
-				   struct bfq_group *bfqg)
+#define BFQG_FLAG_FNS(name)						\
+static void bfqg_stats_mark_##name(struct bfqg_stats *stats)	\
+{									\
+	stats->flags |= (1 << BFQG_stats_##name);			\
+}									\
+static void bfqg_stats_clear_##name(struct bfqg_stats *stats)	\
+{									\
+	stats->flags &= ~(1 << BFQG_stats_##name);			\
+}									\
+static int bfqg_stats_##name(struct bfqg_stats *stats)		\
+{									\
+	return (stats->flags & (1 << BFQG_stats_##name)) != 0;		\
+}									\
+
+BFQG_FLAG_FNS(waiting)
+BFQG_FLAG_FNS(idling)
+BFQG_FLAG_FNS(empty)
+#undef BFQG_FLAG_FNS
+
+/* This should be called with the queue_lock held. */
+static void bfqg_stats_update_group_wait_time(struct bfqg_stats *stats)
 {
+	unsigned long long now;
+
+	if (!bfqg_stats_waiting(stats))
+		return;
+
+	now = sched_clock();
+	if (time_after64(now, stats->start_group_wait_time))
+		blkg_stat_add(&stats->group_wait_time,
+			      now - stats->start_group_wait_time);
+	bfqg_stats_clear_waiting(stats);
+}
+
+/* This should be called with the queue_lock held. */
+static void bfqg_stats_set_start_group_wait_time(struct bfq_group *bfqg,
+						 struct bfq_group *curr_bfqg)
+{
+	struct bfqg_stats *stats = &bfqg->stats;
+
+	if (bfqg_stats_waiting(stats))
+		return;
+	if (bfqg == curr_bfqg)
+		return;
+	stats->start_group_wait_time = sched_clock();
+	bfqg_stats_mark_waiting(stats);
+}
+
+/* This should be called with the queue_lock held. */
+static void bfqg_stats_end_empty_time(struct bfqg_stats *stats)
+{
+	unsigned long long now;
+
+	if (!bfqg_stats_empty(stats))
+		return;
+
+	now = sched_clock();
+	if (time_after64(now, stats->start_empty_time))
+		blkg_stat_add(&stats->empty_time,
+			      now - stats->start_empty_time);
+	bfqg_stats_clear_empty(stats);
+}
+
+static void bfqg_stats_update_dequeue(struct bfq_group *bfqg)
+{
+	blkg_stat_add(&bfqg->stats.dequeue, 1);
+}
+
+static void bfqg_stats_set_start_empty_time(struct bfq_group *bfqg)
+{
+	struct bfqg_stats *stats = &bfqg->stats;
+
+	if (blkg_rwstat_total(&stats->queued))
+		return;
+
+	/*
+	 * group is already marked empty. This can happen if bfqq got new
+	 * request in parent group and moved to this group while being added
+	 * to service tree. Just ignore the event and move on.
+	 */
+	if (bfqg_stats_empty(stats))
+		return;
+
+	stats->start_empty_time = sched_clock();
+	bfqg_stats_mark_empty(stats);
+}
+
+static void bfqg_stats_update_idle_time(struct bfq_group *bfqg)
+{
+	struct bfqg_stats *stats = &bfqg->stats;
+
+	if (bfqg_stats_idling(stats)) {
+		unsigned long long now = sched_clock();
+
+		if (time_after64(now, stats->start_idle_time))
+			blkg_stat_add(&stats->idle_time,
+				      now - stats->start_idle_time);
+		bfqg_stats_clear_idling(stats);
+	}
+}
+
+static void bfqg_stats_set_start_idle_time(struct bfq_group *bfqg)
+{
+	struct bfqg_stats *stats = &bfqg->stats;
+
+	stats->start_idle_time = sched_clock();
+	bfqg_stats_mark_idling(stats);
+}
+
+static void bfqg_stats_update_avg_queue_size(struct bfq_group *bfqg)
+{
+	struct bfqg_stats *stats = &bfqg->stats;
+
+	blkg_stat_add(&stats->avg_queue_size_sum,
+		      blkg_rwstat_total(&stats->queued));
+	blkg_stat_add(&stats->avg_queue_size_samples, 1);
+	bfqg_stats_update_group_wait_time(stats);
+}
+
+static struct blkcg_policy blkcg_policy_bfq;
+
+/*
+ * blk-cgroup policy-related handlers
+ * The following functions help in converting between blk-cgroup
+ * internal structures and BFQ-specific structures.
+ */
+
+static struct bfq_group *pd_to_bfqg(struct blkg_policy_data *pd)
+{
+	return pd ? container_of(pd, struct bfq_group, pd) : NULL;
+}
+
+static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg)
+{
+	return pd_to_blkg(&bfqg->pd);
+}
+
+static struct bfq_group *blkg_to_bfqg(struct blkcg_gq *blkg)
+{
+	return pd_to_bfqg(blkg_to_pd(blkg, &blkcg_policy_bfq));
+}
+
+/*
+ * bfq_group handlers
+ * The following functions help in navigating the bfq_group hierarchy
+ * by allowing to find the parent of a bfq_group or the bfq_group
+ * associated to a bfq_queue.
+ */
+
+static struct bfq_group *bfqg_parent(struct bfq_group *bfqg)
+{
+	struct blkcg_gq *pblkg = bfqg_to_blkg(bfqg)->parent;
+
+	return pblkg ? blkg_to_bfqg(pblkg) : NULL;
+}
+
+static struct bfq_group *bfqq_group(struct bfq_queue *bfqq)
+{
+	struct bfq_entity *group_entity = bfqq->entity.parent;
+
+	return group_entity ? container_of(group_entity, struct bfq_group,
+					   entity) :
+			      bfqq->bfqd->root_group;
+}
+
+/*
+ * The following two functions handle get and put of a bfq_group by
+ * wrapping the related blk-cgroup hooks.
+ */
+
+static void bfqg_get(struct bfq_group *bfqg)
+{
+	return blkg_get(bfqg_to_blkg(bfqg));
+}
+
+static void bfqg_put(struct bfq_group *bfqg)
+{
+	return blkg_put(bfqg_to_blkg(bfqg));
+}
+
+static void bfqg_stats_update_io_add(struct bfq_group *bfqg,
+				     struct bfq_queue *bfqq,
+				     int rw)
+{
+	blkg_rwstat_add(&bfqg->stats.queued, rw, 1);
+	bfqg_stats_end_empty_time(&bfqg->stats);
+	if (!(bfqq == ((struct bfq_data *)bfqg->bfqd)->in_service_queue))
+		bfqg_stats_set_start_group_wait_time(bfqg, bfqq_group(bfqq));
+}
+
+static void bfqg_stats_update_io_remove(struct bfq_group *bfqg, int rw)
+{
+	blkg_rwstat_add(&bfqg->stats.queued, rw, -1);
+}
+
+static void bfqg_stats_update_io_merged(struct bfq_group *bfqg, int rw)
+{
+	blkg_rwstat_add(&bfqg->stats.merged, rw, 1);
+}
+
+static void bfqg_stats_update_dispatch(struct bfq_group *bfqg,
+					      uint64_t bytes, int rw)
+{
+	blkg_stat_add(&bfqg->stats.sectors, bytes >> 9);
+	blkg_rwstat_add(&bfqg->stats.serviced, rw, 1);
+	blkg_rwstat_add(&bfqg->stats.service_bytes, rw, bytes);
+}
+
+static void bfqg_stats_update_completion(struct bfq_group *bfqg,
+			uint64_t start_time, uint64_t io_start_time, int rw)
+{
+	struct bfqg_stats *stats = &bfqg->stats;
+	unsigned long long now = sched_clock();
+
+	if (time_after64(now, io_start_time))
+		blkg_rwstat_add(&stats->service_time, rw, now - io_start_time);
+	if (time_after64(io_start_time, start_time))
+		blkg_rwstat_add(&stats->wait_time, rw,
+				io_start_time - start_time);
+}
+
+/* @stats = 0 */
+static void bfqg_stats_reset(struct bfqg_stats *stats)
+{
+	if (!stats)
+		return;
+
+	/* queued stats shouldn't be cleared */
+	blkg_rwstat_reset(&stats->service_bytes);
+	blkg_rwstat_reset(&stats->serviced);
+	blkg_rwstat_reset(&stats->merged);
+	blkg_rwstat_reset(&stats->service_time);
+	blkg_rwstat_reset(&stats->wait_time);
+	blkg_stat_reset(&stats->time);
+	blkg_stat_reset(&stats->unaccounted_time);
+	blkg_stat_reset(&stats->avg_queue_size_sum);
+	blkg_stat_reset(&stats->avg_queue_size_samples);
+	blkg_stat_reset(&stats->dequeue);
+	blkg_stat_reset(&stats->group_wait_time);
+	blkg_stat_reset(&stats->idle_time);
+	blkg_stat_reset(&stats->empty_time);
+}
+
+/* @to += @from */
+static void bfqg_stats_merge(struct bfqg_stats *to, struct bfqg_stats *from)
+{
+	if (!to || !from)
+		return;
+
+	/* queued stats shouldn't be cleared */
+	blkg_rwstat_merge(&to->service_bytes, &from->service_bytes);
+	blkg_rwstat_merge(&to->serviced, &from->serviced);
+	blkg_rwstat_merge(&to->merged, &from->merged);
+	blkg_rwstat_merge(&to->service_time, &from->service_time);
+	blkg_rwstat_merge(&to->wait_time, &from->wait_time);
+	blkg_stat_merge(&from->time, &from->time);
+	blkg_stat_merge(&to->unaccounted_time, &from->unaccounted_time);
+	blkg_stat_merge(&to->avg_queue_size_sum, &from->avg_queue_size_sum);
+	blkg_stat_merge(&to->avg_queue_size_samples, &from->avg_queue_size_samples);
+	blkg_stat_merge(&to->dequeue, &from->dequeue);
+	blkg_stat_merge(&to->group_wait_time, &from->group_wait_time);
+	blkg_stat_merge(&to->idle_time, &from->idle_time);
+	blkg_stat_merge(&to->empty_time, &from->empty_time);
+}
+
+/*
+ * Transfer @bfqg's stats to its parent's dead_stats so that the ancestors'
+ * recursive stats can still account for the amount used by this bfqg after
+ * it's gone.
+ */
+static void bfqg_stats_xfer_dead(struct bfq_group *bfqg)
+{
+	struct bfq_group *parent;
+
+	if (!bfqg) /* root_group */
+		return;
+
+	parent = bfqg_parent(bfqg);
+
+	lockdep_assert_held(bfqg_to_blkg(bfqg)->q->queue_lock);
+
+	if (unlikely(!parent))
+		return;
+
+	bfqg_stats_merge(&parent->dead_stats, &bfqg->stats);
+	bfqg_stats_merge(&parent->dead_stats, &bfqg->dead_stats);
+	bfqg_stats_reset(&bfqg->stats);
+	bfqg_stats_reset(&bfqg->dead_stats);
+}
+
+static void bfq_init_entity(struct bfq_entity *entity,
+			    struct bfq_group *bfqg)
+{
+	struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
+
 	entity->weight = entity->new_weight;
 	entity->orig_weight = entity->new_weight;
-	entity->ioprio = entity->new_ioprio;
-	entity->ioprio_class = entity->new_ioprio_class;
+	if (bfqq) {
+		bfqq->ioprio = bfqq->new_ioprio;
+		bfqq->ioprio_class = bfqq->new_ioprio_class;
+		bfqg_get(bfqg);
+	}
 	entity->parent = bfqg->my_entity;
 	entity->sched_data = &bfqg->sched_data;
 }
 
-static struct bfqio_cgroup *css_to_bfqio(struct cgroup_subsys_state *css)
+static void bfqg_stats_init(struct bfqg_stats *stats)
 {
-	return css ? container_of(css, struct bfqio_cgroup, css) : NULL;
+	blkg_rwstat_init(&stats->service_bytes);
+	blkg_rwstat_init(&stats->serviced);
+	blkg_rwstat_init(&stats->merged);
+	blkg_rwstat_init(&stats->service_time);
+	blkg_rwstat_init(&stats->wait_time);
+	blkg_rwstat_init(&stats->queued);
+
+	blkg_stat_init(&stats->sectors);
+	blkg_stat_init(&stats->time);
+
+	blkg_stat_init(&stats->unaccounted_time);
+	blkg_stat_init(&stats->avg_queue_size_sum);
+	blkg_stat_init(&stats->avg_queue_size_samples);
+	blkg_stat_init(&stats->dequeue);
+	blkg_stat_init(&stats->group_wait_time);
+	blkg_stat_init(&stats->idle_time);
+	blkg_stat_init(&stats->empty_time);
 }
 
-/*
- * Search the bfq_group for bfqd into the hash table (by now only a list)
- * of bgrp.  Must be called under rcu_read_lock().
- */
-static struct bfq_group *bfqio_lookup_group(struct bfqio_cgroup *bgrp,
-					    struct bfq_data *bfqd)
+static struct bfq_group_data *cpd_to_bfqgd(struct blkcg_policy_data *cpd)
+ {
+	return cpd ? container_of(cpd, struct bfq_group_data, pd) : NULL;
+ }
+
+static struct bfq_group_data *blkcg_to_bfqgd(struct blkcg *blkcg)
 {
-	struct bfq_group *bfqg;
-	void *key;
-
-	hlist_for_each_entry_rcu(bfqg, &bgrp->group_data, group_node) {
-		key = rcu_dereference(bfqg->bfqd);
-		if (key == bfqd)
-			return bfqg;
-	}
-
-	return NULL;
+	return cpd_to_bfqgd(blkcg_to_cpd(blkcg, &blkcg_policy_bfq));
 }
 
-static inline void bfq_group_init_entity(struct bfqio_cgroup *bgrp,
-					 struct bfq_group *bfqg)
+static void bfq_cpd_init(const struct blkcg *blkcg)
 {
+	struct bfq_group_data *d =
+		cpd_to_bfqgd(blkcg->pd[blkcg_policy_bfq.plid]);
+
+	d->weight = BFQ_DEFAULT_GRP_WEIGHT;
+}
+
+static void bfq_pd_init(struct blkcg_gq *blkg)
+{
+	struct bfq_group *bfqg = blkg_to_bfqg(blkg);
+	struct bfq_data *bfqd = blkg->q->elevator->elevator_data;
 	struct bfq_entity *entity = &bfqg->entity;
+	struct bfq_group_data *d = blkcg_to_bfqgd(blkg->blkcg);
 
-	/*
-	 * If the weight of the entity has never been set via the sysfs
-	 * interface, then bgrp->weight == 0. In this case we initialize
-	 * the weight from the current ioprio value. Otherwise, the group
-	 * weight, if set, has priority over the ioprio value.
-	 */
-	if (bgrp->weight == 0) {
-		entity->new_weight = bfq_ioprio_to_weight(bgrp->ioprio);
-		entity->new_ioprio = bgrp->ioprio;
-	} else {
-		if (bgrp->weight < BFQ_MIN_WEIGHT ||
-		    bgrp->weight > BFQ_MAX_WEIGHT) {
-			printk(KERN_CRIT "bfq_group_init_entity: "
-					 "bgrp->weight %d\n", bgrp->weight);
-			BUG();
-		}
-		entity->new_weight = bgrp->weight;
-		entity->new_ioprio = bfq_weight_to_ioprio(bgrp->weight);
-	}
-	entity->orig_weight = entity->weight = entity->new_weight;
-	entity->ioprio = entity->new_ioprio;
-	entity->ioprio_class = entity->new_ioprio_class = bgrp->ioprio_class;
+	entity->orig_weight = entity->weight = entity->new_weight = d->weight;
 	entity->my_sched_data = &bfqg->sched_data;
+	bfqg->my_entity = entity; /*
+				   * the root_group's will be set to NULL
+				   * in bfq_init_queue()
+				   */
+	bfqg->bfqd = bfqd;
 	bfqg->active_entities = 0;
+	bfqg->rq_pos_tree = RB_ROOT;
+
+	/* if the root_group does not exist, we are handling it right now */
+	if (bfqd->root_group && bfqg != bfqd->root_group)
+		hlist_add_head(&bfqg->bfqd_node, &bfqd->group_list);
+
+	bfqg_stats_init(&bfqg->stats);
+	bfqg_stats_init(&bfqg->dead_stats);
 }
 
-static inline void bfq_group_set_parent(struct bfq_group *bfqg,
+/* offset delta from bfqg->stats to bfqg->dead_stats */
+static const int dead_stats_off_delta = offsetof(struct bfq_group, dead_stats) -
+					offsetof(struct bfq_group, stats);
+
+/* to be used by recursive prfill, sums live and dead stats recursively */
+static u64 bfqg_stat_pd_recursive_sum(struct blkg_policy_data *pd, int off)
+{
+	u64 sum = 0;
+
+	sum += blkg_stat_recursive_sum(pd, off);
+	sum += blkg_stat_recursive_sum(pd, off + dead_stats_off_delta);
+	return sum;
+}
+
+/* to be used by recursive prfill, sums live and dead rwstats recursively */
+static struct blkg_rwstat bfqg_rwstat_pd_recursive_sum(struct blkg_policy_data *pd,
+						       int off)
+{
+	struct blkg_rwstat a, b;
+
+	a = blkg_rwstat_recursive_sum(pd, off);
+	b = blkg_rwstat_recursive_sum(pd, off + dead_stats_off_delta);
+	blkg_rwstat_merge(&a, &b);
+	return a;
+}
+
+static void bfq_pd_reset_stats(struct blkcg_gq *blkg)
+{
+	struct bfq_group *bfqg = blkg_to_bfqg(blkg);
+
+	bfqg_stats_reset(&bfqg->stats);
+	bfqg_stats_reset(&bfqg->dead_stats);
+}
+
+static void bfq_group_set_parent(struct bfq_group *bfqg,
 					struct bfq_group *parent)
 {
 	struct bfq_entity *entity;
 
-	BUG_ON(parent == NULL);
-	BUG_ON(bfqg == NULL);
+	BUG_ON(!parent);
+	BUG_ON(!bfqg);
+	BUG_ON(bfqg == parent);
 
 	entity = &bfqg->entity;
 	entity->parent = parent->my_entity;
 	entity->sched_data = &parent->sched_data;
 }
 
-/**
- * bfq_group_chain_alloc - allocate a chain of groups.
- * @bfqd: queue descriptor.
- * @css: the leaf cgroup_subsys_state this chain starts from.
- *
- * Allocate a chain of groups starting from the one belonging to
- * @cgroup up to the root cgroup.  Stop if a cgroup on the chain
- * to the root has already an allocated group on @bfqd.
- */
-static struct bfq_group *bfq_group_chain_alloc(struct bfq_data *bfqd,
-					       struct cgroup_subsys_state *css)
+static struct bfq_group *bfq_find_alloc_group(struct bfq_data *bfqd,
+					      struct blkcg *blkcg)
 {
-	struct bfqio_cgroup *bgrp;
-	struct bfq_group *bfqg, *prev = NULL, *leaf = NULL;
-
-	for (; css != NULL; css = css->parent) {
-		bgrp = css_to_bfqio(css);
-
-		bfqg = bfqio_lookup_group(bgrp, bfqd);
-		if (bfqg != NULL) {
-			/*
-			 * All the cgroups in the path from there to the
-			 * root must have a bfq_group for bfqd, so we don't
-			 * need any more allocations.
-			 */
-			break;
-		}
-
-		bfqg = kzalloc(sizeof(*bfqg), GFP_ATOMIC);
-		if (bfqg == NULL)
-			goto cleanup;
-
-		bfq_group_init_entity(bgrp, bfqg);
-		bfqg->my_entity = &bfqg->entity;
-
-		if (leaf == NULL) {
-			leaf = bfqg;
-			prev = leaf;
-		} else {
-			bfq_group_set_parent(prev, bfqg);
-			/*
-			 * Build a list of allocated nodes using the bfqd
-			 * filed, that is still unused and will be
-			 * initialized only after the node will be
-			 * connected.
-			 */
-			prev->bfqd = bfqg;
-			prev = bfqg;
-		}
-	}
-
-	return leaf;
-
-cleanup:
-	while (leaf != NULL) {
-		prev = leaf;
-		leaf = leaf->bfqd;
-		kfree(prev);
-	}
-
-	return NULL;
-}
-
-/**
- * bfq_group_chain_link - link an allocated group chain to a cgroup
- *                        hierarchy.
- * @bfqd: the queue descriptor.
- * @css: the leaf cgroup_subsys_state to start from.
- * @leaf: the leaf group (to be associated to @cgroup).
- *
- * Try to link a chain of groups to a cgroup hierarchy, connecting the
- * nodes bottom-up, so we can be sure that when we find a cgroup in the
- * hierarchy that already as a group associated to @bfqd all the nodes
- * in the path to the root cgroup have one too.
- *
- * On locking: the queue lock protects the hierarchy (there is a hierarchy
- * per device) while the bfqio_cgroup lock protects the list of groups
- * belonging to the same cgroup.
- */
-static void bfq_group_chain_link(struct bfq_data *bfqd,
-				 struct cgroup_subsys_state *css,
-				 struct bfq_group *leaf)
-{
-	struct bfqio_cgroup *bgrp;
-	struct bfq_group *bfqg, *next, *prev = NULL;
-	unsigned long flags;
+	struct request_queue *q = bfqd->queue;
+	struct bfq_group *bfqg = NULL, *parent;
+	struct bfq_entity *entity = NULL;
 
 	assert_spin_locked(bfqd->queue->queue_lock);
 
-	for (; css != NULL && leaf != NULL; css = css->parent) {
-		bgrp = css_to_bfqio(css);
-		next = leaf->bfqd;
-
-		bfqg = bfqio_lookup_group(bgrp, bfqd);
-		BUG_ON(bfqg != NULL);
-
-		spin_lock_irqsave(&bgrp->lock, flags);
-
-		rcu_assign_pointer(leaf->bfqd, bfqd);
-		hlist_add_head_rcu(&leaf->group_node, &bgrp->group_data);
-		hlist_add_head(&leaf->bfqd_node, &bfqd->group_list);
-
-		spin_unlock_irqrestore(&bgrp->lock, flags);
-
-		prev = leaf;
-		leaf = next;
-	}
-
-	BUG_ON(css == NULL && leaf != NULL);
-	if (css != NULL && prev != NULL) {
-		bgrp = css_to_bfqio(css);
-		bfqg = bfqio_lookup_group(bgrp, bfqd);
-		bfq_group_set_parent(prev, bfqg);
-	}
-}
-
-/**
- * bfq_find_alloc_group - return the group associated to @bfqd in @cgroup.
- * @bfqd: queue descriptor.
- * @cgroup: cgroup being searched for.
- *
- * Return a group associated to @bfqd in @cgroup, allocating one if
- * necessary.  When a group is returned all the cgroups in the path
- * to the root have a group associated to @bfqd.
- *
- * If the allocation fails, return the root group: this breaks guarantees
- * but is a safe fallback.  If this loss becomes a problem it can be
- * mitigated using the equivalent weight (given by the product of the
- * weights of the groups in the path from @group to the root) in the
- * root scheduler.
- *
- * We allocate all the missing nodes in the path from the leaf cgroup
- * to the root and we connect the nodes only after all the allocations
- * have been successful.
- */
-static struct bfq_group *bfq_find_alloc_group(struct bfq_data *bfqd,
-					      struct cgroup_subsys_state *css)
-{
-	struct bfqio_cgroup *bgrp = css_to_bfqio(css);
-	struct bfq_group *bfqg;
-
-	bfqg = bfqio_lookup_group(bgrp, bfqd);
-	if (bfqg != NULL)
-		return bfqg;
-
-	bfqg = bfq_group_chain_alloc(bfqd, css);
-	if (bfqg != NULL)
-		bfq_group_chain_link(bfqd, css, bfqg);
-	else
+	/* avoid lookup for the common case where there's no blkcg */
+	if (blkcg == &blkcg_root) {
 		bfqg = bfqd->root_group;
+	} else {
+		struct blkcg_gq *blkg;
+
+		blkg = blkg_lookup_create(blkcg, q);
+		if (!IS_ERR(blkg))
+			bfqg = blkg_to_bfqg(blkg);
+		else /* fallback to root_group */
+			bfqg = bfqd->root_group;
+	}
+
+	BUG_ON(!bfqg);
+
+	/*
+	 * Update chain of bfq_groups as we might be handling a leaf group
+	 * which, along with some of its relatives, has not been hooked yet
+	 * to the private hierarchy of BFQ.
+	 */
+	entity = &bfqg->entity;
+	for_each_entity(entity) {
+		bfqg = container_of(entity, struct bfq_group, entity);
+		BUG_ON(!bfqg);
+		if (bfqg != bfqd->root_group) {
+			parent = bfqg_parent(bfqg);
+			if (!parent)
+				parent = bfqd->root_group;
+			BUG_ON(!parent);
+			bfq_group_set_parent(bfqg, parent);
+		}
+	}
 
 	return bfqg;
 }
+
+static void bfq_pos_tree_add_move(struct bfq_data *bfqd, struct bfq_queue *bfqq);
 
 /**
  * bfq_bfqq_move - migrate @bfqq to @bfqg.
@@ -296,6 +522,7 @@ static void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 			bfq_deactivate_bfqq(bfqd, bfqq, 0);
 	} else if (entity->on_st)
 		bfq_put_idle_entity(bfq_entity_service_tree(entity), entity);
+	bfqg_put(bfqq_group(bfqq));
 
 	/*
 	 * Here we use a reference to bfqg.  We don't need a refcounter
@@ -304,11 +531,15 @@ static void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	 */
 	entity->parent = bfqg->my_entity;
 	entity->sched_data = &bfqg->sched_data;
+	bfqg_get(bfqg);
 
-	if (busy && resume)
-		bfq_activate_bfqq(bfqd, bfqq);
+	if (busy) {
+		bfq_pos_tree_add_move(bfqd, bfqq);
+		if (resume)
+			bfq_activate_bfqq(bfqd, bfqq);
+	}
 
-	if (bfqd->in_service_queue == NULL && !bfqd->rq_in_driver)
+	if (!bfqd->in_service_queue && !bfqd->rq_in_driver)
 		bfq_schedule_dispatch(bfqd);
 }
 
@@ -316,9 +547,9 @@ static void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
  * __bfq_bic_change_cgroup - move @bic to @cgroup.
  * @bfqd: the queue descriptor.
  * @bic: the bic to move.
- * @cgroup: the cgroup to move to.
+ * @blkcg: the blk-cgroup to move to.
  *
- * Move bic to cgroup, assuming that bfqd->queue is locked; the caller
+ * Move bic to blkcg, assuming that bfqd->queue is locked; the caller
  * has to make sure that the reference to cgroup is valid across the call.
  *
  * NOTE: an alternative approach might have been to store the current
@@ -327,18 +558,17 @@ static void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
  */
 static struct bfq_group *__bfq_bic_change_cgroup(struct bfq_data *bfqd,
 						struct bfq_io_cq *bic,
-						struct cgroup_subsys_state *css)
+						struct blkcg *blkcg)
 {
 	struct bfq_queue *async_bfqq = bic_to_bfqq(bic, 0);
 	struct bfq_queue *sync_bfqq = bic_to_bfqq(bic, 1);
-	struct bfq_entity *entity;
 	struct bfq_group *bfqg;
-	struct bfqio_cgroup *bgrp;
+	struct bfq_entity *entity;
 
-	bgrp = css_to_bfqio(css);
+	lockdep_assert_held(bfqd->queue->queue_lock);
 
-	bfqg = bfq_find_alloc_group(bfqd, css);
-	if (async_bfqq != NULL) {
+	bfqg = bfq_find_alloc_group(bfqd, blkcg);
+	if (async_bfqq) {
 		entity = &async_bfqq->entity;
 
 		if (entity->sched_data != &bfqg->sched_data) {
@@ -350,7 +580,7 @@ static struct bfq_group *__bfq_bic_change_cgroup(struct bfq_data *bfqd,
 		}
 	}
 
-	if (sync_bfqq != NULL) {
+	if (sync_bfqq) {
 		entity = &sync_bfqq->entity;
 		if (entity->sched_data != &bfqg->sched_data)
 			bfq_bfqq_move(bfqd, sync_bfqq, entity, bfqg);
@@ -359,74 +589,39 @@ static struct bfq_group *__bfq_bic_change_cgroup(struct bfq_data *bfqd,
 	return bfqg;
 }
 
-/**
- * bfq_bic_change_cgroup - move @bic to @cgroup.
- * @bic: the bic being migrated.
- * @cgroup: the destination cgroup.
- *
- * When the task owning @bic is moved to @cgroup, @bic is immediately
- * moved into its new parent group.
- */
-static void bfq_bic_change_cgroup(struct bfq_io_cq *bic,
-				  struct cgroup_subsys_state *css)
-{
-	struct bfq_data *bfqd;
-	unsigned long uninitialized_var(flags);
-
-	bfqd = bfq_get_bfqd_locked(&(bic->icq.q->elevator->elevator_data),
-				   &flags);
-	if (bfqd != NULL) {
-		__bfq_bic_change_cgroup(bfqd, bic, css);
-		bfq_put_bfqd_unlock(bfqd, &flags);
-	}
-}
-
-/**
- * bfq_bic_update_cgroup - update the cgroup of @bic.
- * @bic: the @bic to update.
- *
- * Make sure that @bic is enqueued in the cgroup of the current task.
- * We need this in addition to moving bics during the cgroup attach
- * phase because the task owning @bic could be at its first disk
- * access or we may end up in the root cgroup as the result of a
- * memory allocation failure and here we try to move to the right
- * group.
- *
- * Must be called under the queue lock.  It is safe to use the returned
- * value even after the rcu_read_unlock() as the migration/destruction
- * paths act under the queue lock too.  IOW it is impossible to race with
- * group migration/destruction and end up with an invalid group as:
- *   a) here cgroup has not yet been destroyed, nor its destroy callback
- *      has started execution, as current holds a reference to it,
- *   b) if it is destroyed after rcu_read_unlock() [after current is
- *      migrated to a different cgroup] its attach() callback will have
- *      taken care of remove all the references to the old cgroup data.
- */
-static struct bfq_group *bfq_bic_update_cgroup(struct bfq_io_cq *bic)
+static void bfq_bic_update_cgroup(struct bfq_io_cq *bic, struct bio *bio)
 {
 	struct bfq_data *bfqd = bic_to_bfqd(bic);
-	struct bfq_group *bfqg;
-	struct cgroup_subsys_state *css;
-
-	BUG_ON(bfqd == NULL);
+	struct blkcg *blkcg;
+	struct bfq_group *bfqg = NULL;
+	uint64_t id;
 
 	rcu_read_lock();
-	css = task_css(current, bfqio_cgrp_id);
-	bfqg = __bfq_bic_change_cgroup(bfqd, bic, css);
+	blkcg = bio_blkcg(bio);
+	id = blkcg->css.serial_nr;
 	rcu_read_unlock();
 
-	return bfqg;
+	/*
+	 * Check whether blkcg has changed.  The condition may trigger
+	 * spuriously on a newly created cic but there's no harm.
+	 */
+	if (unlikely(!bfqd) || likely(bic->blkcg_id == id))
+		return;
+
+	bfqg = __bfq_bic_change_cgroup(bfqd, bic, blkcg);
+	BUG_ON(!bfqg);
+	bic->blkcg_id = id;
 }
 
 /**
  * bfq_flush_idle_tree - deactivate any entity on the idle tree of @st.
  * @st: the service tree being flushed.
  */
-static inline void bfq_flush_idle_tree(struct bfq_service_tree *st)
+static void bfq_flush_idle_tree(struct bfq_service_tree *st)
 {
 	struct bfq_entity *entity = st->first_idle;
 
-	for (; entity != NULL; entity = st->first_idle)
+	for (; entity ; entity = st->first_idle)
 		__bfq_deactivate_entity(entity, 0);
 }
 
@@ -435,12 +630,12 @@ static inline void bfq_flush_idle_tree(struct bfq_service_tree *st)
  * @bfqd: the device data structure with the root group.
  * @entity: the entity to move.
  */
-static inline void bfq_reparent_leaf_entity(struct bfq_data *bfqd,
-					    struct bfq_entity *entity)
+static void bfq_reparent_leaf_entity(struct bfq_data *bfqd,
+				     struct bfq_entity *entity)
 {
 	struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
 
-	BUG_ON(bfqq == NULL);
+	BUG_ON(!bfqq);
 	bfq_bfqq_move(bfqd, bfqq, entity, bfqd->root_group);
 	return;
 }
@@ -454,9 +649,9 @@ static inline void bfq_reparent_leaf_entity(struct bfq_data *bfqd,
  *
  * Needs queue_lock to be taken and reference to be valid over the call.
  */
-static inline void bfq_reparent_active_entities(struct bfq_data *bfqd,
-						struct bfq_group *bfqg,
-						struct bfq_service_tree *st)
+static void bfq_reparent_active_entities(struct bfq_data *bfqd,
+					 struct bfq_group *bfqg,
+					 struct bfq_service_tree *st)
 {
 	struct rb_root *active = &st->active;
 	struct bfq_entity *entity = NULL;
@@ -464,10 +659,10 @@ static inline void bfq_reparent_active_entities(struct bfq_data *bfqd,
 	if (!RB_EMPTY_ROOT(&st->active))
 		entity = bfq_entity_of(rb_first(active));
 
-	for (; entity != NULL; entity = bfq_entity_of(rb_first(active)))
+	for (; entity ; entity = bfq_entity_of(rb_first(active)))
 		bfq_reparent_leaf_entity(bfqd, entity);
 
-	if (bfqg->sched_data.in_service_entity != NULL)
+	if (bfqg->sched_data.in_service_entity)
 		bfq_reparent_leaf_entity(bfqd,
 			bfqg->sched_data.in_service_entity);
 
@@ -476,20 +671,21 @@ static inline void bfq_reparent_active_entities(struct bfq_data *bfqd,
 
 /**
  * bfq_destroy_group - destroy @bfqg.
- * @bgrp: the bfqio_cgroup containing @bfqg.
  * @bfqg: the group being destroyed.
  *
  * Destroy @bfqg, making sure that it is not referenced from its parent.
+ * blkio already grabs the queue_lock for us, so no need to use RCU-based magic
  */
-static void bfq_destroy_group(struct bfqio_cgroup *bgrp, struct bfq_group *bfqg)
+static void bfq_pd_offline(struct blkcg_gq *blkg)
 {
-	struct bfq_data *bfqd;
 	struct bfq_service_tree *st;
+	struct bfq_group *bfqg = blkg_to_bfqg(blkg);
+	struct bfq_data *bfqd = bfqg->bfqd;
 	struct bfq_entity *entity = bfqg->my_entity;
-	unsigned long uninitialized_var(flags);
 	int i;
 
-	hlist_del(&bfqg->group_node);
+	if (!entity) /* root group */
+		return;
 
 	/*
 	 * Empty all service_trees belonging to this group before
@@ -518,37 +714,19 @@ static void bfq_destroy_group(struct bfqio_cgroup *bgrp, struct bfq_group *bfqg)
 		 * There is no need to put the sync queues, as the
 		 * scheduler has taken no reference.
 		 */
-		bfqd = bfq_get_bfqd_locked(&bfqg->bfqd, &flags);
-		if (bfqd != NULL) {
-			bfq_reparent_active_entities(bfqd, bfqg, st);
-			bfq_put_bfqd_unlock(bfqd, &flags);
-		}
+		bfq_reparent_active_entities(bfqd, bfqg, st);
 		BUG_ON(!RB_EMPTY_ROOT(&st->active));
 		BUG_ON(!RB_EMPTY_ROOT(&st->idle));
 	}
-	BUG_ON(bfqg->sched_data.next_in_service != NULL);
-	BUG_ON(bfqg->sched_data.in_service_entity != NULL);
+	BUG_ON(bfqg->sched_data.next_in_service);
+	BUG_ON(bfqg->sched_data.in_service_entity);
 
-	/*
-	 * We may race with device destruction, take extra care when
-	 * dereferencing bfqg->bfqd.
-	 */
-	bfqd = bfq_get_bfqd_locked(&bfqg->bfqd, &flags);
-	if (bfqd != NULL) {
-		hlist_del(&bfqg->bfqd_node);
-		__bfq_deactivate_entity(entity, 0);
-		bfq_put_async_queues(bfqd, bfqg);
-		bfq_put_bfqd_unlock(bfqd, &flags);
-	}
-	BUG_ON(entity->tree != NULL);
+	hlist_del(&bfqg->bfqd_node);
+	__bfq_deactivate_entity(entity, 0);
+	bfq_put_async_queues(bfqd, bfqg);
+	BUG_ON(entity->tree);
 
-	/*
-	 * No need to defer the kfree() to the end of the RCU grace
-	 * period: we are called from the destroy() callback of our
-	 * cgroup, so we can be sure that no one is a) still using
-	 * this cgroup or b) doing lookups in it.
-	 */
-	kfree(bfqg);
+	bfqg_stats_xfer_dead(bfqg);
 }
 
 static void bfq_end_wr_async(struct bfq_data *bfqd)
@@ -595,312 +773,309 @@ static void bfq_disconnect_groups(struct bfq_data *bfqd)
 	}
 }
 
-static inline void bfq_free_root_group(struct bfq_data *bfqd)
+static u64 bfqio_cgroup_weight_read(struct cgroup_subsys_state *css,
+				       struct cftype *cftype)
 {
-	struct bfqio_cgroup *bgrp = &bfqio_root_cgroup;
-	struct bfq_group *bfqg = bfqd->root_group;
+	struct blkcg *blkcg = css_to_blkcg(css);
+	struct bfq_group_data *bfqgd = blkcg_to_bfqgd(blkcg);
+	int ret = -EINVAL;
 
-	bfq_put_async_queues(bfqd, bfqg);
-
-	spin_lock_irq(&bgrp->lock);
-	hlist_del_rcu(&bfqg->group_node);
-	spin_unlock_irq(&bgrp->lock);
-
-	/*
-	 * No need to synchronize_rcu() here: since the device is gone
-	 * there cannot be any read-side access to its root_group.
-	 */
-	kfree(bfqg);
-}
-
-static struct bfq_group *bfq_alloc_root_group(struct bfq_data *bfqd, int node)
-{
-	struct bfq_group *bfqg;
-	struct bfqio_cgroup *bgrp;
-	int i;
-
-	bfqg = kzalloc_node(sizeof(*bfqg), GFP_KERNEL, node);
-	if (bfqg == NULL)
-		return NULL;
-
-	bfqg->entity.parent = NULL;
-	for (i = 0; i < BFQ_IOPRIO_CLASSES; i++)
-		bfqg->sched_data.service_tree[i] = BFQ_SERVICE_TREE_INIT;
-
-	bgrp = &bfqio_root_cgroup;
-	spin_lock_irq(&bgrp->lock);
-	rcu_assign_pointer(bfqg->bfqd, bfqd);
-	hlist_add_head_rcu(&bfqg->group_node, &bgrp->group_data);
-	spin_unlock_irq(&bgrp->lock);
-
-	return bfqg;
-}
-
-#define SHOW_FUNCTION(__VAR)						\
-static u64 bfqio_cgroup_##__VAR##_read(struct cgroup_subsys_state *css, \
-				       struct cftype *cftype)		\
-{									\
-	struct bfqio_cgroup *bgrp = css_to_bfqio(css);			\
-	u64 ret = -ENODEV;						\
-									\
-	mutex_lock(&bfqio_mutex);					\
-	if (bfqio_is_removed(bgrp))					\
-		goto out_unlock;					\
-									\
-	spin_lock_irq(&bgrp->lock);					\
-	ret = bgrp->__VAR;						\
-	spin_unlock_irq(&bgrp->lock);					\
-									\
-out_unlock:								\
-	mutex_unlock(&bfqio_mutex);					\
-	return ret;							\
-}
-
-SHOW_FUNCTION(weight);
-SHOW_FUNCTION(ioprio);
-SHOW_FUNCTION(ioprio_class);
-#undef SHOW_FUNCTION
-
-#define STORE_FUNCTION(__VAR, __MIN, __MAX)				\
-static int bfqio_cgroup_##__VAR##_write(struct cgroup_subsys_state *css,\
-					struct cftype *cftype,		\
-					u64 val)			\
-{									\
-	struct bfqio_cgroup *bgrp = css_to_bfqio(css);			\
-	struct bfq_group *bfqg;						\
-	int ret = -EINVAL;						\
-									\
-	if (val < (__MIN) || val > (__MAX))				\
-		return ret;						\
-									\
-	ret = -ENODEV;							\
-	mutex_lock(&bfqio_mutex);					\
-	if (bfqio_is_removed(bgrp))					\
-		goto out_unlock;					\
-	ret = 0;							\
-									\
-	spin_lock_irq(&bgrp->lock);					\
-	bgrp->__VAR = (unsigned short)val;				\
-	hlist_for_each_entry(bfqg, &bgrp->group_data, group_node) {	\
-		/*							\
-		 * Setting the ioprio_changed flag of the entity        \
-		 * to 1 with new_##__VAR == ##__VAR would re-set        \
-		 * the value of the weight to its ioprio mapping.       \
-		 * Set the flag only if necessary.			\
-		 */							\
-		if ((unsigned short)val != bfqg->entity.new_##__VAR) {  \
-			bfqg->entity.new_##__VAR = (unsigned short)val; \
-			/*						\
-			 * Make sure that the above new value has been	\
-			 * stored in bfqg->entity.new_##__VAR before	\
-			 * setting the ioprio_changed flag. In fact,	\
-			 * this flag may be read asynchronously (in	\
-			 * critical sections protected by a different	\
-			 * lock than that held here), and finding this	\
-			 * flag set may cause the execution of the code	\
-			 * for updating parameters whose value may	\
-			 * depend also on bfqg->entity.new_##__VAR (in	\
-			 * __bfq_entity_update_weight_prio).		\
-			 * This barrier makes sure that the new value	\
-			 * of bfqg->entity.new_##__VAR is correctly	\
-			 * seen in that code.				\
-			 */						\
-			smp_wmb();                                      \
-			bfqg->entity.ioprio_changed = 1;                \
-		}							\
-	}								\
-	spin_unlock_irq(&bgrp->lock);					\
-									\
-out_unlock:								\
-	mutex_unlock(&bfqio_mutex);					\
-	return ret;							\
-}
-
-STORE_FUNCTION(weight, BFQ_MIN_WEIGHT, BFQ_MAX_WEIGHT);
-STORE_FUNCTION(ioprio, 0, IOPRIO_BE_NR - 1);
-STORE_FUNCTION(ioprio_class, IOPRIO_CLASS_RT, IOPRIO_CLASS_IDLE);
-#undef STORE_FUNCTION
-
-static struct cftype bfqio_files[] = {
-	{
-		.name = "weight",
-		.read_u64 = bfqio_cgroup_weight_read,
-		.write_u64 = bfqio_cgroup_weight_write,
-	},
-	{
-		.name = "ioprio",
-		.read_u64 = bfqio_cgroup_ioprio_read,
-		.write_u64 = bfqio_cgroup_ioprio_write,
-	},
-	{
-		.name = "ioprio_class",
-		.read_u64 = bfqio_cgroup_ioprio_class_read,
-		.write_u64 = bfqio_cgroup_ioprio_class_write,
-	},
-	{ },	/* terminate */
-};
-
-static struct cgroup_subsys_state *bfqio_create(struct cgroup_subsys_state
-						*parent_css)
-{
-	struct bfqio_cgroup *bgrp;
-
-	if (parent_css != NULL) {
-		bgrp = kzalloc(sizeof(*bgrp), GFP_KERNEL);
-		if (bgrp == NULL)
-			return ERR_PTR(-ENOMEM);
-	} else
-		bgrp = &bfqio_root_cgroup;
-
-	spin_lock_init(&bgrp->lock);
-	INIT_HLIST_HEAD(&bgrp->group_data);
-	bgrp->ioprio = BFQ_DEFAULT_GRP_IOPRIO;
-	bgrp->ioprio_class = BFQ_DEFAULT_GRP_CLASS;
-
-	return &bgrp->css;
-}
-
-/*
- * We cannot support shared io contexts, as we have no means to support
- * two tasks with the same ioc in two different groups without major rework
- * of the main bic/bfqq data structures.  By now we allow a task to change
- * its cgroup only if it's the only owner of its ioc; the drawback of this
- * behavior is that a group containing a task that forked using CLONE_IO
- * will not be destroyed until the tasks sharing the ioc die.
- */
-static int bfqio_can_attach(struct cgroup_subsys_state *css,
-			    struct cgroup_taskset *tset)
-{
-	struct task_struct *task;
-	struct io_context *ioc;
-	int ret = 0;
-
-	cgroup_taskset_for_each(task, tset) {
-		/*
-		 * task_lock() is needed to avoid races with
-		 * exit_io_context()
-		 */
-		task_lock(task);
-		ioc = task->io_context;
-		if (ioc != NULL && atomic_read(&ioc->nr_tasks) > 1)
-			/*
-			 * ioc == NULL means that the task is either too
-			 * young or exiting: if it has still no ioc the
-			 * ioc can't be shared, if the task is exiting the
-			 * attach will fail anyway, no matter what we
-			 * return here.
-			 */
-			ret = -EINVAL;
-		task_unlock(task);
-		if (ret)
-			break;
-	}
+	spin_lock_irq(&blkcg->lock);
+	ret = bfqgd->weight;
+	spin_unlock_irq(&blkcg->lock);
 
 	return ret;
 }
 
-static void bfqio_attach(struct cgroup_subsys_state *css,
-			 struct cgroup_taskset *tset)
+static int bfqio_cgroup_weight_write(struct cgroup_subsys_state *css,
+					struct cftype *cftype,
+					u64 val)
 {
-	struct task_struct *task;
-	struct io_context *ioc;
-	struct io_cq *icq;
+	struct blkcg *blkcg = css_to_blkcg(css);
+	struct bfq_group_data *bfqgd = blkcg_to_bfqgd(blkcg);
+	struct blkcg_gq *blkg;
+	int ret = -EINVAL;
 
-	/*
-	 * IMPORTANT NOTE: The move of more than one process at a time to a
-	 * new group has not yet been tested.
-	 */
-	cgroup_taskset_for_each(task, tset) {
-		ioc = get_task_io_context(task, GFP_ATOMIC, NUMA_NO_NODE);
-		if (ioc) {
+	if (val < BFQ_MIN_WEIGHT || val > BFQ_MAX_WEIGHT)
+		return ret;
+
+	ret = 0;
+	spin_lock_irq(&blkcg->lock);
+	bfqgd->weight = (unsigned short)val;
+	hlist_for_each_entry(blkg, &blkcg->blkg_list, blkcg_node) {
+		struct bfq_group *bfqg = blkg_to_bfqg(blkg);
+		if (!bfqg)
+			continue;
+		/*
+		 * Setting the prio_changed flag of the entity
+		 * to 1 with new_weight == weight would re-set
+		 * the value of the weight to its ioprio mapping.
+		 * Set the flag only if necessary.
+		 */
+		if ((unsigned short)val != bfqg->entity.new_weight) {
+			bfqg->entity.new_weight = (unsigned short)val;
 			/*
-			 * Handle cgroup change here.
+			 * Make sure that the above new value has been
+			 * stored in bfqg->entity.new_weight before
+			 * setting the prio_changed flag. In fact,
+			 * this flag may be read asynchronously (in
+			 * critical sections protected by a different
+			 * lock than that held here), and finding this
+			 * flag set may cause the execution of the code
+			 * for updating parameters whose value may
+			 * depend also on bfqg->entity.new_weight (in
+			 * __bfq_entity_update_weight_prio).
+			 * This barrier makes sure that the new value
+			 * of bfqg->entity.new_weight is correctly
+			 * seen in that code.
 			 */
-			rcu_read_lock();
-			hlist_for_each_entry_rcu(icq, &ioc->icq_list, ioc_node)
-				if (!strncmp(
-					icq->q->elevator->type->elevator_name,
-					"bfq", ELV_NAME_MAX))
-					bfq_bic_change_cgroup(icq_to_bic(icq),
-							      css);
-			rcu_read_unlock();
-			put_io_context(ioc);
+			smp_wmb();
+			bfqg->entity.prio_changed = 1;
 		}
 	}
+	spin_unlock_irq(&blkcg->lock);
+
+	return ret;
 }
 
-static void bfqio_destroy(struct cgroup_subsys_state *css)
+static int bfqg_print_stat(struct seq_file *sf, void *v)
 {
-	struct bfqio_cgroup *bgrp = css_to_bfqio(css);
-	struct hlist_node *tmp;
-	struct bfq_group *bfqg;
-
-	/*
-	 * Since we are destroying the cgroup, there are no more tasks
-	 * referencing it, and all the RCU grace periods that may have
-	 * referenced it are ended (as the destruction of the parent
-	 * cgroup is RCU-safe); bgrp->group_data will not be accessed by
-	 * anything else and we don't need any synchronization.
-	 */
-	hlist_for_each_entry_safe(bfqg, tmp, &bgrp->group_data, group_node)
-		bfq_destroy_group(bgrp, bfqg);
-
-	BUG_ON(!hlist_empty(&bgrp->group_data));
-
-	kfree(bgrp);
-}
-
-static int bfqio_css_online(struct cgroup_subsys_state *css)
-{
-	struct bfqio_cgroup *bgrp = css_to_bfqio(css);
-
-	mutex_lock(&bfqio_mutex);
-	bgrp->online = true;
-	mutex_unlock(&bfqio_mutex);
-
+	blkcg_print_blkgs(sf, css_to_blkcg(seq_css(sf)), blkg_prfill_stat,
+			  &blkcg_policy_bfq, seq_cft(sf)->private, false);
 	return 0;
 }
 
-static void bfqio_css_offline(struct cgroup_subsys_state *css)
+static int bfqg_print_rwstat(struct seq_file *sf, void *v)
 {
-	struct bfqio_cgroup *bgrp = css_to_bfqio(css);
-
-	mutex_lock(&bfqio_mutex);
-	bgrp->online = false;
-	mutex_unlock(&bfqio_mutex);
+	blkcg_print_blkgs(sf, css_to_blkcg(seq_css(sf)), blkg_prfill_rwstat,
+			  &blkcg_policy_bfq, seq_cft(sf)->private, true);
+	return 0;
 }
 
-struct cgroup_subsys bfqio_cgrp_subsys = {
-	.css_alloc = bfqio_create,
-	.css_online = bfqio_css_online,
-	.css_offline = bfqio_css_offline,
-	.can_attach = bfqio_can_attach,
-	.attach = bfqio_attach,
-	.css_free = bfqio_destroy,
-	.legacy_cftypes = bfqio_files,
-};
-#else
-static inline void bfq_init_entity(struct bfq_entity *entity,
-				   struct bfq_group *bfqg)
+static u64 bfqg_prfill_stat_recursive(struct seq_file *sf,
+				      struct blkg_policy_data *pd, int off)
 {
+	u64 sum = bfqg_stat_pd_recursive_sum(pd, off);
+
+	return __blkg_prfill_u64(sf, pd, sum);
+}
+
+static u64 bfqg_prfill_rwstat_recursive(struct seq_file *sf,
+					struct blkg_policy_data *pd, int off)
+{
+	struct blkg_rwstat sum = bfqg_rwstat_pd_recursive_sum(pd, off);
+
+	return __blkg_prfill_rwstat(sf, pd, &sum);
+}
+
+static int bfqg_print_stat_recursive(struct seq_file *sf, void *v)
+{
+	blkcg_print_blkgs(sf, css_to_blkcg(seq_css(sf)),
+			  bfqg_prfill_stat_recursive, &blkcg_policy_bfq,
+			  seq_cft(sf)->private, false);
+	return 0;
+}
+
+static int bfqg_print_rwstat_recursive(struct seq_file *sf, void *v)
+{
+	blkcg_print_blkgs(sf, css_to_blkcg(seq_css(sf)),
+			  bfqg_prfill_rwstat_recursive, &blkcg_policy_bfq,
+			  seq_cft(sf)->private, true);
+	return 0;
+}
+
+static u64 bfqg_prfill_avg_queue_size(struct seq_file *sf,
+				      struct blkg_policy_data *pd, int off)
+{
+	struct bfq_group *bfqg = pd_to_bfqg(pd);
+	u64 samples = blkg_stat_read(&bfqg->stats.avg_queue_size_samples);
+	u64 v = 0;
+
+	if (samples) {
+		v = blkg_stat_read(&bfqg->stats.avg_queue_size_sum);
+		v = div64_u64(v, samples);
+	}
+	__blkg_prfill_u64(sf, pd, v);
+	return 0;
+}
+
+/* print avg_queue_size */
+static int bfqg_print_avg_queue_size(struct seq_file *sf, void *v)
+{
+	blkcg_print_blkgs(sf, css_to_blkcg(seq_css(sf)),
+			  bfqg_prfill_avg_queue_size, &blkcg_policy_bfq,
+			  0, false);
+	return 0;
+}
+
+static struct bfq_group *bfq_create_group_hierarchy(struct bfq_data *bfqd, int node)
+{
+	int ret;
+
+	ret = blkcg_activate_policy(bfqd->queue, &blkcg_policy_bfq);
+	if (ret)
+		return NULL;
+
+        return blkg_to_bfqg(bfqd->queue->root_blkg);
+}
+
+static struct cftype bfqio_files[] = {
+	{
+		.name = "bfq.weight",
+		.read_u64 = bfqio_cgroup_weight_read,
+		.write_u64 = bfqio_cgroup_weight_write,
+	},
+	/* statistics, cover only the tasks in the bfqg */
+	{
+		.name = "bfq.time",
+		.private = offsetof(struct bfq_group, stats.time),
+		.seq_show = bfqg_print_stat,
+	},
+	{
+		.name = "bfq.sectors",
+		.private = offsetof(struct bfq_group, stats.sectors),
+		.seq_show = bfqg_print_stat,
+	},
+	{
+		.name = "bfq.io_service_bytes",
+		.private = offsetof(struct bfq_group, stats.service_bytes),
+		.seq_show = bfqg_print_rwstat,
+	},
+	{
+		.name = "bfq.io_serviced",
+		.private = offsetof(struct bfq_group, stats.serviced),
+		.seq_show = bfqg_print_rwstat,
+	},
+	{
+		.name = "bfq.io_service_time",
+		.private = offsetof(struct bfq_group, stats.service_time),
+		.seq_show = bfqg_print_rwstat,
+	},
+	{
+		.name = "bfq.io_wait_time",
+		.private = offsetof(struct bfq_group, stats.wait_time),
+		.seq_show = bfqg_print_rwstat,
+	},
+	{
+		.name = "bfq.io_merged",
+		.private = offsetof(struct bfq_group, stats.merged),
+		.seq_show = bfqg_print_rwstat,
+	},
+	{
+		.name = "bfq.io_queued",
+		.private = offsetof(struct bfq_group, stats.queued),
+		.seq_show = bfqg_print_rwstat,
+	},
+
+	/* the same statictics which cover the bfqg and its descendants */
+	{
+		.name = "bfq.time_recursive",
+		.private = offsetof(struct bfq_group, stats.time),
+		.seq_show = bfqg_print_stat_recursive,
+	},
+	{
+		.name = "bfq.sectors_recursive",
+		.private = offsetof(struct bfq_group, stats.sectors),
+		.seq_show = bfqg_print_stat_recursive,
+	},
+	{
+		.name = "bfq.io_service_bytes_recursive",
+		.private = offsetof(struct bfq_group, stats.service_bytes),
+		.seq_show = bfqg_print_rwstat_recursive,
+	},
+	{
+		.name = "bfq.io_serviced_recursive",
+		.private = offsetof(struct bfq_group, stats.serviced),
+		.seq_show = bfqg_print_rwstat_recursive,
+	},
+	{
+		.name = "bfq.io_service_time_recursive",
+		.private = offsetof(struct bfq_group, stats.service_time),
+		.seq_show = bfqg_print_rwstat_recursive,
+	},
+	{
+		.name = "bfq.io_wait_time_recursive",
+		.private = offsetof(struct bfq_group, stats.wait_time),
+		.seq_show = bfqg_print_rwstat_recursive,
+	},
+	{
+		.name = "bfq.io_merged_recursive",
+		.private = offsetof(struct bfq_group, stats.merged),
+		.seq_show = bfqg_print_rwstat_recursive,
+	},
+	{
+		.name = "bfq.io_queued_recursive",
+		.private = offsetof(struct bfq_group, stats.queued),
+		.seq_show = bfqg_print_rwstat_recursive,
+	},
+	{
+		.name = "bfq.avg_queue_size",
+		.seq_show = bfqg_print_avg_queue_size,
+	},
+	{
+		.name = "bfq.group_wait_time",
+		.private = offsetof(struct bfq_group, stats.group_wait_time),
+		.seq_show = bfqg_print_stat,
+	},
+	{
+		.name = "bfq.idle_time",
+		.private = offsetof(struct bfq_group, stats.idle_time),
+		.seq_show = bfqg_print_stat,
+	},
+	{
+		.name = "bfq.empty_time",
+		.private = offsetof(struct bfq_group, stats.empty_time),
+		.seq_show = bfqg_print_stat,
+	},
+	{
+		.name = "bfq.dequeue",
+		.private = offsetof(struct bfq_group, stats.dequeue),
+		.seq_show = bfqg_print_stat,
+	},
+	{
+		.name = "bfq.unaccounted_time",
+		.private = offsetof(struct bfq_group, stats.unaccounted_time),
+		.seq_show = bfqg_print_stat,
+	},
+	{ }	/* terminate */
+};
+
+static struct blkcg_policy blkcg_policy_bfq = {
+       .pd_size                = sizeof(struct bfq_group),
+       .cpd_size               = sizeof(struct bfq_group_data),
+       .cftypes                = bfqio_files,
+       .pd_init_fn             = bfq_pd_init,
+       .cpd_init_fn            = bfq_cpd_init,
+       .pd_offline_fn          = bfq_pd_offline,
+       .pd_reset_stats_fn      = bfq_pd_reset_stats,
+};
+
+#else
+
+static void bfq_init_entity(struct bfq_entity *entity,
+			    struct bfq_group *bfqg)
+{
+	struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
 	entity->weight = entity->new_weight;
 	entity->orig_weight = entity->new_weight;
-	entity->ioprio = entity->new_ioprio;
-	entity->ioprio_class = entity->new_ioprio_class;
+	if (bfqq) {
+		bfqq->ioprio = bfqq->new_ioprio;
+		bfqq->ioprio_class = bfqq->new_ioprio_class;
+	}
 	entity->sched_data = &bfqg->sched_data;
 }
 
-static inline struct bfq_group *
-bfq_bic_update_cgroup(struct bfq_io_cq *bic)
+static struct bfq_group *
+bfq_bic_update_cgroup(struct bfq_io_cq *bic, struct bio *bio)
 {
 	struct bfq_data *bfqd = bic_to_bfqd(bic);
 	return bfqd->root_group;
 }
 
-static inline void bfq_bfqq_move(struct bfq_data *bfqd,
-				 struct bfq_queue *bfqq,
-				 struct bfq_entity *entity,
-				 struct bfq_group *bfqg)
+static void bfq_bfqq_move(struct bfq_data *bfqd,
+			  struct bfq_queue *bfqq,
+			  struct bfq_entity *entity,
+			  struct bfq_group *bfqg)
 {
 }
 
@@ -909,23 +1084,24 @@ static void bfq_end_wr_async(struct bfq_data *bfqd)
 	bfq_end_wr_async_queues(bfqd, bfqd->root_group);
 }
 
-static inline void bfq_disconnect_groups(struct bfq_data *bfqd)
+static void bfq_disconnect_groups(struct bfq_data *bfqd)
 {
 	bfq_put_async_queues(bfqd, bfqd->root_group);
 }
 
-static inline void bfq_free_root_group(struct bfq_data *bfqd)
+static struct bfq_group *bfq_find_alloc_group(struct bfq_data *bfqd,
+                                              struct blkcg *blkcg)
 {
-	kfree(bfqd->root_group);
+	return bfqd->root_group;
 }
 
-static struct bfq_group *bfq_alloc_root_group(struct bfq_data *bfqd, int node)
+static struct bfq_group *bfq_create_group_hierarchy(struct bfq_data *bfqd, int node)
 {
 	struct bfq_group *bfqg;
 	int i;
 
 	bfqg = kmalloc_node(sizeof(*bfqg), GFP_KERNEL | __GFP_ZERO, node);
-	if (bfqg == NULL)
+	if (!bfqg)
 		return NULL;
 
 	for (i = 0; i < BFQ_IOPRIO_CLASSES; i++)

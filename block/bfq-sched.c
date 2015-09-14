@@ -10,24 +10,27 @@
  * Copyright (C) 2010 Paolo Valente <paolo.valente@unimore.it>
  */
 
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 #define for_each_entity(entity)	\
-	for (; entity != NULL; entity = entity->parent)
+	for (; entity ; entity = entity->parent)
 
 #define for_each_entity_safe(entity, parent) \
 	for (; entity && ({ parent = entity->parent; 1; }); entity = parent)
+
 
 static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd,
 						 int extract,
 						 struct bfq_data *bfqd);
 
-static inline void bfq_update_budget(struct bfq_entity *next_in_service)
+static struct bfq_group *bfqq_group(struct bfq_queue *bfqq);
+
+static void bfq_update_budget(struct bfq_entity *next_in_service)
 {
 	struct bfq_entity *bfqg_entity;
 	struct bfq_group *bfqg;
 	struct bfq_sched_data *group_sd;
 
-	BUG_ON(next_in_service == NULL);
+	BUG_ON(!next_in_service);
 
 	group_sd = next_in_service->sched_data;
 
@@ -38,7 +41,7 @@ static inline void bfq_update_budget(struct bfq_entity *next_in_service)
 	 * as it must never become an in-service entity.
 	 */
 	bfqg_entity = bfqg->my_entity;
-	if (bfqg_entity != NULL)
+	if (bfqg_entity)
 		bfqg_entity->budget = next_in_service->budget;
 }
 
@@ -46,7 +49,7 @@ static int bfq_update_next_in_service(struct bfq_sched_data *sd)
 {
 	struct bfq_entity *next_in_service;
 
-	if (sd->in_service_entity != NULL)
+	if (sd->in_service_entity)
 		/* will update/requeue at the end of service */
 		return 0;
 
@@ -60,35 +63,35 @@ static int bfq_update_next_in_service(struct bfq_sched_data *sd)
 	next_in_service = bfq_lookup_next_entity(sd, 0, NULL);
 	sd->next_in_service = next_in_service;
 
-	if (next_in_service != NULL)
+	if (next_in_service)
 		bfq_update_budget(next_in_service);
 
 	return 1;
 }
 
-static inline void bfq_check_next_in_service(struct bfq_sched_data *sd,
-					     struct bfq_entity *entity)
+static void bfq_check_next_in_service(struct bfq_sched_data *sd,
+				      struct bfq_entity *entity)
 {
 	BUG_ON(sd->next_in_service != entity);
 }
 #else
 #define for_each_entity(entity)	\
-	for (; entity != NULL; entity = NULL)
+	for (; entity ; entity = NULL)
 
 #define for_each_entity_safe(entity, parent) \
-	for (parent = NULL; entity != NULL; entity = parent)
+	for (parent = NULL; entity ; entity = parent)
 
-static inline int bfq_update_next_in_service(struct bfq_sched_data *sd)
+static int bfq_update_next_in_service(struct bfq_sched_data *sd)
 {
 	return 0;
 }
 
-static inline void bfq_check_next_in_service(struct bfq_sched_data *sd,
-					     struct bfq_entity *entity)
+static void bfq_check_next_in_service(struct bfq_sched_data *sd,
+				      struct bfq_entity *entity)
 {
 }
 
-static inline void bfq_update_budget(struct bfq_entity *next_in_service)
+static void bfq_update_budget(struct bfq_entity *next_in_service)
 {
 }
 #endif
@@ -109,18 +112,18 @@ static inline void bfq_update_budget(struct bfq_entity *next_in_service)
  *
  * Return @a > @b, dealing with wrapping correctly.
  */
-static inline int bfq_gt(u64 a, u64 b)
+static int bfq_gt(u64 a, u64 b)
 {
 	return (s64)(a - b) > 0;
 }
 
-static inline struct bfq_queue *bfq_entity_to_bfqq(struct bfq_entity *entity)
+static struct bfq_queue *bfq_entity_to_bfqq(struct bfq_entity *entity)
 {
 	struct bfq_queue *bfqq = NULL;
 
-	BUG_ON(entity == NULL);
+	BUG_ON(!entity);
 
-	if (entity->my_sched_data == NULL)
+	if (!entity->my_sched_data)
 		bfqq = container_of(entity, struct bfq_queue, entity);
 
 	return bfqq;
@@ -132,8 +135,7 @@ static inline struct bfq_queue *bfq_entity_to_bfqq(struct bfq_entity *entity)
  * @service: amount of service.
  * @weight: scale factor (weight of an entity or weight sum).
  */
-static inline u64 bfq_delta(unsigned long service,
-					unsigned long weight)
+static u64 bfq_delta(unsigned long service, unsigned long weight)
 {
 	u64 d = (u64)service << WFQ_SERVICE_SHIFT;
 
@@ -146,8 +148,7 @@ static inline u64 bfq_delta(unsigned long service,
  * @entity: the entity to act upon.
  * @service: the service to be charged to the entity.
  */
-static inline void bfq_calc_finish(struct bfq_entity *entity,
-				   unsigned long service)
+static void bfq_calc_finish(struct bfq_entity *entity, unsigned long service)
 {
 	struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
 
@@ -156,7 +157,7 @@ static inline void bfq_calc_finish(struct bfq_entity *entity,
 	entity->finish = entity->start +
 		bfq_delta(service, entity->weight);
 
-	if (bfqq != NULL) {
+	if (bfqq) {
 		bfq_log_bfqq(bfqq->bfqd, bfqq,
 			"calc_finish: serv %lu, w %d",
 			service, entity->weight);
@@ -176,11 +177,11 @@ static inline void bfq_calc_finish(struct bfq_entity *entity,
  * conversion mechanism because, e.g., in the tree walking functions,
  * the check for a %NULL value would be redundant.
  */
-static inline struct bfq_entity *bfq_entity_of(struct rb_node *node)
+static struct bfq_entity *bfq_entity_of(struct rb_node *node)
 {
 	struct bfq_entity *entity = NULL;
 
-	if (node != NULL)
+	if (node)
 		entity = rb_entry(node, struct bfq_entity, rb_node);
 
 	return entity;
@@ -191,8 +192,7 @@ static inline struct bfq_entity *bfq_entity_of(struct rb_node *node)
  * @root: the tree root.
  * @entity: the entity to remove.
  */
-static inline void bfq_extract(struct rb_root *root,
-			       struct bfq_entity *entity)
+static void bfq_extract(struct rb_root *root, struct bfq_entity *entity)
 {
 	BUG_ON(entity->tree != root);
 
@@ -225,7 +225,7 @@ static void bfq_idle_extract(struct bfq_service_tree *st,
 
 	bfq_extract(&st->idle, entity);
 
-	if (bfqq != NULL)
+	if (bfqq)
 		list_del(&bfqq->bfqq_list);
 }
 
@@ -243,9 +243,9 @@ static void bfq_insert(struct rb_root *root, struct bfq_entity *entity)
 	struct rb_node **node = &root->rb_node;
 	struct rb_node *parent = NULL;
 
-	BUG_ON(entity->tree != NULL);
+	BUG_ON(entity->tree);
 
-	while (*node != NULL) {
+	while (*node) {
 		parent = *node;
 		entry = rb_entry(parent, struct bfq_entity, rb_node);
 
@@ -271,12 +271,11 @@ static void bfq_insert(struct rb_root *root, struct bfq_entity *entity)
  * that the subtree rooted at @node (which may be its left or its right
  * child) has a valid min_start value.
  */
-static inline void bfq_update_min(struct bfq_entity *entity,
-				  struct rb_node *node)
+static void bfq_update_min(struct bfq_entity *entity, struct rb_node *node)
 {
 	struct bfq_entity *child;
 
-	if (node != NULL) {
+	if (node) {
 		child = rb_entry(node, struct bfq_entity, rb_node);
 		if (bfq_gt(entity->min_start, child->min_start))
 			entity->min_start = child->min_start;
@@ -291,7 +290,7 @@ static inline void bfq_update_min(struct bfq_entity *entity,
  * this function updates its min_start value.  The left and right subtrees
  * are assumed to hold a correct min_start value.
  */
-static inline void bfq_update_active_node(struct rb_node *node)
+static void bfq_update_active_node(struct rb_node *node)
 {
 	struct bfq_entity *entity = rb_entry(node, struct bfq_entity, rb_node);
 
@@ -318,12 +317,12 @@ up:
 	bfq_update_active_node(node);
 
 	parent = rb_parent(node);
-	if (parent == NULL)
+	if (!parent)
 		return;
 
-	if (node == parent->rb_left && parent->rb_right != NULL)
+	if (node == parent->rb_left && parent->rb_right)
 		bfq_update_active_node(parent->rb_right);
-	else if (parent->rb_left != NULL)
+	else if (parent->rb_left)
 		bfq_update_active_node(parent->rb_left);
 
 	node = parent;
@@ -355,7 +354,7 @@ static void bfq_active_insert(struct bfq_service_tree *st,
 {
 	struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
 	struct rb_node *node = &entity->rb_node;
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	struct bfq_sched_data *sd = NULL;
 	struct bfq_group *bfqg = NULL;
 	struct bfq_data *bfqd = NULL;
@@ -363,22 +362,22 @@ static void bfq_active_insert(struct bfq_service_tree *st,
 
 	bfq_insert(&st->active, entity);
 
-	if (node->rb_left != NULL)
+	if (node->rb_left)
 		node = node->rb_left;
-	else if (node->rb_right != NULL)
+	else if (node->rb_right)
 		node = node->rb_right;
 
 	bfq_update_active_tree(node);
 
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	sd = entity->sched_data;
 	bfqg = container_of(sd, struct bfq_group, sched_data);
 	BUG_ON(!bfqg);
 	bfqd = (struct bfq_data *)bfqg->bfqd;
 #endif
-	if (bfqq != NULL)
+	if (bfqq)
 		list_add(&bfqq->bfqq_list, &bfqq->bfqd->active_list);
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	else { /* bfq_group */
 		BUG_ON(!bfqd);
 		bfq_weights_tree_add(bfqd, entity, &bfqd->group_weights_tree);
@@ -397,31 +396,32 @@ static void bfq_active_insert(struct bfq_service_tree *st,
  * bfq_ioprio_to_weight - calc a weight from an ioprio.
  * @ioprio: the ioprio value to convert.
  */
-static inline unsigned short bfq_ioprio_to_weight(int ioprio)
+static unsigned short bfq_ioprio_to_weight(int ioprio)
 {
 	BUG_ON(ioprio < 0 || ioprio >= IOPRIO_BE_NR);
-	return IOPRIO_BE_NR - ioprio;
+	return IOPRIO_BE_NR * BFQ_WEIGHT_CONVERSION_COEFF - ioprio;
 }
 
 /**
  * bfq_weight_to_ioprio - calc an ioprio from a weight.
  * @weight: the weight value to convert.
  *
- * To preserve as mush as possible the old only-ioprio user interface,
+ * To preserve as much as possible the old only-ioprio user interface,
  * 0 is used as an escape ioprio value for weights (numerically) equal or
- * larger than IOPRIO_BE_NR
+ * larger than IOPRIO_BE_NR * BFQ_WEIGHT_CONVERSION_COEFF.
  */
-static inline unsigned short bfq_weight_to_ioprio(int weight)
+static unsigned short bfq_weight_to_ioprio(int weight)
 {
 	BUG_ON(weight < BFQ_MIN_WEIGHT || weight > BFQ_MAX_WEIGHT);
-	return IOPRIO_BE_NR - weight < 0 ? 0 : IOPRIO_BE_NR - weight;
+	return IOPRIO_BE_NR * BFQ_WEIGHT_CONVERSION_COEFF - weight < 0 ?
+		0 : IOPRIO_BE_NR * BFQ_WEIGHT_CONVERSION_COEFF - weight;
 }
 
-static inline void bfq_get_entity(struct bfq_entity *entity)
+static void bfq_get_entity(struct bfq_entity *entity)
 {
 	struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
 
-	if (bfqq != NULL) {
+	if (bfqq) {
 		atomic_inc(&bfqq->ref);
 		bfq_log_bfqq(bfqq->bfqd, bfqq, "get_entity: %p %d",
 			     bfqq, atomic_read(&bfqq->ref));
@@ -441,15 +441,15 @@ static struct rb_node *bfq_find_deepest(struct rb_node *node)
 {
 	struct rb_node *deepest;
 
-	if (node->rb_right == NULL && node->rb_left == NULL)
+	if (!node->rb_right && !node->rb_left)
 		deepest = rb_parent(node);
-	else if (node->rb_right == NULL)
+	else if (!node->rb_right)
 		deepest = node->rb_left;
-	else if (node->rb_left == NULL)
+	else if (!node->rb_left)
 		deepest = node->rb_right;
 	else {
 		deepest = rb_next(node);
-		if (deepest->rb_right != NULL)
+		if (deepest->rb_right)
 			deepest = deepest->rb_right;
 		else if (rb_parent(deepest) != node)
 			deepest = rb_parent(deepest);
@@ -468,7 +468,7 @@ static void bfq_active_extract(struct bfq_service_tree *st,
 {
 	struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
 	struct rb_node *node;
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	struct bfq_sched_data *sd = NULL;
 	struct bfq_group *bfqg = NULL;
 	struct bfq_data *bfqd = NULL;
@@ -477,18 +477,18 @@ static void bfq_active_extract(struct bfq_service_tree *st,
 	node = bfq_find_deepest(&entity->rb_node);
 	bfq_extract(&st->active, entity);
 
-	if (node != NULL)
+	if (node)
 		bfq_update_active_tree(node);
 
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	sd = entity->sched_data;
 	bfqg = container_of(sd, struct bfq_group, sched_data);
 	BUG_ON(!bfqg);
 	bfqd = (struct bfq_data *)bfqg->bfqd;
 #endif
-	if (bfqq != NULL)
+	if (bfqq)
 		list_del(&bfqq->bfqq_list);
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	else { /* bfq_group */
 		BUG_ON(!bfqd);
 		bfq_weights_tree_remove(bfqd, entity,
@@ -519,14 +519,14 @@ static void bfq_idle_insert(struct bfq_service_tree *st,
 	struct bfq_entity *first_idle = st->first_idle;
 	struct bfq_entity *last_idle = st->last_idle;
 
-	if (first_idle == NULL || bfq_gt(first_idle->finish, entity->finish))
+	if (!first_idle || bfq_gt(first_idle->finish, entity->finish))
 		st->first_idle = entity;
-	if (last_idle == NULL || bfq_gt(entity->finish, last_idle->finish))
+	if (!last_idle || bfq_gt(entity->finish, last_idle->finish))
 		st->last_idle = entity;
 
 	bfq_insert(&st->idle, entity);
 
-	if (bfqq != NULL)
+	if (bfqq)
 		list_add(&bfqq->bfqq_list, &bfqq->bfqd->idle_list);
 }
 
@@ -549,7 +549,7 @@ static void bfq_forget_entity(struct bfq_service_tree *st,
 
 	entity->on_st = 0;
 	st->wsum -= entity->weight;
-	if (bfqq != NULL) {
+	if (bfqq) {
 		sd = entity->sched_data;
 		bfq_log_bfqq(bfqq->bfqd, bfqq, "forget_entity: %p %d",
 			     bfqq, atomic_read(&bfqq->ref));
@@ -581,7 +581,7 @@ static void bfq_forget_idle(struct bfq_service_tree *st)
 	struct bfq_entity *first_idle = st->first_idle;
 	struct bfq_entity *last_idle = st->last_idle;
 
-	if (RB_EMPTY_ROOT(&st->active) && last_idle != NULL &&
+	if (RB_EMPTY_ROOT(&st->active) && last_idle &&
 	    !bfq_gt(last_idle->finish, st->vtime)) {
 		/*
 		 * Forget the whole idle tree, increasing the vtime past
@@ -590,7 +590,7 @@ static void bfq_forget_idle(struct bfq_service_tree *st)
 		st->vtime = last_idle->finish;
 	}
 
-	if (first_idle != NULL && !bfq_gt(first_idle->finish, st->vtime))
+	if (first_idle && !bfq_gt(first_idle->finish, st->vtime))
 		bfq_put_idle_entity(st, first_idle);
 }
 
@@ -600,19 +600,19 @@ __bfq_entity_update_weight_prio(struct bfq_service_tree *old_st,
 {
 	struct bfq_service_tree *new_st = old_st;
 
-	if (entity->ioprio_changed) {
+	if (entity->prio_changed) {
 		struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
 		unsigned short prev_weight, new_weight;
 		struct bfq_data *bfqd = NULL;
 		struct rb_root *root;
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 		struct bfq_sched_data *sd;
 		struct bfq_group *bfqg;
 #endif
 
-		if (bfqq != NULL)
+		if (bfqq)
 			bfqd = bfqq->bfqd;
-#ifdef CONFIG_CGROUP_BFQIO
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 		else {
 			sd = entity->my_sched_data;
 			bfqg = container_of(sd, struct bfq_group, sched_data);
@@ -634,12 +634,14 @@ __bfq_entity_update_weight_prio(struct bfq_service_tree *old_st,
 				BUG();
 			}
 			entity->orig_weight = entity->new_weight;
-			entity->ioprio =
-				bfq_weight_to_ioprio(entity->orig_weight);
+			if (bfqq)
+				bfqq->ioprio =
+				  bfq_weight_to_ioprio(entity->orig_weight);
 		}
 
-		entity->ioprio_class = entity->new_ioprio_class;
-		entity->ioprio_changed = 0;
+		if (bfqq)
+			bfqq->ioprio_class = bfqq->new_ioprio_class;
+		entity->prio_changed = 0;
 
 		/*
 		 * NOTE: here we may be changing the weight too early,
@@ -652,7 +654,7 @@ __bfq_entity_update_weight_prio(struct bfq_service_tree *old_st,
 
 		prev_weight = entity->weight;
 		new_weight = entity->orig_weight *
-			     (bfqq != NULL ? bfqq->wr_coeff : 1);
+			     (bfqq ? bfqq->wr_coeff : 1);
 		/*
 		 * If the weight of the entity changes, remove the entity
 		 * from its old weight counter (if there is a counter
@@ -683,6 +685,10 @@ __bfq_entity_update_weight_prio(struct bfq_service_tree *old_st,
 	return new_st;
 }
 
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+static void bfqg_stats_set_start_empty_time(struct bfq_group *bfqg);
+#endif
+
 /**
  * bfq_bfqq_served - update the scheduler status after selection for
  *                   service.
@@ -693,7 +699,7 @@ __bfq_entity_update_weight_prio(struct bfq_service_tree *old_st,
  * are synchronized every time a new bfqq is selected for service.  By now,
  * we keep it to better check consistency.
  */
-static void bfq_bfqq_served(struct bfq_queue *bfqq, unsigned long served)
+static void bfq_bfqq_served(struct bfq_queue *bfqq, int served)
 {
 	struct bfq_entity *entity = &bfqq->entity;
 	struct bfq_service_tree *st;
@@ -708,7 +714,10 @@ static void bfq_bfqq_served(struct bfq_queue *bfqq, unsigned long served)
 		st->vtime += bfq_delta(served, st->wsum);
 		bfq_forget_idle(st);
 	}
-	bfq_log_bfqq(bfqq->bfqd, bfqq, "bfqq_served %lu secs", served);
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+	bfqg_stats_set_start_empty_time(bfqq_group(bfqq));
+#endif
+	bfq_log_bfqq(bfqq->bfqd, bfqq, "bfqq_served %d secs", served);
 }
 
 /**
@@ -721,7 +730,7 @@ static void bfq_bfqq_served(struct bfq_queue *bfqq, unsigned long served)
  * budget.  In this way we should obtain a sort of time-domain
  * fairness among all the seeky/slow queues.
  */
-static inline void bfq_bfqq_charge_full_budget(struct bfq_queue *bfqq)
+static void bfq_bfqq_charge_full_budget(struct bfq_queue *bfqq)
 {
 	struct bfq_entity *entity = &bfqq->entity;
 
@@ -746,7 +755,7 @@ static void __bfq_activate_entity(struct bfq_entity *entity)
 	struct bfq_service_tree *st = bfq_entity_service_tree(entity);
 
 	if (entity == sd->in_service_entity) {
-		BUG_ON(entity->tree != NULL);
+		BUG_ON(entity->tree);
 		/*
 		 * If we are requeueing the current entity we have
 		 * to take care of not charging to it service it has
@@ -837,7 +846,7 @@ static int __bfq_deactivate_entity(struct bfq_entity *entity, int requeue)
 	if (!entity->on_st)
 		return 0;
 
-	BUG_ON(was_in_service && entity->tree != NULL);
+	BUG_ON(was_in_service && entity->tree);
 
 	if (was_in_service) {
 		bfq_calc_finish(entity, entity->service);
@@ -846,7 +855,7 @@ static int __bfq_deactivate_entity(struct bfq_entity *entity, int requeue)
 		bfq_active_extract(st, entity);
 	else if (entity->tree == &st->idle)
 		bfq_idle_extract(st, entity);
-	else if (entity->tree != NULL)
+	else if (entity->tree)
 		BUG();
 
 	if (was_in_service || sd->next_in_service == entity)
@@ -884,7 +893,7 @@ static void bfq_deactivate_entity(struct bfq_entity *entity, int requeue)
 			 */
 			break;
 
-		if (sd->next_in_service != NULL)
+		if (sd->next_in_service)
 			/*
 			 * The parent entity is still backlogged and
 			 * the budgets on the path towards the root
@@ -953,7 +962,7 @@ static struct bfq_entity *bfq_first_active_entity(struct bfq_service_tree *st)
 	struct bfq_entity *entry, *first = NULL;
 	struct rb_node *node = st->active.rb_node;
 
-	while (node != NULL) {
+	while (node) {
 		entry = rb_entry(node, struct bfq_entity, rb_node);
 left:
 		if (!bfq_gt(entry->start, st->vtime))
@@ -961,7 +970,7 @@ left:
 
 		BUG_ON(bfq_gt(entry->min_start, st->vtime));
 
-		if (node->rb_left != NULL) {
+		if (node->rb_left) {
 			entry = rb_entry(node->rb_left,
 					 struct bfq_entity, rb_node);
 			if (!bfq_gt(entry->min_start, st->vtime)) {
@@ -969,12 +978,12 @@ left:
 				goto left;
 			}
 		}
-		if (first != NULL)
+		if (first)
 			break;
 		node = node->rb_right;
 	}
 
-	BUG_ON(first == NULL && !RB_EMPTY_ROOT(&st->active));
+	BUG_ON(!first && !RB_EMPTY_ROOT(&st->active));
 	return first;
 }
 
@@ -1030,13 +1039,13 @@ static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd,
 	struct bfq_entity *entity;
 	int i = 0;
 
-	BUG_ON(sd->in_service_entity != NULL);
+	BUG_ON(sd->in_service_entity);
 
-	if (bfqd != NULL &&
+	if (bfqd &&
 	    jiffies - bfqd->bfq_class_idle_last_service > BFQ_CL_IDLE_TIMEOUT) {
 		entity = __bfq_lookup_next_entity(st + BFQ_IOPRIO_CLASSES - 1,
 						  true);
-		if (entity != NULL) {
+		if (entity) {
 			i = BFQ_IOPRIO_CLASSES - 1;
 			bfqd->bfq_class_idle_last_service = jiffies;
 			sd->next_in_service = entity;
@@ -1044,7 +1053,7 @@ static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd,
 	}
 	for (; i < BFQ_IOPRIO_CLASSES; i++) {
 		entity = __bfq_lookup_next_entity(st + i, false);
-		if (entity != NULL) {
+		if (entity) {
 			if (extract) {
 				bfq_check_next_in_service(sd, entity);
 				bfq_active_extract(st + i, entity);
@@ -1067,27 +1076,27 @@ static struct bfq_queue *bfq_get_next_queue(struct bfq_data *bfqd)
 	struct bfq_sched_data *sd;
 	struct bfq_queue *bfqq;
 
-	BUG_ON(bfqd->in_service_queue != NULL);
+	BUG_ON(bfqd->in_service_queue);
 
 	if (bfqd->busy_queues == 0)
 		return NULL;
 
 	sd = &bfqd->root_group->sched_data;
-	for (; sd != NULL; sd = entity->my_sched_data) {
+	for (; sd ; sd = entity->my_sched_data) {
 		entity = bfq_lookup_next_entity(sd, 1, bfqd);
-		BUG_ON(entity == NULL);
+		BUG_ON(!entity);
 		entity->service = 0;
 	}
 
 	bfqq = bfq_entity_to_bfqq(entity);
-	BUG_ON(bfqq == NULL);
+	BUG_ON(!bfqq);
 
 	return bfqq;
 }
 
 static void __bfq_bfqd_reset_in_service(struct bfq_data *bfqd)
 {
-	if (bfqd->in_service_bic != NULL) {
+	if (bfqd->in_service_bic) {
 		put_io_context(bfqd->in_service_bic->icq.ioc);
 		bfqd->in_service_bic = NULL;
 	}
@@ -1113,6 +1122,10 @@ static void bfq_activate_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 
 	bfq_activate_entity(entity);
 }
+
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+static void bfqg_stats_update_dequeue(struct bfq_group *bfqg);
+#endif
 
 /*
  * Called when the bfqq no longer has requests pending, remove it from
@@ -1146,6 +1159,10 @@ static void bfq_del_bfqq_busy(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	}
 	if (bfqq->wr_coeff > 1)
 		bfqd->wr_busy_queues--;
+
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+	bfqg_stats_update_dequeue(bfqq_group(bfqq));
+#endif
 
 	bfq_deactivate_bfqq(bfqd, bfqq, requeue);
 }
