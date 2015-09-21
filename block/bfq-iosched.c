@@ -1330,9 +1330,11 @@ static struct bfq_queue *bfq_find_close_cooperator(struct bfq_data *bfqd,
 	struct bfq_queue *bfqq;
 
 	/*
-	 * We should notice if some of the queues are cooperating, e.g.
-	 * working closely on the same area of the disk. In that case,
-	 * we can group them together and don't waste time idling.
+	 * We shall notice if some of the queues are cooperating,
+	 * e.g., working closely on the same area of the device. In
+	 * that case, we can group them together and: 1) don't waste
+	 * time idling, and 2) serve the union of their requests in
+	 * the best possible order for throughput.
 	 */
 	bfqq = bfqq_find_close(bfqd, cur_bfqq, sector);
 	if (!bfqq || bfqq == cur_bfqq)
@@ -1405,9 +1407,6 @@ bfq_setup_merge(struct bfq_queue *bfqq, struct bfq_queue *new_bfqq)
 static bool bfq_may_be_close_cooperator(struct bfq_queue *bfqq,
 					struct bfq_queue *new_bfqq)
 {
-	if (WARN_ON(bfqq->entity.parent != new_bfqq->entity.parent))
-		return false;
-
 	if (bfq_class_idle(bfqq) || bfq_class_idle(new_bfqq) ||
 	    (bfqq->ioprio_class != new_bfqq->ioprio_class))
 		return false;
@@ -1466,6 +1465,7 @@ bfq_setup_cooperator(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 		goto check_scheduled;
 
 	if (bfq_rq_close_to_sector(io_struct, request, bfqd->last_position) &&
+	    bfqq->entity.parent == in_service_bfqq->entity.parent &&
 	    bfq_may_be_close_cooperator(bfqq, in_service_bfqq)) {
 		new_bfqq = bfq_setup_merge(bfqq, in_service_bfqq);
 		if (new_bfqq)
@@ -1479,6 +1479,9 @@ bfq_setup_cooperator(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 check_scheduled:
 	new_bfqq = bfq_find_close_cooperator(bfqd, bfqq,
 			bfq_io_struct_pos(io_struct, request));
+
+	BUG_ON(new_bfqq && bfqq->entity.parent != new_bfqq->entity.parent);
+
 	if (new_bfqq && likely(new_bfqq != &bfqd->oom_bfqq) &&
 	    bfq_may_be_close_cooperator(bfqq, new_bfqq))
 		return bfq_setup_merge(bfqq, new_bfqq);
@@ -4382,7 +4385,7 @@ static int __init bfq_init(void)
 	if (ret)
 		goto err_pol_unreg;
 
-	pr_info("BFQ I/O-scheduler: v7r9");
+	pr_info("BFQ I/O-scheduler: v7r10");
 
 	return 0;
 
