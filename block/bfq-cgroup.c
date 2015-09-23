@@ -161,7 +161,9 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg)
 
 static struct bfq_group *blkg_to_bfqg(struct blkcg_gq *blkg)
 {
-	return pd_to_bfqg(blkg_to_pd(blkg, &blkcg_policy_bfq));
+	struct blkg_policy_data *pd = blkg_to_pd(blkg, &blkcg_policy_bfq);
+	BUG_ON(!pd);
+	return pd_to_bfqg(pd);
 }
 
 /*
@@ -721,10 +723,17 @@ static void bfq_reparent_active_entities(struct bfq_data *bfqd,
 static void bfq_pd_offline(struct blkg_policy_data *pd)
 {
 	struct bfq_service_tree *st;
-	struct bfq_group *bfqg = pd_to_bfqg(pd);
-	struct bfq_data *bfqd = bfqg->bfqd;
-	struct bfq_entity *entity = bfqg->my_entity;
+	struct bfq_group *bfqg;
+	struct bfq_data *bfqd;
+	struct bfq_entity *entity;
 	int i;
+
+	BUG_ON(!pd);
+	bfqg = pd_to_bfqg(pd);
+	BUG_ON(!bfqg);
+	bfqd = bfqg->bfqd;
+	BUG_ON(!bfqd);
+	entity = bfqg->my_entity;
 
 	if (!entity) /* root group */
 		return;
