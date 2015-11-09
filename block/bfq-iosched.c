@@ -3206,7 +3206,7 @@ retry:
 		if (new_bfqq) {
 			bfqq = new_bfqq;
 			new_bfqq = NULL;
-		} else if (gfp_mask & __GFP_WAIT) {
+		} else if (gfpflags_allow_blocking(gfp_mask)) {
 			rcu_read_unlock();
 			spin_unlock_irq(bfqd->queue->queue_lock);
 			new_bfqq = kmem_cache_alloc_node(bfq_pool,
@@ -3724,7 +3724,7 @@ static int bfq_set_request(struct request_queue *q, struct request *rq,
 	unsigned long flags;
 	bool split = false;
 
-	might_sleep_if(gfp_mask & __GFP_WAIT);
+	might_sleep_if(gfpflags_allow_blocking(gfp_mask));
 
 	bfq_check_ioprio_change(bic, bio);
 
