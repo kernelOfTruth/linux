@@ -2995,6 +2995,53 @@ bool gfp_pfmemalloc_allowed(gfp_t gfp_mask)
 	return !!(gfp_to_alloc_flags(gfp_mask) & ALLOC_NO_WATERMARKS);
 }
 
+static atomic_t stall_tasks;
+
+static int kmallocwd(void *unused)
+{
+	struct task_struct *g, *p;
+	unsigned int sigkill_pending;
+	unsigned int memdie_pending;
+	unsigned int stalling_tasks;
+
+ not_stalling: /* Healty case. */
+	schedule_timeout_interruptible(HZ);
+	if (likely(!atomic_read(&stall_tasks)))
+		goto not_stalling;
+ maybe_stalling: /* Maybe something is wrong. Let's check. */
+	/* Count stalling tasks, dying and victim tasks. */
+	sigkill_pending = 0;
+	memdie_pending = 0;
+	stalling_tasks = atomic_read(&stall_tasks);
+	preempt_disable();
+	rcu_read_lock();
+	for_each_process_thread(g, p) {
+		if (test_tsk_thread_flag(p, TIF_MEMDIE))
+			memdie_pending++;
+		if (fatal_signal_pending(p))
+			sigkill_pending++;
+	}
+	rcu_read_unlock();
+	preempt_enable();
+	pr_warn("MemAlloc-Info: %u stalling task, %u dying task, %u victim task.\n",
+		stalling_tasks, sigkill_pending, memdie_pending);
+	show_workqueue_state();
+	schedule_timeout_interruptible(10 * HZ);
+	if (atomic_read(&stall_tasks))
+		goto maybe_stalling;
+	goto not_stalling;
+	return 0; /* To suppress "no return statement" compiler warning. */
+}
+
+static int __init start_kmallocwd(void)
+{
+	struct task_struct *task = kthread_run(kmallocwd, NULL,
+					       "kmallocwd");
+	BUG_ON(IS_ERR(task));
+	return 0;
+}
+late_initcall(start_kmallocwd);
+
 static inline struct page *
 __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 						struct alloc_context *ac)
@@ -3007,6 +3054,8 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	enum migrate_mode migration_mode = MIGRATE_ASYNC;
 	bool deferred_compaction = false;
 	int contended_compaction = COMPACT_CONTENDED_NONE;
+	unsigned long start = jiffies;
+	bool stall_counted = false;
 
 	/*
 	 * In the slowpath, we sanity check order to avoid ever trying to
@@ -3089,6 +3138,11 @@ retry:
 	/* Avoid allocations with no watermarks from looping endlessly */
 	if (test_thread_flag(TIF_MEMDIE) && !(gfp_mask & __GFP_NOFAIL))
 		goto nopage;
+
+	if (!stall_counted && time_after(jiffies, start + 10 * HZ)) {
+		atomic_inc(&stall_tasks);
+		stall_counted = true;
+	}
 
 	/*
 	 * Try direct compaction. The first pass is asynchronous. Subsequent
@@ -3200,6 +3254,8 @@ noretry:
 nopage:
 	warn_alloc_failed(gfp_mask, order, NULL);
 got_pg:
+	if (stall_counted)
+		atomic_dec(&stall_tasks);
 	return page;
 }
 
