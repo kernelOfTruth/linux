@@ -2731,7 +2731,6 @@ __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 	 */
 	if (!mutex_trylock(&oom_lock)) {
 		*did_some_progress = 1;
-		schedule_timeout_uninterruptible(1);
 		return NULL;
 	}
 
@@ -3158,6 +3157,15 @@ retry:
 	    ((gfp_mask & __GFP_REPEAT) && pages_reclaimed < (1 << order))) {
 		/* Wait for some write requests to complete then retry */
 		wait_iff_congested(ac->preferred_zone, BLK_RW_ASYNC, HZ/50);
+		/*
+		 * Give other workqueue items (especially vmstat_update item)
+		 * a chance to be processed. There is no need to wait if I was
+		 * chosen by the OOM killer, for I will leave this function
+		 * using ALLOC_NO_WATERMARKS. But I need to wait even if I have
+		 * SIGKILL pending, for I can't leave this function.
+		 */
+		if (!test_thread_flag(TIF_MEMDIE))
+			schedule_timeout_uninterruptible(1);
 		goto retry;
 	}
 
@@ -3167,8 +3175,15 @@ retry:
 		goto got_pg;
 
 	/* Retry as long as the OOM killer is making progress */
-	if (did_some_progress)
+	if (did_some_progress) {
+		/*
+		 * Give the OOM victim a chance to leave this function
+		 * before trying to allocate memory again.
+		 */
+		if (!test_thread_flag(TIF_MEMDIE))
+			schedule_timeout_uninterruptible(1);
 		goto retry;
+	}
 
 noretry:
 	/*
