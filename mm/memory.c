@@ -3056,7 +3056,7 @@ static int do_cow_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		}
 		goto uncharge_out;
 	}
-	do_set_pte(vma, address, new_page, pte, true, true);
+	do_set_pte(vma, address, new_page, pte, vma->vm_flags & VM_WRITE, true);
 	mem_cgroup_commit_charge(new_page, memcg, false);
 	lru_cache_add_active_or_unevictable(new_page, vma);
 	pte_unmap_unlock(pte, ptl);
@@ -3157,7 +3157,7 @@ static int do_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	/* The VMA was not fully populated on mmap() or missing VM_DONTEXPAND */
 	if (!vma->vm_ops->fault)
 		return VM_FAULT_SIGBUS;
-	if (!(flags & FAULT_FLAG_WRITE))
+	if (!(flags & FAULT_FLAG_WRITE) && !(vma->vm_flags & VM_COR))
 		return do_read_fault(mm, vma, address, pmd, pgoff, flags,
 				orig_pte);
 	if (!(vma->vm_flags & VM_SHARED))
