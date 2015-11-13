@@ -10260,11 +10260,24 @@ struct btrfs_trans_handle *
 btrfs_start_trans_remove_block_group(struct btrfs_fs_info *fs_info)
 {
 	/*
+	 * We need to reserve 3 units from the metadata space info in order
+	 * to remove a block group (done at btrfs_remove_block_group()), which
+	 * are used for:
+	 *
 	 * 1 unit for adding the free space inode's orphan (located in the tree
 	 * of tree roots).
+	 * 1 unit for deleting the block group item (located in the extent
+	 * tree).
+	 * 1 unit for deleting the free space item (located in tree of tree
+	 * roots).
+	 *
+	 * In order to remove a block group we also need to reserve units in the
+	 * system space info in order to update the chunk tree (update one or
+	 * more device items and remove one chunk item), but this is done at
+	 * btrfs_remove_chunk() through a call to check_system_chunk().
 	 */
 	return btrfs_start_transaction_fallback_global_rsv(fs_info->extent_root,
-							   1, 1);
+							   3, 1);
 }
 
 /*
