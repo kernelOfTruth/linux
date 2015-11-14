@@ -10256,6 +10256,30 @@ out:
 	return ret;
 }
 
+struct btrfs_trans_handle *
+btrfs_start_trans_remove_block_group(struct btrfs_fs_info *fs_info)
+{
+	/*
+	 * We need to reserve 3 units from the metadata space info in order
+	 * to remove a block group (done at btrfs_remove_block_group()), which
+	 * are used for:
+	 *
+	 * 1 unit for adding the free space inode's orphan (located in the tree
+	 * of tree roots).
+	 * 1 unit for deleting the block group item (located in the extent
+	 * tree).
+	 * 1 unit for deleting the free space item (located in tree of tree
+	 * roots).
+	 *
+	 * In order to remove a block group we also need to reserve units in the
+	 * system space info in order to update the chunk tree (update one or
+	 * more device items and remove one chunk item), but this is done at
+	 * btrfs_remove_chunk() through a call to check_system_chunk().
+	 */
+	return btrfs_start_transaction_fallback_global_rsv(fs_info->extent_root,
+							   3, 1);
+}
+
 /*
  * Process the unused_bgs list and remove any that don't have any allocated
  * space inside of them.
@@ -10322,8 +10346,7 @@ void btrfs_delete_unused_bgs(struct btrfs_fs_info *fs_info)
 		 * Want to do this before we do anything else so we can recover
 		 * properly if we fail to join the transaction.
 		 */
-		/* 1 for btrfs_orphan_reserve_metadata() */
-		trans = btrfs_start_transaction(root, 1);
+		trans = btrfs_start_trans_remove_block_group(fs_info);
 		if (IS_ERR(trans)) {
 			btrfs_dec_block_group_ro(root, block_group);
 			ret = PTR_ERR(trans);
