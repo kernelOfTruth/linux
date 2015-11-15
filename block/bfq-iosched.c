@@ -1277,7 +1277,7 @@ static sector_t bfq_io_struct_pos(void *io_struct, bool request)
 static int bfq_rq_close_to_sector(void *io_struct, bool request,
 				  sector_t sector)
 {
-	return abs64(bfq_io_struct_pos(io_struct, request) - sector) <=
+	return abs(bfq_io_struct_pos(io_struct, request) - sector) <=
 	       BFQQ_SEEK_THR;
 }
 
