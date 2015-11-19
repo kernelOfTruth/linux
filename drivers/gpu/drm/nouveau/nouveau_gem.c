@@ -404,7 +404,9 @@ retry:
 		if (nvbo->reserved_by && nvbo->reserved_by == file_priv) {
 			NV_PRINTK(err, cli, "multiple instances of buffer %d on "
 				      "validation list\n", b->handle);
-			continue;
+			drm_gem_object_unreference_unlocked(gem);
+			ret = -EINVAL;
+			break;
 		}
 
 		ret = ttm_bo_reserve(&nvbo->bo, true, false, true, &op->ticket);
