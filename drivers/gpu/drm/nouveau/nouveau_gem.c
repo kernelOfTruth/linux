@@ -286,7 +286,9 @@ nouveau_gem_ioctl_new(struct drm_device *dev, void *data,
 }
 
 static int
-nouveau_gem_set_domain(struct drm_gem_object *gem, uint32_t read_domains,
+nouveau_gem_set_domain(struct drm_gem_object *gem,
+		       struct nouveau_cli *cli,
+		       uint32_t read_domains,
 		       uint32_t write_domains, uint32_t valid_domains)
 {
 	struct nouveau_bo *nvbo = nouveau_gem_object(gem);
@@ -295,8 +297,16 @@ nouveau_gem_set_domain(struct drm_gem_object *gem, uint32_t read_domains,
 		(write_domains ? write_domains : read_domains);
 	uint32_t pref_flags = 0, valid_flags = 0;
 
-	if (!domains)
+	if (!domains) {
+		struct nvkm_vma *vma = nouveau_bo_vma_find(nvbo, cli->vm);
+		NV_PRINTK(err, cli, "bo valid domains: %x\n", nvbo->valid_domains);
+		NV_PRINTK(err, cli, "valid domains: %x\n", valid_domains);
+		NV_PRINTK(err, cli, "read domains: %x\n", read_domains);
+		NV_PRINTK(err, cli, "write domains: %x\n", write_domains);
+		NV_PRINTK(err, cli, "buf offset: %010llx\n", vma ? vma->offset : 0);
+		NV_PRINTK(err, cli, "buf size: %x\n", nvbo->bo.mem.num_pages << PAGE_SHIFT);
 		return -EINVAL;
+	}
 
 	if (valid_domains & NOUVEAU_GEM_DOMAIN_VRAM)
 		valid_flags |= TTM_PL_FLAG_VRAM;
@@ -473,7 +483,7 @@ validate_list(struct nouveau_channel *chan, struct nouveau_cli *cli,
 	list_for_each_entry(nvbo, list, entry) {
 		struct drm_nouveau_gem_pushbuf_bo *b = &pbbo[nvbo->pbbo_index];
 
-		ret = nouveau_gem_set_domain(&nvbo->gem, b->read_domains,
+		ret = nouveau_gem_set_domain(&nvbo->gem, cli, b->read_domains,
 					     b->write_domains,
 					     b->valid_domains);
 		if (unlikely(ret)) {
