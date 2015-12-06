@@ -60,8 +60,11 @@ nvbios_vmap_parse(struct nvkm_bios *bios, u8 *ver, u8 *hdr, u8 *cnt, u8 *len,
 	u16 vmap = nvbios_vmap_table(bios, ver, hdr, cnt, len);
 	memset(info, 0x00, sizeof(*info));
 	switch (!!vmap * *ver) {
-	case 0x10:
 	case 0x20:
+		info->boost = nvbios_rd08(bios, vmap + 0x7);
+		break;
+	case 0x10:
+		info->boost = 0xff;
 		break;
 	}
 	return vmap;

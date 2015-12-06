@@ -64,7 +64,8 @@ struct nvkm_pstate {
 struct nvkm_domain {
 	enum nv_clk_src name;
 	u8 bios; /* 0xff for none */
-#define NVKM_CLK_DOM_FLAG_CORE 0x01
+#define NVKM_CLK_DOM_FLAG_CORE            0x01
+#define NVKM_CLK_DOM_FLAG_BASE_CLOCK_CORE 0x02
 	u8 flags;
 	const char *mname;
 	int mdiv;
@@ -94,6 +95,13 @@ struct nvkm_clk {
 	int dstate; /* display adjustment (min+) */
 
 	bool allow_reclock;
+#define NVKM_CLK_BOOST_MODE_NONE 0x0
+#define NVKM_CLK_BOOST_MODE_AVG  0x1
+#define NVKM_CLK_BOOST_MODE_FULL 0x2
+	u8 boost_mode;
+
+	u32 base_clock;
+	u32 boost_clock;
 
 	/*XXX: die, these are here *only* to support the completely
 	 *     bat-shit insane what-was-nouveau_hw.c code

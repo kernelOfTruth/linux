@@ -24,6 +24,7 @@
 #include "priv.h"
 
 #include <subdev/bios.h>
+#include <subdev/bios/baseclock.h>
 #include <subdev/bios/boost.h>
 #include <subdev/bios/cstep.h>
 #include <subdev/bios/perf.h>
@@ -138,15 +139,24 @@ static int
 nvkm_cstate_new(struct nvkm_clk *clk, int idx, struct nvkm_pstate *pstate)
 {
 	struct nvkm_bios *bios = clk->subdev.device->bios;
+	struct nvkm_volt *volt = clk->subdev.device->volt;
 	const struct nvkm_domain *domain = clk->domains;
 	struct nvkm_cstate *cstate = NULL;
 	struct nvbios_cstepX cstepX;
 	u8  ver, hdr;
 	u16 data;
+	int voltage;
 
 	data = nvbios_cstepXp(bios, idx, &ver, &hdr, &cstepX);
 	if (!data)
 		return -ENOENT;
+
+	voltage = nvkm_volt_map(volt, cstepX.voltage);
+	if (volt && (voltage > volt->max_voltage || voltage < volt->min_voltage))
+		return -EINVAL;
+
+	if (volt && volt->boost_max_voltage && (voltage > volt->boost_max_voltage))
+		return -EINVAL;
 
 	cstate = kzalloc(sizeof(*cstate), GFP_KERNEL);
 	if (!cstate)
@@ -159,6 +169,12 @@ nvkm_cstate_new(struct nvkm_clk *clk, int idx, struct nvkm_pstate *pstate)
 		if (domain->flags & NVKM_CLK_DOM_FLAG_CORE) {
 			u32 freq = nvkm_clk_adjust(clk, true, pstate->pstate,
 						   domain->bios, cstepX.freq);
+			if (domain->flags & NVKM_CLK_DOM_FLAG_BASE_CLOCK_CORE) {
+				if (clk->boost_mode == 1 && freq > clk->base_clock)
+					goto err;
+				if (clk->boost_mode == 2 && freq > clk->boost_clock)
+					goto err;
+			}
 			cstate->domain[domain->name] = freq;
 		}
 		domain++;
@@ -166,6 +182,9 @@ nvkm_cstate_new(struct nvkm_clk *clk, int idx, struct nvkm_pstate *pstate)
 
 	list_add(&cstate->head, &pstate->list);
 	return 0;
+err:
+	kfree(cstate);
+	return -EINVAL;
 }
 
 /******************************************************************************
@@ -356,7 +375,7 @@ nvkm_pstate_new(struct nvkm_clk *clk, int idx)
 	}
 
 	data = nvbios_cstepEm(bios, pstate->pstate, &ver, &hdr, &cstepE);
-	if (data) {
+	if (data && clk->boost_mode > 0) {
 		int idx = cstepE.index;
 		do {
 			nvkm_cstate_new(clk, idx, pstate);
@@ -556,10 +575,30 @@ int
 nvkm_clk_ctor(const struct nvkm_clk_func *func, struct nvkm_device *device,
 	      int index, bool allow_reclock, struct nvkm_clk *clk)
 {
+	struct nvkm_bios *bios;
 	int ret, idx, arglen;
 	const char *mode;
+	struct nvbios_baseclock_header header;
 
 	nvkm_subdev_ctor(&nvkm_clk, device, index, 0, &clk->subdev);
+	bios = device->bios;
+
+	clk->boost_mode = 0;
+	if (bios && !nvbios_baseclock_parse(bios, &header)) {
+		struct nvbios_baseclock_entry base_entry, boost_entry;
+		if (nvbios_baseclock_get_entry(bios, &header, header.base_entry, &base_entry))
+			nvkm_error(&clk->subdev, "couldn't parse base clock\n");
+		else if (nvbios_baseclock_get_entry(bios, &header, header.boost_entry, &boost_entry))
+			nvkm_error(&clk->subdev, "couldn't parse boost clock\n");
+		else {
+			clk->boost_mode = nvkm_longopt(device->cfgopt, "NvBoost", 1);
+			clk->base_clock = base_entry.clock_mhz * 1000;
+			clk->boost_clock = boost_entry.clock_mhz * 1000;
+			nvkm_info(&clk->subdev, "base: %i MHz, boost: %i MHz\n",
+				base_entry.clock_mhz / 2, boost_entry.clock_mhz / 2);
+		}
+	}
+
 	clk->func = func;
 	INIT_LIST_HEAD(&clk->states);
 	clk->domains = func->domains;
