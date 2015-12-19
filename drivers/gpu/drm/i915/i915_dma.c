@@ -151,7 +151,7 @@ static int i915_getparam(struct drm_device *dev, void *data,
 		value = 1;
 		break;
 	case I915_PARAM_MMAP_VERSION:
-		value = 1;
+		value = 0;
 		break;
 	case I915_PARAM_SUBSLICE_TOTAL:
 		value = INTEL_INFO(dev)->subslice_total;

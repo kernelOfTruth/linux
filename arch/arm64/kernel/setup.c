@@ -579,3 +579,22 @@ const struct seq_operations cpuinfo_op = {
 	.stop	= c_stop,
 	.show	= c_show
 };
+
+/*
+ * Temporary hack to avoid need for console= on command line
+ */
+static int __init arm64_console_setup(void)
+{
+	/* Allow cmdline to override our assumed preferences */
+	if (console_set_on_cmdline)
+		return 0;
+
+	if (IS_ENABLED(CONFIG_SERIAL_AMBA_PL011))
+		add_preferred_console("ttyAMA", 0, "115200");
+
+	if (IS_ENABLED(CONFIG_SERIAL_8250))
+		add_preferred_console("ttyS", 0, "115200");
+
+	return 0;
+}
+early_initcall(arm64_console_setup);
