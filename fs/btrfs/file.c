@@ -1876,13 +1876,8 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	struct btrfs_log_ctx ctx;
 	int ret = 0;
 	bool full_sync = 0;
-	u64 len;
+	const u64 len = end - start + 1;
 
-	/*
-	 * The range length can be represented by u64, we have to do the typecasts
-	 * to avoid signed overflow if it's [0, LLONG_MAX] eg. from fsync()
-	 */
-	len = (u64)end - (u64)start + 1;
 	trace_btrfs_sync_file(file, datasync);
 
 	/*
@@ -2070,7 +2065,8 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 			}
 		}
 		if (!full_sync) {
-			ret = btrfs_wait_ordered_range(inode, start, len);
+			ret = btrfs_wait_ordered_range(inode, start,
+						       end - start + 1);
 			if (ret) {
 				btrfs_end_transaction(trans, root);
 				goto out;
