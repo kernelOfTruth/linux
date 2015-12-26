@@ -6231,7 +6231,6 @@ static void tasks_cpu_hotplug(int cpu)
 	if (cpu == 0)
 		return;
 
-	read_lock(&tasklist_lock);
 	do_each_thread(t, p) {
 		if (cpumask_test_cpu(cpu, &p->cpus_allowed_master)) {
 			count++;
@@ -6242,7 +6241,6 @@ static void tasks_cpu_hotplug(int cpu)
 			cpumask_set_cpu(0, tsk_cpus_allowed(p));
 		}
 	} while_each_thread(t, p);
-	read_unlock(&tasklist_lock);
 
 	if (count) {
 		printk(KERN_INFO "Renew affinity for %d processes to cpu %d\n",
@@ -6270,6 +6268,7 @@ migration_call(struct notifier_block *nfb, unsigned long action, void *hcpu)
 
 	case CPU_ONLINE:
 		/* Update our root-domain */
+		read_lock(&tasklist_lock);
 		rq_grq_lock_irqsave(rq, &flags);
 		if (rq->rd) {
 			BUG_ON(!cpumask_test_cpu(cpu, rq->rd->span));
@@ -6283,6 +6282,7 @@ migration_call(struct notifier_block *nfb, unsigned long action, void *hcpu)
 		cpumask_set_cpu(cpu, &grq.cpu_idle_map);
 
 		rq_grq_unlock_irqrestore(rq, &flags);
+		read_unlock(&tasklist_lock);
 		break;
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -6295,6 +6295,7 @@ migration_call(struct notifier_block *nfb, unsigned long action, void *hcpu)
 
 	case CPU_DYING:
 		/* Update our root-domain */
+		read_lock(&tasklist_lock);
 		rq_grq_lock_irqsave(rq, &flags);
 		if (rq->rd) {
 			BUG_ON(!cpumask_test_cpu(cpu, rq->rd->span));
@@ -6310,6 +6311,7 @@ migration_call(struct notifier_block *nfb, unsigned long action, void *hcpu)
 		grq.noc = num_online_cpus();
 		cpumask_clear_cpu(cpu, &grq.cpu_idle_map);
 		rq_grq_unlock_irqrestore(rq, &flags);
+		read_unlock(&tasklist_lock);
 		break;
 #endif
 	}
