@@ -756,16 +756,8 @@ next_slot:
 		}
 
 		btrfs_item_key_to_cpu(leaf, &key, path->slots[0]);
-
-		if (key.objectid > ino)
-			break;
-		if (WARN_ON_ONCE(key.objectid < ino) ||
-		    key.type < BTRFS_EXTENT_DATA_KEY) {
-			ASSERT(del_nr == 0);
-			path->slots[0]++;
-			goto next_slot;
-		}
-		if (key.type > BTRFS_EXTENT_DATA_KEY || key.offset >= end)
+		if (key.objectid > ino ||
+		    key.type > BTRFS_EXTENT_DATA_KEY || key.offset >= end)
 			break;
 
 		fi = btrfs_item_ptr(leaf, path->slots[0],
@@ -784,8 +776,8 @@ next_slot:
 				btrfs_file_extent_inline_len(leaf,
 						     path->slots[0], fi);
 		} else {
-			/* can't happen */
-			BUG();
+			WARN_ON(1);
+			extent_end = search_start;
 		}
 
 		/*
@@ -855,7 +847,7 @@ next_slot:
 						disk_bytenr, num_bytes, 0,
 						root->root_key.objectid,
 						new_key.objectid,
-						start - extent_offset);
+						start - extent_offset, 1);
 				BUG_ON(ret); /* -ENOMEM */
 			}
 			key.offset = start;
@@ -933,7 +925,7 @@ delete_extent_item:
 						disk_bytenr, num_bytes, 0,
 						root->root_key.objectid,
 						key.objectid, key.offset -
-						extent_offset);
+						extent_offset, 0);
 				BUG_ON(ret); /* -ENOMEM */
 				inode_sub_bytes(inode,
 						extent_end - key.offset);
@@ -1212,7 +1204,7 @@ again:
 
 		ret = btrfs_inc_extent_ref(trans, root, bytenr, num_bytes, 0,
 					   root->root_key.objectid,
-					   ino, orig_offset);
+					   ino, orig_offset, 1);
 		BUG_ON(ret); /* -ENOMEM */
 
 		if (split == start) {
@@ -1239,7 +1231,7 @@ again:
 		del_nr++;
 		ret = btrfs_free_extent(trans, root, bytenr, num_bytes,
 					0, root->root_key.objectid,
-					ino, orig_offset);
+					ino, orig_offset, 0);
 		BUG_ON(ret); /* -ENOMEM */
 	}
 	other_start = 0;
@@ -1256,7 +1248,7 @@ again:
 		del_nr++;
 		ret = btrfs_free_extent(trans, root, bytenr, num_bytes,
 					0, root->root_key.objectid,
-					ino, orig_offset);
+					ino, orig_offset, 0);
 		BUG_ON(ret); /* -ENOMEM */
 	}
 	if (del_nr == 0) {
@@ -1876,13 +1868,8 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	struct btrfs_log_ctx ctx;
 	int ret = 0;
 	bool full_sync = 0;
-	u64 len;
+	const u64 len = end - start + 1;
 
-	/*
-	 * The range length can be represented by u64, we have to do the typecasts
-	 * to avoid signed overflow if it's [0, LLONG_MAX] eg. from fsync()
-	 */
-	len = (u64)end - (u64)start + 1;
 	trace_btrfs_sync_file(file, datasync);
 
 	/*
@@ -2070,7 +2057,8 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 			}
 		}
 		if (!full_sync) {
-			ret = btrfs_wait_ordered_range(inode, start, len);
+			ret = btrfs_wait_ordered_range(inode, start,
+						       end - start + 1);
 			if (ret) {
 				btrfs_end_transaction(trans, root);
 				goto out;
