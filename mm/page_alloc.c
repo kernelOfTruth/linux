@@ -3013,6 +3013,13 @@ gfp_to_alloc_flags(gfp_t gfp_mask)
 				((current->flags & PF_MEMALLOC) ||
 				 unlikely(test_thread_flag(TIF_MEMDIE))))
 			alloc_flags |= ALLOC_NO_WATERMARKS;
+		/*
+		 * Favor kernel threads and dying threads like
+		 * shrink_inactive_list() and throttle_direct_reclaim().
+		 */
+		else if (!atomic && ((current->flags & PF_KTHREAD) ||
+				     fatal_signal_pending(current)))
+			alloc_flags |= ALLOC_HIGH;
 	}
 #ifdef CONFIG_CMA
 	if (gfpflags_to_migratetype(gfp_mask) == MIGRATE_MOVABLE)
