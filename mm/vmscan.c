@@ -1457,7 +1457,7 @@ static int too_many_isolated(struct zone *zone, int file,
 {
 	unsigned long inactive, isolated;
 
-	if (current_is_kswapd())
+	if (current->flags & PF_KTHREAD)
 		return 0;
 
 	if (!sane_reclaim(sc))
