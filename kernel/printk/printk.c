@@ -98,6 +98,10 @@ static atomic_t printing_tasks_spinning = ATOMIC_INIT(0);
  * CPUs.
  */
 #define PRINTING_TASKS 2
+/* Pointers to printing kthreads */
+static struct task_struct *printing_kthread[PRINTING_TASKS];
+/* Serialization of changes to printk_offload_chars and kthread creation */
+static DEFINE_MUTEX(printk_kthread_mutex);
 
 /* Wait queue printing kthreads sleep on when idle */
 static DECLARE_WAIT_QUEUE_HEAD(print_queue);
@@ -306,6 +310,13 @@ static u32 clear_idx;
 static char __log_buf[__LOG_BUF_LEN] __aligned(LOG_ALIGN);
 static char *log_buf = __log_buf;
 static u32 log_buf_len = __LOG_BUF_LEN;
+
+static int offload_chars_set(const char *val, const struct kernel_param *kp);
+static struct kernel_param_ops offload_chars_ops = {
+	.set = offload_chars_set,
+	.get = param_get_uint,
+};
+
 /*
  * How many characters can we print in one call of printk before asking
  * other cpus to continue printing. 0 means infinity. Tunable via
@@ -314,7 +325,7 @@ static u32 log_buf_len = __LOG_BUF_LEN;
  */
 static unsigned int __read_mostly printk_offload_chars = 1000;
 
-module_param_named(offload_chars, printk_offload_chars, uint,
+module_param_cb(offload_chars, &offload_chars_ops, &printk_offload_chars,
 		   S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(offload_chars, "offload printing to console to a different"
 	" cpu after this number of characters");
@@ -2782,11 +2793,60 @@ static int printing_task(void *arg)
 	return 0;
 }
 
+static int printk_start_offload_kthreads(void)
+{
+	int i;
+	struct task_struct *task;
+
+	/* Does handover of printing make any sense? */
+	if (printk_offload_chars == 0 || num_possible_cpus() <= 1)
+		return 0;
+	for (i = 0; i < PRINTING_TASKS; i++) {
+		if (printing_kthread[i])
+			continue;
+		task = kthread_run(printing_task, NULL, "print/%d", i);
+		if (IS_ERR(task))
+			goto out_err;
+		printing_kthread[i] = task;
+	}
+	return 0;
+out_err:
+	pr_err("printk: Cannot create printing thread: %ld\n", PTR_ERR(task));
+	/* Disable offloading if creating kthreads failed */
+	printk_offload_chars = 0;
+	return PTR_ERR(task);
+}
+
+static int offload_chars_set(const char *val, const struct kernel_param *kp)
+{
+	int ret;
+
+	/* Protect against parallel change of printk_offload_chars */
+	mutex_lock(&printk_kthread_mutex);
+	ret = param_set_uint(val, kp);
+	if (ret) {
+		mutex_unlock(&printk_kthread_mutex);
+		return ret;
+	}
+	ret = printk_start_offload_kthreads();
+	mutex_unlock(&printk_kthread_mutex);
+	return ret;
+}
+
+static void printk_offload_init(void)
+{
+	mutex_lock(&printk_kthread_mutex);
+	if (num_possible_cpus() <= 1) {
+		/* Offloading doesn't make sense. Disable print offloading. */
+		printk_offload_chars = 0;
+	} else
+		printk_start_offload_kthreads();
+	mutex_unlock(&printk_kthread_mutex);
+}
+
 static int __init printk_late_init(void)
 {
 	struct console *con;
-	int i;
-	struct task_struct *task;
 
 	for_each_console(con) {
 		if (!keep_bootcon && con->flags & CON_BOOT) {
@@ -2795,17 +2855,7 @@ static int __init printk_late_init(void)
 	}
 	hotcpu_notifier(console_cpu_notify, 0);
 
-	/* Does any handover of printing have any sence? */
-	if (num_possible_cpus() <= 1)
-		return 0;
-
-	for (i = 0; i < PRINTING_TASKS; i++) {
-		task = kthread_run(printing_task, NULL, "print/%d", i);
-		if (IS_ERR(task)) {
-			pr_err("printk: Cannot create printing thread: %ld\n",
-			       PTR_ERR(task));
-		}
-	}
+	printk_offload_init();
 
 	return 0;
 }
