@@ -89,8 +89,7 @@ static inline bool is_via_compact_memory(int order)
 
 static bool excess_migration_scan_limit(struct compact_control *cc)
 {
-	/* Disable scan limit for now */
-	return false;
+	return cc->migration_scan_limit < 0 ? true : false;
 }
 
 static void set_migration_scan_limit(struct compact_control *cc)
@@ -103,10 +102,7 @@ static void set_migration_scan_limit(struct compact_control *cc)
 	if (is_via_compact_memory(order))
 		return;
 
-	if (order < zone->compact_order_failed)
-		return;
-
-	if (!zone->compact_defer_shift)
+	if (!compaction_deferred(zone, order))
 		return;
 
 	/*
@@ -148,13 +144,10 @@ static void set_migration_scan_limit(struct compact_control *cc)
 static void defer_compaction(struct zone *zone, int order)
 {
 	if (order < zone->compact_order_failed) {
-		zone->compact_considered = 0;
 		zone->compact_defer_shift = 0;
 		zone->compact_order_failed = order;
-	} else {
-		zone->compact_considered = 0;
+	} else
 		zone->compact_defer_shift++;
-	}
 
 	if (zone->compact_defer_shift > COMPACT_MAX_DEFER_SHIFT)
 		zone->compact_defer_shift = COMPACT_MAX_DEFER_SHIFT;
@@ -162,19 +155,13 @@ static void defer_compaction(struct zone *zone, int order)
 	trace_mm_compaction_defer_compaction(zone, order);
 }
 
-/* Returns true if compaction should be skipped this time */
+/* Returns true if compaction is limited */
 bool compaction_deferred(struct zone *zone, int order)
 {
-	unsigned long defer_limit = 1UL << zone->compact_defer_shift;
-
 	if (order < zone->compact_order_failed)
 		return false;
 
-	/* Avoid possible overflow */
-	if (++zone->compact_considered > defer_limit)
-		zone->compact_considered = defer_limit;
-
-	if (zone->compact_considered >= defer_limit)
+	if (!zone->compact_defer_shift)
 		return false;
 
 	trace_mm_compaction_deferred(zone, order);
@@ -186,7 +173,6 @@ bool compaction_deferred(struct zone *zone, int order)
 static void compaction_defer_reset(struct zone *zone, int order)
 {
 	if (order >= zone->compact_order_failed) {
-		zone->compact_considered = 0;
 		zone->compact_defer_shift = 0;
 		zone->compact_order_failed = order + 1;
 	}
@@ -200,8 +186,7 @@ bool compaction_restarting(struct zone *zone, int order)
 	if (order < zone->compact_order_failed)
 		return false;
 
-	return zone->compact_defer_shift == COMPACT_MAX_DEFER_SHIFT &&
-		zone->compact_considered >= 1UL << zone->compact_defer_shift;
+	return zone->compact_defer_shift == COMPACT_MAX_DEFER_SHIFT;
 }
 
 /* Returns true if the pageblock should be scanned for pages to isolate. */
@@ -227,13 +212,18 @@ static void reset_cached_positions(struct zone *zone)
  * should be skipped for page isolation when the migrate and free page scanner
  * meet.
  */
-static void __reset_isolation_suitable(struct zone *zone)
+static void __reset_isolation_suitable(struct zone *zone, bool restart)
 {
 	unsigned long start_pfn = zone->zone_start_pfn;
 	unsigned long end_pfn = zone_end_pfn(zone);
 	unsigned long pfn;
 
 	zone->compact_blockskip_flush = false;
+
+	if (restart) {
+		/* To prevent restart at next compaction attempt */
+		zone->compact_defer_shift = COMPACT_MAX_DEFER_SHIFT - 1;
+	}
 
 	/* Walk the zone and mark every pageblock as suitable for isolation */
 	for (pfn = start_pfn; pfn < end_pfn; pfn += pageblock_nr_pages) {
@@ -265,7 +255,7 @@ void reset_isolation_suitable(pg_data_t *pgdat)
 
 		/* Only flush if a full compaction finished recently */
 		if (zone->compact_blockskip_flush)
-			__reset_isolation_suitable(zone);
+			__reset_isolation_suitable(zone, false);
 	}
 }
 
@@ -1395,7 +1385,7 @@ static int compact_zone(struct zone *zone, struct compact_control *cc)
 	 * is about to be retried after being deferred.
 	 */
 	if (compaction_restarting(zone, cc->order))
-		__reset_isolation_suitable(zone);
+		__reset_isolation_suitable(zone, true);
 
 	/*
 	 * Setup to move all movable pages to the end of the zone. Used cached
@@ -1587,9 +1577,6 @@ unsigned long try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
 		int status;
 		int zone_contended;
 
-		if (compaction_deferred(zone, order))
-			continue;
-
 		status = compact_zone_order(zone, order, gfp_mask, mode,
 				&zone_contended, alloc_flags,
 				ac->classzone_idx);
@@ -1685,11 +1672,9 @@ static void __compact_pgdat(pg_data_t *pgdat, struct compact_control *cc)
 		 * cached scanner positions.
 		 */
 		if (is_via_compact_memory(cc->order))
-			__reset_isolation_suitable(zone);
+			__reset_isolation_suitable(zone, false);
 
-		if (is_via_compact_memory(cc->order) ||
-				!compaction_deferred(zone, cc->order))
-			compact_zone(zone, cc);
+		compact_zone(zone, cc);
 
 		VM_BUG_ON(!list_empty(&cc->freepages));
 		VM_BUG_ON(!list_empty(&cc->migratepages));

@@ -305,7 +305,6 @@ DECLARE_EVENT_CLASS(mm_compaction_defer_template,
 		__field(int, nid)
 		__field(enum zone_type, idx)
 		__field(int, order)
-		__field(unsigned int, considered)
 		__field(unsigned int, defer_shift)
 		__field(int, order_failed)
 	),
@@ -314,18 +313,16 @@ DECLARE_EVENT_CLASS(mm_compaction_defer_template,
 		__entry->nid = zone_to_nid(zone);
 		__entry->idx = zone_idx(zone);
 		__entry->order = order;
-		__entry->considered = zone->compact_considered;
 		__entry->defer_shift = zone->compact_defer_shift;
 		__entry->order_failed = zone->compact_order_failed;
 	),
 
-	TP_printk("node=%d zone=%-8s order=%d order_failed=%d consider=%u limit=%lu",
+	TP_printk("node=%d zone=%-8s order=%d order_failed=%d defer=%u",
 		__entry->nid,
 		__print_symbolic(__entry->idx, ZONE_TYPE),
 		__entry->order,
 		__entry->order_failed,
-		__entry->considered,
-		1UL << __entry->defer_shift)
+		__entry->defer_shift)
 );
 
 DEFINE_EVENT(mm_compaction_defer_template, mm_compaction_deferred,
