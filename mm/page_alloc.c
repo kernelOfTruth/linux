@@ -62,6 +62,7 @@
 #include <linux/sched/rt.h>
 #include <linux/page_owner.h>
 #include <linux/kthread.h>
+#include <linux/console.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -3247,6 +3248,257 @@ got_pg:
 	return page;
 }
 
+#ifdef CONFIG_MEMALLOC_WATCHDOG
+
+static unsigned long kmallocwd_timeout = 10 * HZ; /* Default scan interval. */
+static struct memalloc_info memalloc; /* Filled by is_stalling_task(). */
+
+/**
+ * is_stalling_task - Check and copy a task's memalloc variable.
+ *
+ * @task:   A task to check.
+ * @expire: Timeout in jiffies.
+ *
+ * Returns true if a task is stalling, false otherwise.
+ */
+static bool is_stalling_task(const struct task_struct *task,
+			     const unsigned long expire)
+{
+	const struct memalloc_info *m = &task->memalloc;
+
+	/*
+	 * If start_memalloc_timer() is updating "struct memalloc_info" now,
+	 * we can ignore it because timeout jiffies cannot be expired as soon
+	 * as updating it completes.
+	 */
+	if (!m->valid || (m->sequence & 1))
+		return false;
+	smp_rmb(); /* Block start_memalloc_timer(). */
+	memalloc.start = m->start;
+	memalloc.order = m->order;
+	memalloc.gfp = m->gfp;
+	smp_rmb(); /* Unblock start_memalloc_timer(). */
+	memalloc.sequence = m->sequence;
+	/*
+	 * If start_memalloc_timer() started updating it while we read it,
+	 * we can ignore it for the same reason.
+	 */
+	if (!m->valid || (memalloc.sequence & 1))
+		return false;
+	/* This is a valid "struct memalloc_info". Check for timeout. */
+	return time_after_eq(expire, memalloc.start);
+}
+
+/*
+ * kmallocwd - A kernel thread for monitoring memory allocation stalls.
+ *
+ * @unused: Not used.
+ *
+ * This kernel thread does not terminate.
+ */
+static int kmallocwd(void *unused)
+{
+	char buf[128];
+	struct task_struct *g, *p;
+	unsigned long now;
+	unsigned long expire;
+	unsigned int sigkill_pending;
+	unsigned int memdie_pending;
+	unsigned int stalling_tasks;
+
+ restart:
+	/* Sleep until stalled tasks are found. */
+	while (1) {
+		/*
+		 * If memory allocations are not stalling, the value of t after
+		 * this for_each_process_thread() loop should remain close to
+		 * kmallocwd_timeout. Also, we sleep for kmallocwd_timeout
+		 * before retrying if memory allocations are stalling.
+		 * Therefore, this while() loop won't waste too much CPU cycles
+		 * due to sleeping for too short period.
+		 */
+		long t = kmallocwd_timeout;
+		const unsigned long delta = t - jiffies;
+		/*
+		 * We might see outdated values in "struct memalloc_info" here.
+		 * We will recheck later using is_stalling_task().
+		 */
+		preempt_disable();
+		rcu_read_lock();
+		for_each_process_thread(g, p) {
+			if (likely(!p->memalloc.valid))
+				continue;
+			t = min_t(long, t, p->memalloc.start + delta);
+			if (unlikely(t <= 0))
+				goto stalling;
+		}
+		rcu_read_unlock();
+		preempt_enable();
+		schedule_timeout_interruptible(t);
+	}
+ stalling:
+	rcu_read_unlock();
+	preempt_enable();
+	cond_resched();
+	now = jiffies;
+	/*
+	 * Report tasks that stalled for more than half of timeout duration
+	 * because such tasks might be correlated with tasks that already
+	 * stalled for full timeout duration.
+	 */
+	expire = now - kmallocwd_timeout / 2;
+	/* Count stalling tasks, dying and victim tasks. */
+	sigkill_pending = 0;
+	memdie_pending = 0;
+	stalling_tasks = 0;
+	preempt_disable();
+	rcu_read_lock();
+	for_each_process_thread(g, p) {
+		u8 type = 0;
+
+		if (test_tsk_thread_flag(p, TIF_MEMDIE)) {
+			type |= 1;
+			memdie_pending++;
+		}
+		if (fatal_signal_pending(p)) {
+			type |= 2;
+			sigkill_pending++;
+		}
+		if (is_stalling_task(p, expire)) {
+			type |= 4;
+			stalling_tasks++;
+		}
+		p->memalloc.type = type;
+	}
+	rcu_read_unlock();
+	preempt_enable();
+	if (!stalling_tasks)
+		goto restart;
+	/* Report stalling tasks, dying and victim tasks. */
+	pr_warn("MemAlloc-Info: %u stalling task, %u dying task, %u victim task.\n",
+		stalling_tasks, sigkill_pending, memdie_pending);
+	cond_resched();
+	preempt_disable();
+	rcu_read_lock();
+ restart_report:
+	for_each_process_thread(g, p) {
+		bool can_cont;
+		u8 type = p->memalloc.type;
+
+		if (likely(!type))
+			continue;
+		p->memalloc.type = 0;
+		buf[0] = '\0';
+		/*
+		 * Recheck stalling tasks in case they called
+		 * stop_memalloc_timer() meanwhile.
+		 */
+		if (type & 4) {
+			if (is_stalling_task(p, expire)) {
+				snprintf(buf, sizeof(buf),
+					 " seq=%u gfp=0x%x order=%u delay=%lu",
+					 memalloc.sequence >> 1, memalloc.gfp,
+					 memalloc.order, now - memalloc.start);
+			} else {
+				type &= ~4;
+				if (!type)
+					continue;
+			}
+		}
+		/*
+		 * Victim tasks get pending SIGKILL removed before arriving at
+		 * do_exit(). Therefore, print " exiting" instead for " dying".
+		 */
+		pr_warn("MemAlloc: %s(%u)%s%s%s%s%s\n", p->comm, p->pid, buf,
+			(p->state & TASK_UNINTERRUPTIBLE) ?
+			" uninterruptible" : "",
+			(p->flags & PF_EXITING) ? " exiting" : "",
+			(type & 2) ? " dying" : "",
+			(type & 1) ? " victim" : "");
+		sched_show_task(p);
+		debug_show_held_locks(p);
+		/*
+		 * Since there could be thousands of tasks to report, we always
+		 * sleep and try to flush printk() buffer after each report, in
+		 * order to avoid RCU stalls and reduce possibility of messages
+		 * being dropped by continuous printk() flood.
+		 *
+		 * Since not yet reported tasks have p->memalloc.type > 0, we
+		 * can simply restart this loop in case "g" or "p" went away.
+		 */
+		get_task_struct(g);
+		get_task_struct(p);
+		rcu_read_unlock();
+		preempt_enable();
+		schedule_timeout_interruptible(1);
+		console_lock();
+		console_unlock();
+		preempt_disable();
+		rcu_read_lock();
+		can_cont = pid_alive(g) && pid_alive(p);
+		put_task_struct(p);
+		put_task_struct(g);
+		if (!can_cont)
+			goto restart_report;
+	}
+	rcu_read_unlock();
+	preempt_enable();
+	cond_resched();
+	/* Show memory information. (SysRq-m) */
+	show_mem(0);
+	/* Sleep until next timeout duration. */
+	schedule_timeout_interruptible(kmallocwd_timeout);
+	goto restart;
+	return 0; /* To suppress "no return statement" compiler warning. */
+}
+
+static int __init start_kmallocwd(void)
+{
+	if (kmallocwd_timeout)
+		kthread_run(kmallocwd, NULL, "kmallocwd");
+	return 0;
+}
+late_initcall(start_kmallocwd);
+
+static int __init kmallocwd_config(char *str)
+{
+	if (kstrtoul(str, 10, &kmallocwd_timeout) == 0)
+		kmallocwd_timeout = min(kmallocwd_timeout * HZ,
+					(unsigned long) LONG_MAX);
+	return 0;
+}
+__setup("kmallocwd=", kmallocwd_config);
+
+static void start_memalloc_timer(const gfp_t gfp_mask, const int order)
+{
+	struct memalloc_info *m = &current->memalloc;
+
+	/* We don't check for stalls for !__GFP_RECLAIM allocations. */
+	if (!(gfp_mask & __GFP_RECLAIM))
+		return;
+	/* We don't check for stalls for nested __GFP_RECLAIM allocations */
+	if (!m->valid) {
+		m->sequence++;
+		smp_wmb(); /* Block is_stalling_task(). */
+		m->start = jiffies;
+		m->order = order;
+		m->gfp = gfp_mask;
+		smp_wmb(); /* Unblock is_stalling_task(). */
+		m->sequence++;
+	}
+	m->valid++;
+}
+
+static void stop_memalloc_timer(const gfp_t gfp_mask)
+{
+	if (gfp_mask & __GFP_RECLAIM)
+		current->memalloc.valid--;
+}
+#else
+#define start_memalloc_timer(gfp_mask, order) do { } while (0)
+#define stop_memalloc_timer(gfp_mask) do { } while (0)
+#endif
+
 /*
  * This is the 'heart' of the zoned buddy allocator.
  */
@@ -3314,7 +3566,9 @@ retry_cpuset:
 		alloc_mask = memalloc_noio_flags(gfp_mask);
 		ac.spread_dirty_pages = false;
 
+		start_memalloc_timer(alloc_mask, order);
 		page = __alloc_pages_slowpath(alloc_mask, order, &ac);
+		stop_memalloc_timer(alloc_mask);
 	}
 
 	if (kmemcheck_enabled && page)
