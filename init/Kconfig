@@ -1456,6 +1456,20 @@ config PRINTK
 	  very difficult to diagnose system problems, saying N here is
 	  strongly discouraged.
 
+config PRINTK_OFFLOAD
+	default n
+	bool "Enable support for offloading printing to different CPU"
+	depends on PRINTK && SMP
+	help
+	  Printing to console can be relatively slow especially in case of
+	  serial console. On large machines when there is intensive printing
+	  happening from several cpus (as is the case during boot), a cpu can
+	  be spending significant time (seconds or more) doing printing. To
+	  avoid softlockups, lost interrupts, and similar problems other cpus
+	  will take over printing after the currently printing cpu has printed
+	  certain number of characters (tunable via 'printk.offload_chars'
+	  kernel parameter).
+
 config BUG
 	bool "BUG() support" if EXPERT
 	default y
