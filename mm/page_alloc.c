@@ -3049,6 +3049,13 @@ static inline bool is_thp_gfp_mask(gfp_t gfp_mask)
 	return (gfp_mask & (GFP_TRANSHUGE | __GFP_KSWAPD_RECLAIM)) == GFP_TRANSHUGE;
 }
 
+/*
+ * Number of backoff steps for potentially reclaimable pages if the direct reclaim
+ * cannot make any progress. Each step will reduce 1/MAX_STALL_BACKOFF of the
+ * reclaimable memory.
+ */
+#define MAX_STALL_BACKOFF 16
+
 static inline struct page *
 __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 						struct alloc_context *ac)
@@ -3056,11 +3063,13 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	bool can_direct_reclaim = gfp_mask & __GFP_DIRECT_RECLAIM;
 	struct page *page = NULL;
 	int alloc_flags;
-	unsigned long pages_reclaimed = 0;
 	unsigned long did_some_progress;
 	enum migrate_mode migration_mode = MIGRATE_ASYNC;
 	bool deferred_compaction = false;
 	int contended_compaction = COMPACT_CONTENDED_NONE;
+	struct zone *zone;
+	struct zoneref *z;
+	int stall_backoff = 0;
 
 	/*
 	 * In the slowpath, we sanity check order to avoid ever trying to
@@ -3212,14 +3221,64 @@ retry:
 	if (gfp_mask & __GFP_NORETRY)
 		goto noretry;
 
-	/* Keep reclaiming pages as long as there is reasonable progress */
-	pages_reclaimed += did_some_progress;
-	if ((did_some_progress && order <= PAGE_ALLOC_COSTLY_ORDER) ||
-	    ((gfp_mask & __GFP_REPEAT) && pages_reclaimed < (1 << order))) {
-		/* Wait for some write requests to complete then retry */
-		wait_iff_congested(ac->preferred_zone, BLK_RW_ASYNC, HZ/50);
-		goto retry;
+	/*
+	 * Be optimistic and consider all pages on reclaimable LRUs + those
+	 * currently on writeback as usable but make sure we converge to
+	 * OOM if we cannot make any progress after multiple consecutive
+	 * attempts.
+	 */
+	if (did_some_progress)
+		stall_backoff = 0;
+	else
+		stall_backoff = min(stall_backoff+1, MAX_STALL_BACKOFF);
+
+	/*
+	 * Keep reclaiming pages while there is a chance this will lead somewhere.
+	 * If none of the target zones can satisfy our allocation request even
+	 * if all reclaimable pages are considered then we are screwed and have
+	 * to go OOM.
+	 */
+	for_each_zone_zonelist_nodemask(zone, z, ac->zonelist, ac->high_zoneidx, ac->nodemask) {
+		unsigned long free = zone_page_state(zone, NR_FREE_PAGES);
+		unsigned long writeback = zone_page_state(zone, NR_WRITEBACK);
+		unsigned long reclaimable;
+		unsigned long target;
+
+		reclaimable = zone_reclaimable_pages(zone) +
+			      zone_page_state(zone, NR_ISOLATED_FILE) +
+			      zone_page_state(zone, NR_ISOLATED_ANON);
+		target = reclaimable + writeback;
+		target -= stall_backoff * (1 + target/MAX_STALL_BACKOFF);
+		target += free;
+
+		/*
+		 * Would the allocation succeed if we reclaimed the whole target?
+		 * We might over-account here because some pages under writeback
+		 * might be on the LRU as well but that shouldn't confuse us too
+		 * much.
+		 */
+		if (__zone_watermark_ok(zone, order, min_wmark_pages(zone),
+				ac->high_zoneidx, alloc_flags, target)) {
+			unsigned long writeback = zone_page_state(zone, NR_WRITEBACK),
+				      dirty = zone_page_state(zone, NR_FILE_DIRTY);
+			if (did_some_progress)
+				goto retry;
+
+			/*
+			 * If we didn't make any progress and have a lot of
+			 * dirty + writeback pages then we should wait for
+			 * an IO to complete to slow down the reclaim and
+			 * prevent from pre mature OOM
+			 */
+			if (2*(writeback + dirty) > reclaimable)
+				congestion_wait(BLK_RW_ASYNC, HZ/10);
+			else
+				cond_resched();
+			goto retry;
+		}
 	}
+
+	/* TODO what about GFP_REPEAT */
 
 	/* Reclaim has failed us, start killing things */
 	page = __alloc_pages_may_oom(gfp_mask, order, ac, &did_some_progress);
@@ -3227,8 +3286,10 @@ retry:
 		goto got_pg;
 
 	/* Retry as long as the OOM killer is making progress */
-	if (did_some_progress)
+	if (did_some_progress) {
+		stall_backoff = 0;
 		goto retry;
+	}
 
 noretry:
 	/*
