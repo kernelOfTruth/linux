@@ -256,10 +256,9 @@ void reset_isolation_suitable(pg_data_t *pgdat)
  */
 static void update_pageblock_skip(struct compact_control *cc,
 			struct page *page, unsigned long nr_isolated,
-			bool migrate_scanner)
+			unsigned long pfn, bool migrate_scanner)
 {
 	struct zone *zone = cc->zone;
-	unsigned long pfn;
 
 	if (cc->ignore_skip_hint)
 		return;
@@ -271,8 +270,6 @@ static void update_pageblock_skip(struct compact_control *cc,
 		return;
 
 	set_pageblock_skip(page);
-
-	pfn = page_to_pfn(page);
 
 	/* Update where async and sync compaction should restart */
 	if (migrate_scanner) {
@@ -295,7 +292,7 @@ static inline bool isolation_suitable(struct compact_control *cc,
 
 static void update_pageblock_skip(struct compact_control *cc,
 			struct page *page, unsigned long nr_isolated,
-			bool migrate_scanner)
+			unsigned long pfn, bool migrate_scanner)
 {
 }
 #endif /* CONFIG_COMPACTION */
@@ -526,10 +523,6 @@ isolate_fail:
 
 	if (locked)
 		spin_unlock_irqrestore(&cc->zone->lock, flags);
-
-	/* Update the pageblock-skip if the whole pageblock was scanned */
-	if (blockpfn == end_pfn)
-		update_pageblock_skip(cc, valid_page, total_isolated, false);
 
 	count_compact_events(COMPACTFREE_SCANNED, nr_scanned);
 	if (total_isolated)
@@ -832,13 +825,6 @@ isolate_success:
 	if (locked)
 		spin_unlock_irqrestore(&zone->lru_lock, flags);
 
-	/*
-	 * Update the pageblock-skip information and cached scanner pfn,
-	 * if the whole pageblock was scanned without isolating any page.
-	 */
-	if (low_pfn == end_pfn)
-		update_pageblock_skip(cc, valid_page, nr_isolated, true);
-
 	trace_mm_compaction_isolate_migratepages(start_pfn, low_pfn,
 						nr_scanned, nr_isolated);
 
@@ -947,6 +933,7 @@ static void isolate_freepages(struct compact_control *cc)
 	unsigned long block_end_pfn;	/* end of current pageblock */
 	unsigned long low_pfn;	     /* lowest pfn scanner is able to scan */
 	struct list_head *freelist = &cc->freepages;
+	unsigned long nr_isolated;
 
 	/*
 	 * Initialise the free scanner. The starting point is where we last
@@ -998,8 +985,16 @@ static void isolate_freepages(struct compact_control *cc)
 			continue;
 
 		/* Found a block suitable for isolating free pages from. */
-		isolate_freepages_block(cc, &isolate_start_pfn,
+		nr_isolated = isolate_freepages_block(cc, &isolate_start_pfn,
 					block_end_pfn, freelist, false);
+
+		/*
+		 * Update the pageblock-skip if the whole pageblock
+		 * was scanned
+		 */
+		if (isolate_start_pfn == block_end_pfn)
+			update_pageblock_skip(cc, page, nr_isolated,
+				block_start_pfn - pageblock_nr_pages, false);
 
 		/*
 		 * If we isolated enough freepages, or aborted due to async
@@ -1170,6 +1165,14 @@ static isolate_migrate_t isolate_migratepages(struct zone *zone,
 		 */
 		if (cc->nr_migratepages && !cc->last_migrated_pfn)
 			cc->last_migrated_pfn = isolate_start_pfn;
+
+		/*
+		 * Update the pageblock-skip if the whole pageblock
+		 * was scanned without isolating any page.
+		 */
+		if (low_pfn == end_pfn)
+			update_pageblock_skip(cc, page, cc->nr_migratepages,
+						end_pfn, true);
 
 		/*
 		 * Either we isolated something and proceed with migration. Or
