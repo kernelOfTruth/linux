@@ -150,6 +150,17 @@ extern int console_trylock(void);
 extern void console_unlock(void);
 extern void console_conditional_schedule(void);
 extern void console_unblank(void);
+#ifdef CONFIG_SMP
+extern void printk_log_buf_drain(void);
+#else
+/*
+ * In non-SMP kernels there won't be much to drain so save some code for tiny
+ * kernels.
+ */
+static inline void printk_log_buf_drain(void)
+{
+}
+#endif
 extern struct tty_driver *console_device(int *);
 extern void console_stop(struct console *);
 extern void console_start(struct console *);
