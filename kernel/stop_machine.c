@@ -568,7 +568,7 @@ static int __stop_machine(cpu_stop_fn_t fn, void *data, const struct cpumask *cp
 	 * finish thus triggering NMI watchdog, RCU lockups etc. Wait for the
 	 * printing here to avoid these.
 	 */
-	printk_log_buf_drain();
+	printk_log_buf_drain(false);
 
 	/* Set the initial state and stop all online cpus. */
 	set_state(&msdata, MULTI_STOP_PREPARE);

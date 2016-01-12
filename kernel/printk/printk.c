@@ -2499,10 +2499,13 @@ struct tty_driver *console_device(int *index)
  * console. Note that as soon as this function returns, new messages may be
  * added to the printk buffer by other CPUs.
  */
-void printk_log_buf_drain(void)
+void printk_log_buf_drain(bool panic)
 {
 	bool retry;
 	unsigned long flags;
+
+	if (panic)
+		zap_locks();
 
 	while (1) {
 		raw_spin_lock_irqsave(&logbuf_lock, flags);

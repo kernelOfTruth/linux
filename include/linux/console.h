@@ -151,13 +151,13 @@ extern void console_unlock(void);
 extern void console_conditional_schedule(void);
 extern void console_unblank(void);
 #ifdef CONFIG_SMP
-extern void printk_log_buf_drain(void);
+extern void printk_log_buf_drain(bool panic);
 #else
 /*
  * In non-SMP kernels there won't be much to drain so save some code for tiny
  * kernels.
  */
-static inline void printk_log_buf_drain(void)
+static inline void printk_log_buf_drain(bool panic)
 {
 }
 #endif
