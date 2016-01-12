@@ -480,6 +480,13 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 #endif
 }
 
+static inline void vruntime_unnormalize(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	se->vruntime += cfs_rq->min_vruntime;
+	if (unlikely((s64)se->vruntime < 0))
+		se->vruntime = 0;
+}
+
 /*
  * Enqueue an entity into the rb-tree:
  */
@@ -3005,7 +3012,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 * through calling update_curr().
 	 */
 	if (!(flags & ENQUEUE_WAKEUP) || (flags & ENQUEUE_WAKING))
-		se->vruntime += cfs_rq->min_vruntime;
+		vruntime_unnormalize(cfs_rq, se);
 
 	/*
 	 * Update run-time statistics of the 'current'.
@@ -8022,7 +8029,7 @@ static void attach_task_cfs_rq(struct task_struct *p)
 	attach_entity_load_avg(cfs_rq, se);
 
 	if (!vruntime_normalized(p))
-		se->vruntime += cfs_rq->min_vruntime;
+		vruntime_unnormalize(cfs_rq, se);
 }
 
 static void switched_from_fair(struct rq *rq, struct task_struct *p)
