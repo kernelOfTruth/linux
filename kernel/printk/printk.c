@@ -101,8 +101,10 @@ static atomic_t printing_tasks_spinning = ATOMIC_INIT(0);
 #define PRINTING_TASKS 2
 /* Pointers to printing kthreads */
 static struct task_struct *printing_kthread[PRINTING_TASKS];
+/* Masks of cpus allowed for printing kthreads */
+static struct cpumask *printing_kthread_mask[PRINTING_TASKS];
 /* Serialization of changes to printk_offload_chars and kthread creation */
-static DEFINE_MUTEX(printk_kthread_mutex);
+static DEFINE_MUTEX(printing_kthread_mutex);
 
 /* Wait queue printing kthreads sleep on when idle */
 static DECLARE_WAIT_QUEUE_HEAD(print_queue);
@@ -2844,28 +2846,113 @@ static int printing_task(void *arg)
 	return 0;
 }
 
+/* Divide online cpus among printing kthreads */
+static void distribute_printing_kthreads(void)
+{
+	int i;
+	unsigned int cpus_per_thread;
+	unsigned int cpu, seen_cpu;
+
+	for (i = 0; i < PRINTING_TASKS; i++)
+		cpumask_clear(printing_kthread_mask[i]);
+
+	cpus_per_thread = DIV_ROUND_UP(num_online_cpus(), PRINTING_TASKS);
+	seen_cpu = 0;
+	for_each_online_cpu(cpu) {
+		cpumask_set_cpu(cpu,
+			printing_kthread_mask[seen_cpu / cpus_per_thread]);
+		seen_cpu++;
+	}
+
+	for (i = 0; i < PRINTING_TASKS; i++)
+		if (!cpumask_empty(printing_kthread_mask[i]))
+			set_cpus_allowed_ptr(printing_kthread[i],
+					     printing_kthread_mask[i]);
+}
+
+static int printing_kthread_cpu_notify(struct notifier_block *nfb,
+				       unsigned long action, void *hcpu)
+{
+	unsigned int cpu = (unsigned long)hcpu;
+	int i;
+
+	if (printk_offload_chars == 0)
+		goto out;
+
+	/* Get exclusion against turning of printk offload off... */
+	mutex_lock(&printing_kthread_mutex);
+	/* Now a reliable check if printk offload is enabled */
+	if (printk_offload_chars == 0) {
+		mutex_unlock(&printing_kthread_mutex);
+		goto out;
+	}
+
+	if (action == CPU_ONLINE) {
+		/*
+		 * Allow some task to use the CPU. We don't want to spend too
+		 * much time with fair distribution so just guess. We do a fair
+		 * redistribution if some task has no cpu to run on.
+		 */
+		i = cpu % PRINTING_TASKS;
+		cpumask_set_cpu(cpu, printing_kthread_mask[i]);
+		set_cpus_allowed_ptr(printing_kthread[i],
+				     printing_kthread_mask[i]);
+	}
+	if (action == CPU_DEAD) {
+
+		for (i = 0; i < PRINTING_TASKS; i++) {
+			if (cpumask_test_cpu(cpu, printing_kthread_mask[i])) {
+				cpumask_clear_cpu(cpu,
+						  printing_kthread_mask[i]);
+				if (cpumask_empty(printing_kthread_mask[i]))
+					distribute_printing_kthreads();
+				break;
+			}
+		}
+	}
+	mutex_unlock(&printing_kthread_mutex);
+out:
+	return NOTIFY_OK;
+}
+
 static int printk_start_offload_kthreads(void)
 {
 	int i;
 	struct task_struct *task;
+	int ret;
 
 	/* Does handover of printing make any sense? */
 	if (printk_offload_chars == 0 || num_possible_cpus() <= 1)
 		return 0;
+
 	for (i = 0; i < PRINTING_TASKS; i++) {
 		if (printing_kthread[i])
 			continue;
-		task = kthread_run(printing_task, NULL, "print/%d", i);
-		if (IS_ERR(task))
+		printing_kthread_mask[i] = kmalloc(cpumask_size(), GFP_KERNEL);
+		if (!printing_kthread_mask[i]) {
+			pr_err("printk: Cannot allocate cpumask for printing "
+			       "thread.\n");
+			ret = -ENOMEM;
 			goto out_err;
+		}
+		task = kthread_run(printing_task, NULL, "print/%d", i);
+		if (IS_ERR(task)) {
+			kfree(printing_kthread_mask[i]);
+			pr_err("printk: Cannot create printing thread: %ld\n",
+			       PTR_ERR(task));
+			ret = PTR_ERR(task);
+			goto out_err;
+		}
 		printing_kthread[i] = task;
 	}
+
+	hotcpu_notifier(printing_kthread_cpu_notify, 0);
+	distribute_printing_kthreads();
 	return 0;
 out_err:
-	pr_err("printk: Cannot create printing thread: %ld\n", PTR_ERR(task));
 	/* Disable offloading if creating kthreads failed */
 	printk_offload_chars = 0;
-	return PTR_ERR(task);
+	return ret;
 }
 
 static int offload_chars_set(const char *val, const struct kernel_param *kp)
@@ -2873,26 +2960,26 @@ static int offload_chars_set(const char *val, const struct kernel_param *kp)
 	int ret;
 
 	/* Protect against parallel change of printk_offload_chars */
-	mutex_lock(&printk_kthread_mutex);
+	mutex_lock(&printing_kthread_mutex);
 	ret = param_set_uint(val, kp);
 	if (ret) {
-		mutex_unlock(&printk_kthread_mutex);
+		mutex_unlock(&printing_kthread_mutex);
 		return ret;
 	}
 	ret = printk_start_offload_kthreads();
-	mutex_unlock(&printk_kthread_mutex);
+	mutex_unlock(&printing_kthread_mutex);
 	return ret;
 }
 
 static void printk_offload_init(void)
 {
-	mutex_lock(&printk_kthread_mutex);
+	mutex_lock(&printing_kthread_mutex);
 	if (num_possible_cpus() <= 1) {
 		/* Offloading doesn't make sense. Disable print offloading. */
 		printk_offload_chars = 0;
 	} else
 		printk_start_offload_kthreads();
-	mutex_unlock(&printk_kthread_mutex);
+	mutex_unlock(&printing_kthread_mutex);
 }
 
 #else	/* CONFIG_PRINTK_OFFLOAD */
