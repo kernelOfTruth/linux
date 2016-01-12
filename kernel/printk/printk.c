@@ -46,6 +46,7 @@
 #include <linux/utsname.h>
 #include <linux/ctype.h>
 #include <linux/uio.h>
+#include <linux/kthread.h>
 
 #include <asm/uaccess.h>
 
@@ -77,6 +78,29 @@ EXPORT_SYMBOL(oops_in_progress);
 static DEFINE_SEMAPHORE(console_sem);
 struct console *console_drivers;
 EXPORT_SYMBOL_GPL(console_drivers);
+
+/*
+ * This spinlock is taken when printing to console. It is used only so that
+ * we can spin on it when some other thread wants to take over printing to
+ * console.
+ */
+static DEFINE_SPINLOCK(print_lock);
+
+/*
+ * Number of printing threads spinning on print_lock. Can go away once
+ * spin_is_contended() is reliable.
+ */
+static atomic_t printing_tasks_spinning = ATOMIC_INIT(0);
+
+/*
+ * Number of kernel threads for offloading printing. We need at least two so
+ * that they can hand over printing from one to another one and thus switch
+ * CPUs.
+ */
+#define PRINTING_TASKS 2
+
+/* Wait queue printing kthreads sleep on when idle */
+static DECLARE_WAIT_QUEUE_HEAD(print_queue);
 
 #ifdef CONFIG_LOCKDEP
 static struct lockdep_map console_lock_dep_map = {
@@ -282,6 +306,18 @@ static u32 clear_idx;
 static char __log_buf[__LOG_BUF_LEN] __aligned(LOG_ALIGN);
 static char *log_buf = __log_buf;
 static u32 log_buf_len = __LOG_BUF_LEN;
+/*
+ * How many characters can we print in one call of printk before asking
+ * other cpus to continue printing. 0 means infinity. Tunable via
+ * printk.offload_chars kernel parameter. Our default 1000 means about
+ * 0.1s maximum latency due to printing.
+ */
+static unsigned int __read_mostly printk_offload_chars = 1000;
+
+module_param_named(offload_chars, printk_offload_chars, uint,
+		   S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(offload_chars, "offload printing to console to a different"
+	" cpu after this number of characters");
 
 /* Return log buffer address */
 char *log_buf_addr_get(void)
@@ -2212,15 +2248,41 @@ out:
 	raw_spin_unlock_irqrestore(&logbuf_lock, flags);
 }
 
+/*
+ * Returns true iff there is other cpu waiting to take over printing. This
+ * function also takes are of setting PRINTK_HANDOVER_B if we want to hand over
+ * printing to some other cpu.
+ */
+static bool cpu_stop_printing(int printed_chars)
+{
+	/* Oops? Print everything now to maximize chances user will see it */
+	if (oops_in_progress)
+		return false;
+	if (!printk_offload_chars || printed_chars < printk_offload_chars)
+		return false;
+	/*
+	 * Make sure we load fresh value of printing_tasks_spinning. Matches
+	 * the barrier in printing_task()
+	 */
+	smp_rmb();
+	if (atomic_read(&printing_tasks_spinning))
+		return true;
+	wake_up(&print_queue);
+
+	return false;
+}
+
 /**
  * console_unlock - unlock the console system
  *
  * Releases the console_lock which the caller holds on the console system
  * and the console driver list.
  *
- * While the console_lock was held, console output may have been buffered
- * by printk().  If this is the case, console_unlock(); emits
- * the output prior to releasing the lock.
+ * While the console_lock was held, console output may have been buffered by
+ * printk(). If this is the case, console_unlock() emits the output prior to
+ * releasing the lock. However we need not write all the data in the buffer if
+ * we would hog the CPU for too long. In such case we try to hand over printing
+ * to a different cpu.
  *
  * If there is output waiting, we wake /dev/kmsg and syslog() users.
  *
@@ -2234,6 +2296,8 @@ void console_unlock(void)
 	unsigned long flags;
 	bool wake_klogd = false;
 	bool retry;
+	bool hand_over = false;
+	int printed_chars = 0;
 
 	if (console_suspended) {
 		up_console_sem();
@@ -2245,13 +2309,20 @@ void console_unlock(void)
 	/* flush buffered message fragment immediately to console */
 	console_cont_flush(text, sizeof(text));
 again:
+	retry = false;
+	spin_lock_irqsave(&print_lock, flags);
 	for (;;) {
 		struct printk_log *msg;
 		size_t ext_len = 0;
 		size_t len;
 		int level;
 
-		raw_spin_lock_irqsave(&logbuf_lock, flags);
+		if (cpu_stop_printing(printed_chars)) {
+			hand_over = true;
+			break;
+		}
+
+		raw_spin_lock(&logbuf_lock);
 		if (seen_seq != log_next_seq) {
 			wake_klogd = true;
 			seen_seq = log_next_seq;
@@ -2269,8 +2340,10 @@ again:
 			len = 0;
 		}
 skip:
-		if (console_seq == log_next_seq)
+		if (console_seq == log_next_seq) {
+			raw_spin_unlock(&logbuf_lock);
 			break;
+		}
 
 		msg = log_from_idx(console_idx);
 		if (msg->flags & LOG_NOCONS) {
@@ -2310,28 +2383,38 @@ skip:
 		stop_critical_timings();	/* don't trace print latency */
 		call_console_drivers(level, ext_text, ext_len, text, len);
 		start_critical_timings();
-		local_irq_restore(flags);
+		printed_chars += len;
 	}
-	console_locked = 0;
 
 	/* Release the exclusive_console once it is used */
 	if (unlikely(exclusive_console))
 		exclusive_console = NULL;
 
-	raw_spin_unlock(&logbuf_lock);
-
+	console_locked = 0;
 	up_console_sem();
 
-	/*
-	 * Someone could have filled up the buffer again, so re-check if there's
-	 * something to flush. In case we cannot trylock the console_sem again,
-	 * there's a new owner and the console_unlock() from them will do the
-	 * flush, no worries.
-	 */
-	raw_spin_lock(&logbuf_lock);
-	retry = console_seq != log_next_seq;
-	raw_spin_unlock_irqrestore(&logbuf_lock, flags);
+	if (!hand_over) {
+		/*
+		 * Someone could have filled up the buffer again, so re-check
+		 * if there's something to flush. We perform the check under
+		 * print_lock to save one cli / sti pair in the fast path.
+		 */
+		raw_spin_lock(&logbuf_lock);
+		retry = console_seq != log_next_seq;
+		raw_spin_unlock(&logbuf_lock);
+	}
 
+	/*
+	 * Release print_lock after console_sem so that printing_task()
+	 * succeeds in getting console_sem (unless someone else takes it and
+	 * then he'll be responsible for printing).
+         */
+	spin_unlock_irqrestore(&print_lock, flags);
+
+	/*
+	 * In case we cannot trylock the console_sem again, there's a new owner
+	 * and the console_unlock() from them will do the flush, no worries.
+	 */
 	if (retry && console_trylock())
 		goto again;
 
@@ -2658,9 +2741,52 @@ int unregister_console(struct console *console)
 }
 EXPORT_SYMBOL(unregister_console);
 
+/* Kthread which takes over printing from a CPU which asks for help */
+static int printing_task(void *arg)
+{
+	unsigned long flags;
+	DEFINE_WAIT(wait);
+
+	while (1) {
+		prepare_to_wait_exclusive(&print_queue, &wait,
+					  TASK_INTERRUPTIBLE);
+		schedule();
+		finish_wait(&print_queue, &wait);
+		if (kthread_should_stop())
+			break;
+		/*
+		 * Disable preemption so that we do not get scheduled away from
+		 * the CPU after we get print_lock and before we are finished
+		 * with printing.
+		 */
+		preempt_disable();
+		atomic_inc(&printing_tasks_spinning);
+		/*
+		 * Store printing_tasks_spinning value before we spin. Matches
+		 * the barrier in cpu_stop_printing().
+		 */
+		smp_mb__after_atomic();
+		/*
+		 * Wait for currently printing thread to complete. We spin on
+		 * print_lock instead of waiting on console_sem since we don't
+		 * want to sleep once we got scheduled to make sure we take
+		 * over printing without depending on the scheduler.
+		 */
+		spin_lock_irqsave(&print_lock, flags);
+		atomic_dec(&printing_tasks_spinning);
+		spin_unlock_irqrestore(&print_lock, flags);
+		if (console_trylock())
+			console_unlock();
+		preempt_enable();
+	}
+	return 0;
+}
+
 static int __init printk_late_init(void)
 {
 	struct console *con;
+	int i;
+	struct task_struct *task;
 
 	for_each_console(con) {
 		if (!keep_bootcon && con->flags & CON_BOOT) {
@@ -2668,6 +2794,19 @@ static int __init printk_late_init(void)
 		}
 	}
 	hotcpu_notifier(console_cpu_notify, 0);
+
+	/* Does any handover of printing have any sence? */
+	if (num_possible_cpus() <= 1)
+		return 0;
+
+	for (i = 0; i < PRINTING_TASKS; i++) {
+		task = kthread_run(printing_task, NULL, "print/%d", i);
+		if (IS_ERR(task)) {
+			pr_err("printk: Cannot create printing thread: %ld\n",
+			       PTR_ERR(task));
+		}
+	}
+
 	return 0;
 }
 late_initcall(printk_late_init);
