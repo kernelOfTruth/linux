@@ -126,11 +126,14 @@ static struct page *pageblock_pfn_to_page(unsigned long start_pfn,
  */
 static void defer_compaction(struct zone *zone, int order)
 {
-	zone->compact_considered = 0;
-	zone->compact_defer_shift++;
-
-	if (order < zone->compact_order_failed)
+	if (order < zone->compact_order_failed) {
+		zone->compact_considered = 0;
+		zone->compact_defer_shift = 0;
 		zone->compact_order_failed = order;
+	} else {
+		zone->compact_considered = 0;
+		zone->compact_defer_shift++;
+	}
 
 	if (zone->compact_defer_shift > COMPACT_MAX_DEFER_SHIFT)
 		zone->compact_defer_shift = COMPACT_MAX_DEFER_SHIFT;
@@ -161,11 +164,11 @@ bool compaction_deferred(struct zone *zone, int order)
 /* Update defer tracking counters after successful compaction of given order */
 static void compaction_defer_reset(struct zone *zone, int order)
 {
-	zone->compact_considered = 0;
-	zone->compact_defer_shift = 0;
-
-	if (order >= zone->compact_order_failed)
+	if (order >= zone->compact_order_failed) {
+		zone->compact_considered = 0;
+		zone->compact_defer_shift = 0;
 		zone->compact_order_failed = order + 1;
+	}
 
 	trace_mm_compaction_defer_reset(zone, order);
 }
