@@ -1812,6 +1812,7 @@ struct task_struct {
 #ifdef CONFIG_DEBUG_ATOMIC_SLEEP
 	unsigned long	task_state_change;
 #endif
+	unsigned long	brute_expires;
 	int pagefault_disabled;
 /* CPU-specific state of this task */
 	struct thread_struct thread;
