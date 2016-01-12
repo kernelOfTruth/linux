@@ -1211,7 +1211,7 @@ static void task_numa_assign(struct task_numa_env *env,
 static bool load_too_imbalanced(long src_load, long dst_load,
 				struct task_numa_env *env)
 {
-	long imb, old_imb;
+	long imb1, imb2, orig_imb1, orig_imb2;
 	long orig_src_load, orig_dst_load;
 	long src_capacity, dst_capacity;
 
@@ -1225,31 +1225,33 @@ static bool load_too_imbalanced(long src_load, long dst_load,
 	src_capacity = env->src_stats.compute_capacity;
 	dst_capacity = env->dst_stats.compute_capacity;
 
-	/* We care about the slope of the imbalance, not the direction. */
-	if (dst_load < src_load)
-		swap(dst_load, src_load);
-
-	/* Is the difference below the threshold? */
-	imb = dst_load * src_capacity * 100 -
-	      src_load * dst_capacity * env->imbalance_pct;
-	if (imb <= 0)
+	/* Does the difference in either direction exceed the threshold? */
+	imb1 = dst_load * src_capacity * 100 -
+	       src_load * dst_capacity * env->imbalance_pct;
+	imb2 = src_load * dst_capacity * 100 -
+	       dst_load * src_capacity * env->imbalance_pct;
+	if (imb1 <= 0 && imb2 <= 0)
 		return false;
 
 	/*
-	 * The imbalance is above the allowed threshold.
-	 * Compare it with the old imbalance.
+	 * At least one imbalance is above the allowed threshold.
+	 * Compare it with the original imbalance.
 	 */
 	orig_src_load = env->src_stats.load;
 	orig_dst_load = env->dst_stats.load;
 
-	if (orig_dst_load < orig_src_load)
-		swap(orig_dst_load, orig_src_load);
-
-	old_imb = orig_dst_load * src_capacity * 100 -
-		  orig_src_load * dst_capacity * env->imbalance_pct;
+	orig_imb1 = orig_dst_load * src_capacity * 100 -
+		    orig_src_load * dst_capacity * env->imbalance_pct;
+	orig_imb2 = orig_src_load * dst_capacity * 100 -
+		    orig_dst_load * src_capacity * env->imbalance_pct;
 
 	/* Would this change make things worse? */
-	return (imb > old_imb);
+	if (imb1 > 0 && imb1 > orig_imb1)
+		return true;
+	if (imb2 > 0 && imb2 > orig_imb2)
+		return true;
+
+	return false;
 }
 
 /*
