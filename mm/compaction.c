@@ -158,18 +158,12 @@ bool compaction_deferred(struct zone *zone, int order)
 	return true;
 }
 
-/*
- * Update defer tracking counters after successful compaction of given order,
- * which means an allocation either succeeded (alloc_success == true) or is
- * expected to succeed.
- */
-void compaction_defer_reset(struct zone *zone, int order,
-		bool alloc_success)
+/* Update defer tracking counters after successful compaction of given order */
+static void compaction_defer_reset(struct zone *zone, int order)
 {
-	if (alloc_success) {
-		zone->compact_considered = 0;
-		zone->compact_defer_shift = 0;
-	}
+	zone->compact_considered = 0;
+	zone->compact_defer_shift = 0;
+
 	if (order >= zone->compact_order_failed)
 		zone->compact_order_failed = order + 1;
 
@@ -1568,13 +1562,8 @@ unsigned long try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
 		/* If a normal allocation would succeed, stop compacting */
 		if (zone_watermark_ok(zone, order, low_wmark_pages(zone),
 					ac->classzone_idx, alloc_flags)) {
-			/*
-			 * We think the allocation will succeed in this zone,
-			 * but it is not certain, hence the false. The caller
-			 * will repeat this with true if allocation indeed
-			 * succeeds in this zone.
-			 */
-			compaction_defer_reset(zone, order, false);
+			compaction_defer_reset(zone, order);
+
 			/*
 			 * It is possible that async compaction aborted due to
 			 * need_resched() and the watermarks were ok thanks to
@@ -1664,7 +1653,7 @@ static void __compact_pgdat(pg_data_t *pgdat, struct compact_control *cc)
 		if (cc->order > 0) {
 			if (zone_watermark_ok(zone, cc->order,
 						low_wmark_pages(zone), 0, 0))
-				compaction_defer_reset(zone, cc->order, false);
+				compaction_defer_reset(zone, cc->order);
 		}
 
 		VM_BUG_ON(!list_empty(&cc->freepages));

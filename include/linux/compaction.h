@@ -47,8 +47,6 @@ extern unsigned long compaction_suitable(struct zone *zone, int order,
 					int alloc_flags, int classzone_idx);
 
 extern bool compaction_deferred(struct zone *zone, int order);
-extern void compaction_defer_reset(struct zone *zone, int order,
-				bool alloc_success);
 extern bool compaction_restarting(struct zone *zone, int order);
 
 #else
