@@ -79,6 +79,7 @@ static DEFINE_SEMAPHORE(console_sem);
 struct console *console_drivers;
 EXPORT_SYMBOL_GPL(console_drivers);
 
+#ifdef CONFIG_PRINTK_OFFLOAD
 /*
  * This spinlock is taken when printing to console. It is used only so that
  * we can spin on it when some other thread wants to take over printing to
@@ -105,6 +106,7 @@ static DEFINE_MUTEX(printk_kthread_mutex);
 
 /* Wait queue printing kthreads sleep on when idle */
 static DECLARE_WAIT_QUEUE_HEAD(print_queue);
+#endif	/* CONFIG_PRINTK_OFFLOAD */
 
 #ifdef CONFIG_LOCKDEP
 static struct lockdep_map console_lock_dep_map = {
@@ -311,6 +313,7 @@ static char __log_buf[__LOG_BUF_LEN] __aligned(LOG_ALIGN);
 static char *log_buf = __log_buf;
 static u32 log_buf_len = __LOG_BUF_LEN;
 
+#ifdef CONFIG_PRINTK_OFFLOAD
 static int offload_chars_set(const char *val, const struct kernel_param *kp);
 static struct kernel_param_ops offload_chars_ops = {
 	.set = offload_chars_set,
@@ -329,6 +332,7 @@ module_param_cb(offload_chars, &offload_chars_ops, &printk_offload_chars,
 		   S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(offload_chars, "offload printing to console to a different"
 	" cpu after this number of characters");
+#endif
 
 /* Return log buffer address */
 char *log_buf_addr_get(void)
@@ -2259,6 +2263,7 @@ out:
 	raw_spin_unlock_irqrestore(&logbuf_lock, flags);
 }
 
+#ifdef CONFIG_PRINTK_OFFLOAD
 /*
  * Returns true iff there is other cpu waiting to take over printing. This
  * function also takes are of setting PRINTK_HANDOVER_B if we want to hand over
@@ -2282,6 +2287,23 @@ static bool cpu_stop_printing(int printed_chars)
 
 	return false;
 }
+
+#define spin_lock_print_lock(flags) spin_lock_irqsave(&print_lock, flags)
+
+#define spin_unlock_print_lock(flags) spin_unlock_irqrestore(&print_lock, flags)
+
+#else
+
+static bool cpu_stop_printing(int printed_chars)
+{
+	return false;
+}
+
+#define spin_lock_print_lock(flags) local_irq_save(flags)
+
+#define spin_unlock_print_lock(flags) local_irq_restore(flags)
+
+#endif
 
 /**
  * console_unlock - unlock the console system
@@ -2321,7 +2343,7 @@ void console_unlock(void)
 	console_cont_flush(text, sizeof(text));
 again:
 	retry = false;
-	spin_lock_irqsave(&print_lock, flags);
+	spin_lock_print_lock(flags);
 	for (;;) {
 		struct printk_log *msg;
 		size_t ext_len = 0;
@@ -2420,7 +2442,7 @@ skip:
 	 * succeeds in getting console_sem (unless someone else takes it and
 	 * then he'll be responsible for printing).
          */
-	spin_unlock_irqrestore(&print_lock, flags);
+	spin_unlock_print_lock(flags);
 
 	/*
 	 * In case we cannot trylock the console_sem again, there's a new owner
@@ -2780,6 +2802,7 @@ int unregister_console(struct console *console)
 }
 EXPORT_SYMBOL(unregister_console);
 
+#ifdef CONFIG_PRINTK_OFFLOAD
 /* Kthread which takes over printing from a CPU which asks for help */
 static int printing_task(void *arg)
 {
@@ -2871,6 +2894,14 @@ static void printk_offload_init(void)
 		printk_start_offload_kthreads();
 	mutex_unlock(&printk_kthread_mutex);
 }
+
+#else	/* CONFIG_PRINTK_OFFLOAD */
+
+static void printk_offload_init(void)
+{
+}
+
+#endif	/* CONFIG_PRINTK_OFFLOAD */
 
 static int __init printk_late_init(void)
 {
