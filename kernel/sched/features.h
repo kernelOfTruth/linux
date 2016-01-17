@@ -64,6 +64,20 @@ SCHED_FEAT(TTWU_QUEUE, true)
 SCHED_FEAT(RT_PUSH_IPI, true)
 #endif
 
+#if defined(CONFIG_SMP) && defined(CONFIG_FAIR_GROUP_SCHED)
+/*
+ * With SMP_FAIR_GROUPS set, activity group wide determines share for
+ * all froup members.  This does very bad things to interactivity when
+ * a desktop box is heavily loaded.  Default to off when autogroup is
+ * enabled, and let all users set it to what works best for them.
+ */
+#ifndef CONFIG_SCHED_AUTOGROUP
+SCHED_FEAT(SMP_FAIR_GROUPS, true)
+#else
+SCHED_FEAT(SMP_FAIR_GROUPS, false)
+#endif
+#endif
+
 SCHED_FEAT(FORCE_SD_OVERLAP, false)
 SCHED_FEAT(RT_RUNTIME_SHARE, true)
 SCHED_FEAT(LB_MIN, false)
