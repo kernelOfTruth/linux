@@ -321,6 +321,17 @@ static struct task_struct *select_bad_process(struct oom_control *oc,
 		case OOM_SCAN_OK:
 			break;
 		};
+
+		/*
+		 * If we are doing sysrq+f then it doesn't make any sense to
+		 * check OOM victim or killed task because it might be stuck
+		 * and unable to terminate while the forced OOM might be the
+		 * only option left to get the system back to work.
+		 */
+		if (is_sysrq_oom(oc) && (test_tsk_thread_flag(p, TIF_MEMDIE) ||
+				fatal_signal_pending(p)))
+			continue;
+
 		points = oom_badness(p, NULL, oc->nodemask, totalpages);
 		if (!points || points < chosen_points)
 			continue;
