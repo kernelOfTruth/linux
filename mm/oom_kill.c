@@ -563,8 +563,16 @@ try_to_sacrifice_child(struct oom_control *oc, struct task_struct *victim,
 	if (!child_victim)
 		goto out;
 
-	put_task_struct(victim);
-	victim = child_victim;
+	/*
+	 * Protecting the parent makes sense only if killing the child
+	 * would release at least some memory (at least 1MB).
+	 */
+	if (K(victim_points) >= 1024) {
+		put_task_struct(victim);
+		victim = child_victim;
+	} else {
+		put_task_struct(child_victim);
+	}
 
 out:
 	return victim;
