@@ -694,3 +694,13 @@ config ZONE_DEVICE
 
 config FRAME_VECTOR
 	bool
+
+config MEMALLOC_WATCHDOG
+	bool "Memory allocation stalling watchdog"
+	default n
+	help
+	  This option emits warning messages and traces when memory
+	  allocation requests are stalling, in order to catch unexplained
+	  hangups/reboots caused by memory allocation stalls.
+
+	  See Documentation/malloc-watchdog.txt for more information.
