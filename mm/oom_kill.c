@@ -513,6 +513,63 @@ static bool process_shares_mm(struct task_struct *p, struct mm_struct *mm)
 }
 
 #define K(x) ((x) << (PAGE_SHIFT-10))
+
+/*
+ * If any of victim's children has a different mm and is eligible for kill,
+ * the one with the highest oom_badness() score is sacrificed for its
+ * parent.  This attempts to lose the minimal amount of work done while
+ * still freeing memory.
+ */
+static struct task_struct *
+try_to_sacrifice_child(struct oom_control *oc, struct task_struct *victim,
+		       unsigned long totalpages, struct mem_cgroup *memcg)
+{
+	struct task_struct *child_victim = NULL;
+	unsigned int victim_points = 0;
+	struct task_struct *t;
+
+	read_lock(&tasklist_lock);
+	for_each_thread(victim, t) {
+		struct task_struct *child;
+
+		list_for_each_entry(child, &t->children, sibling) {
+			unsigned int child_points;
+
+			/*
+			 * Skip over already OOM killed children as this hasn't
+			 * helped to resolve the situation obviously.
+			 */
+			if (test_tsk_thread_flag(child, TIF_MEMDIE) ||
+					fatal_signal_pending(child) ||
+					task_will_free_mem(child))
+				continue;
+
+			if (process_shares_mm(child, victim->mm))
+				continue;
+
+			child_points = oom_badness(child, memcg, oc->nodemask,
+								totalpages);
+			if (child_points > victim_points) {
+				if (child_victim)
+					put_task_struct(child_victim);
+				child_victim = child;
+				victim_points = child_points;
+				get_task_struct(child_victim);
+			}
+		}
+	}
+	read_unlock(&tasklist_lock);
+
+	if (!child_victim)
+		goto out;
+
+	put_task_struct(victim);
+	victim = child_victim;
+
+out:
+	return victim;
+}
+
 /*
  * Must be called while holding a reference to p, which will be released upon
  * returning.
@@ -522,10 +579,7 @@ void oom_kill_process(struct oom_control *oc, struct task_struct *p,
 		      struct mem_cgroup *memcg, const char *message)
 {
 	struct task_struct *victim = p;
-	struct task_struct *child;
-	struct task_struct *t;
 	struct mm_struct *mm;
-	unsigned int victim_points = 0;
 	static DEFINE_RATELIMIT_STATE(oom_rs, DEFAULT_RATELIMIT_INTERVAL,
 					      DEFAULT_RATELIMIT_BURST);
 
@@ -548,34 +602,7 @@ void oom_kill_process(struct oom_control *oc, struct task_struct *p,
 	pr_err("%s: Kill process %d (%s) score %u or sacrifice child\n",
 		message, task_pid_nr(p), p->comm, points);
 
-	/*
-	 * If any of p's children has a different mm and is eligible for kill,
-	 * the one with the highest oom_badness() score is sacrificed for its
-	 * parent.  This attempts to lose the minimal amount of work done while
-	 * still freeing memory.
-	 */
-	read_lock(&tasklist_lock);
-	for_each_thread(p, t) {
-		list_for_each_entry(child, &t->children, sibling) {
-			unsigned int child_points;
-
-			if (process_shares_mm(child, p->mm))
-				continue;
-			/*
-			 * oom_badness() returns 0 if the thread is unkillable
-			 */
-			child_points = oom_badness(child, memcg, oc->nodemask,
-								totalpages);
-			if (child_points > victim_points) {
-				put_task_struct(victim);
-				victim = child;
-				victim_points = child_points;
-				get_task_struct(victim);
-			}
-		}
-	}
-	read_unlock(&tasklist_lock);
-
+	victim = try_to_sacrifice_child(oc, victim, totalpages, memcg);
 	p = find_lock_task_mm(victim);
 	if (!p) {
 		put_task_struct(victim);
