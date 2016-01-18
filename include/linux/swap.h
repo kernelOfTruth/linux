@@ -154,8 +154,8 @@ enum {
 	SWP_SCANNING	= (1 << 10),	/* refcount in scan_swap_map */
 };
 
-#define SWAP_CLUSTER_MAX 32UL
-#define COMPACT_CLUSTER_MAX SWAP_CLUSTER_MAX
+#define SWAP_CLUSTER_MAX 256UL
+#define COMPACT_CLUSTER_MAX 32UL
 
 /*
  * Ratio between zone->managed_pages and the "gap" that above the per-zone
