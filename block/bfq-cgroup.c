@@ -733,6 +733,8 @@ static void bfq_pd_offline(struct blkg_policy_data *pd)
 	BUG_ON(!bfqg);
 	bfqd = bfqg->bfqd;
 	BUG_ON(!bfqd);
+	BUG_ON(!bfqd->root_group);
+
 	entity = bfqg->my_entity;
 
 	if (!entity) /* root group */
@@ -744,7 +746,7 @@ static void bfq_pd_offline(struct blkg_policy_data *pd)
 	 */
 	for (i = 0; i < BFQ_IOPRIO_CLASSES; i++) {
 		st = bfqg->sched_data.service_tree + i;
-
+		BUG_ON(!bfqg->sched_data.service_tree);
 		/*
 		 * The idle tree may still contain bfq_queues belonging
 		 * to exited task because they never migrated to a different
