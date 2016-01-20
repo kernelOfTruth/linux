@@ -398,12 +398,27 @@ static struct blkg_policy_data *bfq_pd_alloc(gfp_t gfp, int node)
 	if (!bfqg)
 		return NULL;
 
-	if (bfqg_stats_init(&bfqg->stats, gfp)) {
+	if (bfqg_stats_init(&bfqg->stats, gfp) ||
+	    bfqg_stats_init(&bfqg->dead_stats, gfp)) {
 		kfree(bfqg);
 		return NULL;
 	}
 
 	return &bfqg->pd;
+}
+
+static void bfq_group_set_parent(struct bfq_group *bfqg,
+					struct bfq_group *parent)
+{
+	struct bfq_entity *entity;
+
+	BUG_ON(!parent);
+	BUG_ON(!bfqg);
+	BUG_ON(bfqg == parent);
+
+	entity = &bfqg->entity;
+	entity->parent = parent->my_entity;
+	entity->sched_data = &parent->sched_data;
 }
 
 static void bfq_pd_init(struct blkg_policy_data *pd)
@@ -423,15 +438,16 @@ static void bfq_pd_init(struct blkg_policy_data *pd)
 	bfqg->bfqd = bfqd;
 	bfqg->active_entities = 0;
 	bfqg->rq_pos_tree = RB_ROOT;
-
-	/* if the root_group does not exist, we are handling it right now */
-	if (bfqd->root_group && bfqg != bfqd->root_group)
-		hlist_add_head(&bfqg->bfqd_node, &bfqd->group_list);
 }
 
 static void bfq_pd_free(struct blkg_policy_data *pd)
 {
-	return kfree(pd_to_bfqg(pd));
+	struct bfq_group *bfqg = pd_to_bfqg(pd);
+
+	bfqg_stats_exit(&bfqg->stats);
+	bfqg_stats_exit(&bfqg->dead_stats);
+
+	return kfree(bfqg);
 }
 
 /* offset delta from bfqg->stats to bfqg->dead_stats */
@@ -468,20 +484,6 @@ static void bfq_pd_reset_stats(struct blkg_policy_data *pd)
 
 	bfqg_stats_reset(&bfqg->stats);
 	bfqg_stats_reset(&bfqg->dead_stats);
-}
-
-static void bfq_group_set_parent(struct bfq_group *bfqg,
-					struct bfq_group *parent)
-{
-	struct bfq_entity *entity;
-
-	BUG_ON(!parent);
-	BUG_ON(!bfqg);
-	BUG_ON(bfqg == parent);
-
-	entity = &bfqg->entity;
-	entity->parent = parent->my_entity;
-	entity->sched_data = &parent->sched_data;
 }
 
 static struct bfq_group *bfq_find_alloc_group(struct bfq_data *bfqd,
@@ -732,8 +734,7 @@ static void bfq_pd_offline(struct blkg_policy_data *pd)
 	bfqg = pd_to_bfqg(pd);
 	BUG_ON(!bfqg);
 	bfqd = bfqg->bfqd;
-	BUG_ON(!bfqd);
-	BUG_ON(!bfqd->root_group);
+	BUG_ON(bfqd && !bfqd->root_group);
 
 	entity = bfqg->my_entity;
 
@@ -745,8 +746,8 @@ static void bfq_pd_offline(struct blkg_policy_data *pd)
 	 * deactivating the group itself.
 	 */
 	for (i = 0; i < BFQ_IOPRIO_CLASSES; i++) {
-		st = bfqg->sched_data.service_tree + i;
 		BUG_ON(!bfqg->sched_data.service_tree);
+		st = bfqg->sched_data.service_tree + i;
 		/*
 		 * The idle tree may still contain bfq_queues belonging
 		 * to exited task because they never migrated to a different
@@ -774,7 +775,6 @@ static void bfq_pd_offline(struct blkg_policy_data *pd)
 	BUG_ON(bfqg->sched_data.next_in_service);
 	BUG_ON(bfqg->sched_data.in_service_entity);
 
-	hlist_del(&bfqg->bfqd_node);
 	__bfq_deactivate_entity(entity, 0);
 	bfq_put_async_queues(bfqd, bfqg);
 	BUG_ON(entity->tree);
@@ -784,46 +784,14 @@ static void bfq_pd_offline(struct blkg_policy_data *pd)
 
 static void bfq_end_wr_async(struct bfq_data *bfqd)
 {
-	struct hlist_node *tmp;
-	struct bfq_group *bfqg;
+	struct blkcg_gq *blkg;
 
-	hlist_for_each_entry_safe(bfqg, tmp, &bfqd->group_list, bfqd_node)
+	list_for_each_entry(blkg, &bfqd->queue->blkg_list, q_node) {
+		struct bfq_group *bfqg = blkg_to_bfqg(blkg);
+
 		bfq_end_wr_async_queues(bfqd, bfqg);
-	bfq_end_wr_async_queues(bfqd, bfqd->root_group);
-}
-
-/**
- * bfq_disconnect_groups - disconnect @bfqd from all its groups.
- * @bfqd: the device descriptor being exited.
- *
- * When the device exits we just make sure that no lookup can return
- * the now unused group structures.  They will be deallocated on cgroup
- * destruction.
- */
-static void bfq_disconnect_groups(struct bfq_data *bfqd)
-{
-	struct hlist_node *tmp;
-	struct bfq_group *bfqg;
-
-	bfq_log(bfqd, "disconnect_groups beginning");
-	hlist_for_each_entry_safe(bfqg, tmp, &bfqd->group_list, bfqd_node) {
-		hlist_del(&bfqg->bfqd_node);
-
-		__bfq_deactivate_entity(bfqg->my_entity, 0);
-
-		/*
-		 * Don't remove from the group hash, just set an
-		 * invalid key.  No lookups can race with the
-		 * assignment as bfqd is being destroyed; this
-		 * implies also that new elements cannot be added
-		 * to the list.
-		 */
-		rcu_assign_pointer(bfqg->bfqd, NULL);
-
-		bfq_log(bfqd, "disconnect_groups: put async for group %p",
-			bfqg);
-		bfq_put_async_queues(bfqd, bfqg);
 	}
+	bfq_end_wr_async_queues(bfqd, bfqd->root_group);
 }
 
 static u64 bfqio_cgroup_weight_read(struct cgroup_subsys_state *css,

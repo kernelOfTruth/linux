@@ -1,5 +1,5 @@
 /*
- * BFQ-v7r10 for 4.4.0: data structures and common functions prototypes.
+ * BFQ-v7r11 for 4.4.0: data structures and common functions prototypes.
  *
  * Based on ideas and code from CFQ:
  * Copyright (C) 2003 Jens Axboe <axboe@kernel.dk>
@@ -421,7 +421,6 @@ enum bfq_device_speed {
  * @peak_rate_samples: number of samples used to calculate @peak_rate.
  * @bfq_max_budget: maximum budget allotted to a bfq_queue before
  *                  rescheduling.
- * @group_list: list of all the bfq_groups active on the device.
  * @active_list: list of all the bfq_queues active on the device.
  * @idle_list: list of all the bfq_queues idle on the device.
  * @bfq_fifo_expire: timeout for async/sync requests; when it expires
@@ -526,7 +525,6 @@ struct bfq_data {
 	u64 peak_rate;
 	int bfq_max_budget;
 
-	struct hlist_head group_list;
 	struct list_head active_list;
 	struct list_head idle_list;
 
@@ -702,8 +700,6 @@ struct bfq_group_data {
  * @entity: schedulable entity to insert into the parent group sched_data.
  * @sched_data: own sched_data, to contain child entities (they may be
  *              both bfq_queues and bfq_groups).
- * @bfqd_node: node to be inserted into the @bfqd->group_list list
- *             of the groups active on the same device; used for cleanup.
  * @bfqd: the bfq_data for the device this group acts upon.
  * @async_bfqq: array of async queues for all the tasks belonging to
  *              the group, one queue per ioprio value per ioprio_class,
@@ -736,8 +732,6 @@ struct bfq_group {
 
 	struct bfq_entity entity;
 	struct bfq_sched_data sched_data;
-
-	struct hlist_node bfqd_node;
 
 	void *bfqd;
 
