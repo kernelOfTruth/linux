@@ -3919,7 +3919,6 @@ static void bfq_exit_queue(struct elevator_queue *e)
 	list_for_each_entry_safe(bfqq, n, &bfqd->idle_list, bfqq_list)
 		bfq_deactivate_bfqq(bfqd, bfqq, 0);
 
-	bfq_disconnect_groups(bfqd);
 	spin_unlock_irq(q->queue_lock);
 
 	bfq_shutdown_timer_wq(bfqd);
@@ -3930,6 +3929,8 @@ static void bfq_exit_queue(struct elevator_queue *e)
 
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
 	blkcg_deactivate_policy(q, &blkcg_policy_bfq);
+#else
+	kfree(bfqd->root_group);
 #endif
 
 	kfree(bfqd);
@@ -4385,7 +4386,7 @@ static int __init bfq_init(void)
 	if (ret)
 		goto err_pol_unreg;
 
-	pr_info("BFQ I/O-scheduler: v7r10");
+	pr_info("BFQ I/O-scheduler: v7r11");
 
 	return 0;
 
