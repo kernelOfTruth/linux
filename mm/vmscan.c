@@ -2216,6 +2216,7 @@ static void shrink_lruvec(struct lruvec *lruvec, int swappiness,
 	while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
 					nr[LRU_INACTIVE_FILE]) {
 		unsigned long nr_anon, nr_file, percentage;
+		unsigned long percentage_anon, percentage_file;
 		unsigned long nr_scanned;
 
 		for_each_evictable_lru(lru) {
@@ -2250,16 +2251,17 @@ static void shrink_lruvec(struct lruvec *lruvec, int swappiness,
 		if (!nr_file || !nr_anon)
 			break;
 
-		if (nr_file > nr_anon) {
-			unsigned long scan_target = targets[LRU_INACTIVE_ANON] +
-						targets[LRU_ACTIVE_ANON] + 1;
+		percentage_anon = nr_anon * 100 / (targets[LRU_INACTIVE_ANON] +
+						targets[LRU_ACTIVE_ANON] + 1);
+		percentage_file = nr_file * 100 / (targets[LRU_INACTIVE_FILE] +
+						targets[LRU_ACTIVE_FILE] + 1);
+
+		if (percentage_file > percentage_anon) {
 			lru = LRU_BASE;
-			percentage = nr_anon * 100 / scan_target;
+			percentage = percentage_anon;
 		} else {
-			unsigned long scan_target = targets[LRU_INACTIVE_FILE] +
-						targets[LRU_ACTIVE_FILE] + 1;
 			lru = LRU_FILE;
-			percentage = nr_file * 100 / scan_target;
+			percentage = percentage_file;
 		}
 
 		/* Stop scanning the smaller of the LRU */
