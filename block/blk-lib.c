@@ -60,6 +60,13 @@ int blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 	granularity = max(q->limits.discard_granularity >> 9, 1U);
 	alignment = (bdev_discard_alignment(bdev) >> 9) % granularity;
 
+	if (q->limits.discard_granularity) {
+		unsigned int gran_sect = q->limits.discard_granularity >> 9;
+
+		if (sector % gran_sect || nr_sects % gran_sect)
+			return -EINVAL;
+	}
+
 	if (flags & BLKDEV_DISCARD_SECURE) {
 		if (!blk_queue_secdiscard(q))
 			return -EOPNOTSUPP;
