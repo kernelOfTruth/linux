@@ -1,0 +1,139 @@
+=========================================
+Memory allocation watchdog kernel thread.
+=========================================
+
+
+- What is it?
+
+This kernel thread resembles khungtaskd kernel thread, but this kernel
+thread is for warning that memory allocation requests are stalling, in
+order to catch unexplained hangups/reboots caused by memory allocation
+stalls.
+
+
+- Why need to use it?
+
+Currently, when something went wrong inside memory allocation request,
+the system will stall with either 100% CPU usage (if memory allocating
+tasks are doing busy loop) or 0% CPU usage (if memory allocating tasks
+are waiting for file data to be flushed to storage).
+But /proc/sys/kernel/hung_task_warnings is not helpful because memory
+allocating tasks unlikely sleep in uninterruptible state for
+/proc/sys/kernel/hung_task_timeout_secs seconds.
+
+People are reporting hang up problems. But we are forcing people to use
+kernels without means to find out what was happening. The means are
+expected to work without knowledge to use trace points functionality,
+are expected to run without memory allocation, are expected to dump
+output without administrator's operation, are expected to work before
+watchdog timers reset the machine. Without this kernel thread, it is
+extremely hard to figure out that the system hung up due to memory
+allocation stalls.
+
+
+- How to configure it?
+
+Build kernels with CONFIG_MEMALLOC_WATCHDOG=y.
+
+Default scan interval is 10 seconds. Scan interval can be changed by passing
+integer value to kmallocwd boot parameter. For example, passing kmallocwd=30
+will emit first stall warnings in 30 seconds, and emit subsequent warnings in
+30 seconds.
+
+Even if you disable this kernel thread by passing kmallocwd=0 boot parameter,
+information about last memory allocation request is kept. That is, you will
+get some hint for understanding last-minute behavior of the kernel when you
+analyze vmcore (or memory snapshot of a virtualized machine).
+
+
+- How memory allocation stalls are reported?
+
+There are two types of memory allocation stalls, one is that we fail to
+solve OOM conditions after the OOM killer is invoked, the other is that
+we fail to solve OOM conditions before the OOM killer is invoked.
+
+The former case is that the OOM killer chose an OOM victim but the chosen
+victim is unable to make forward progress. Although the OOM victim
+receives TIF_MEMDIE by the OOM killer, TIF_MEMDIE helps only if the OOM
+victim was doing memory allocation. That is, if the OOM victim was
+blocked at unkillable locks (e.g. mutex_lock(&inode->i_mutex) or
+down_read(&mm->mmap_sem)), the system will hang up upon global OOM
+condition. This kernel thread will report such situation by printing
+
+  MemAlloc-Info: $X stalling task, $Y dying task, $Z victim task.
+
+line where $X > 0 and $Y > 0 and $Z > 0, followed by at most $X + $Y
+lines of
+
+  MemAlloc: $name($pid) $state_of_allocation $state_of_task
+
+where $name and $pid are comm name and pid of a task.
+
+$state_of_allocation is reported only when that task is stalling inside
+__alloc_pages_slowpath(), in seq=$seq gfp=$gfp order=$order delay=$delay
+format where $seq is the sequence number for allocation request, $gfp is
+the gfp flags used for that allocation request, $order is the order,
+delay is jiffies elapsed since entering into __alloc_pages_slowpath().
+
+$state_of_task is reported only when that task is dying, in combination
+of "uninterruptible" (where that task is in uninterruptible sleep,
+likely due to uninterruptible lock), "exiting" (where that task arrived
+at do_exit() function), "dying" (where that task has pending SIGKILL)
+and "victim" (where that task received TIF_MEMDIE, likely be only 1 task).
+
+The latter case has three possibilities. First possibility is simply
+overloaded (not a livelock but progress is too slow to wait). You can
+check for seq=$seq field for each reported process. If $seq is
+increasing over time, it is not a livelock. Second possibility is that
+at least one task is doing __GFP_FS || __GFP_NOFAIL memory allocation
+request but operation for reclaiming memory is not working as expected
+due to unknown reason (a livelock), which will not invoke the OOM
+killer. Third possibility is that all ongoing memory allocation
+requests are !__GFP_FS && !__GFP_NOFAIL, which does not invoke the OOM
+killer. This kernel thread will report such situation with $X > 0,
+$Y >= 0 and $Z = 0.
+
+
+- How the messages look like?
+
+An example of MemAlloc lines (grep of dmesg output) is shown below.
+You can use serial console and/or netconsole to save these messages
+when the system is stalling.
+
+  [   78.402510] MemAlloc-Info: 7 stalling task, 1 dying task, 1 victim task.
+  [   78.404691] MemAlloc: kthreadd(2) seq=6 gfp=0x27000c0 order=2 delay=9931 uninterruptible
+  [   78.451201] MemAlloc: systemd-journal(478) seq=73 gfp=0x24201ca order=0 delay=9842
+  [   78.497058] MemAlloc: irqbalance(747) seq=4 gfp=0x24201ca order=0 delay=7454
+  [   78.542291] MemAlloc: crond(969) seq=18 gfp=0x24201ca order=0 delay=9842
+  [   78.586270] MemAlloc: vmtoolsd(1912) seq=64 gfp=0x24201ca order=0 delay=9847
+  [   78.631516] MemAlloc: oom-write(3786) seq=25322 gfp=0x24280ca order=0 delay=10000 uninterruptible
+  [   78.676193] MemAlloc: write(3787) seq=46308 gfp=0x2400240 order=0 delay=9847 uninterruptible exiting
+  [   78.755351] MemAlloc: write(3788) uninterruptible dying victim
+  [   88.854456] MemAlloc-Info: 8 stalling task, 1 dying task, 1 victim task.
+  [   88.856533] MemAlloc: kthreadd(2) seq=6 gfp=0x27000c0 order=2 delay=20383 uninterruptible
+  [   88.900375] MemAlloc: systemd-journal(478) seq=73 gfp=0x24201ca order=0 delay=20294 uninterruptible
+  [   88.952300] MemAlloc: irqbalance(747) seq=4 gfp=0x24201ca order=0 delay=17906 uninterruptible
+  [   88.997542] MemAlloc: crond(969) seq=18 gfp=0x24201ca order=0 delay=20294
+  [   89.041480] MemAlloc: vmtoolsd(1912) seq=64 gfp=0x24201ca order=0 delay=20299
+  [   89.090096] MemAlloc: nmbd(3709) seq=9 gfp=0x24201ca order=0 delay=13855
+  [   89.142032] MemAlloc: oom-write(3786) seq=25322 gfp=0x24280ca order=0 delay=20452
+  [   89.177999] MemAlloc: write(3787) seq=46308 gfp=0x2400240 order=0 delay=20299 exiting
+  [   89.254554] MemAlloc: write(3788) uninterruptible dying victim
+  [   99.353664] MemAlloc-Info: 11 stalling task, 1 dying task, 1 victim task.
+  [   99.356044] MemAlloc: kthreadd(2) seq=6 gfp=0x27000c0 order=2 delay=30882 uninterruptible
+  [   99.403609] MemAlloc: systemd-journal(478) seq=73 gfp=0x24201ca order=0 delay=30793 uninterruptible
+  [   99.449469] MemAlloc: irqbalance(747) seq=4 gfp=0x24201ca order=0 delay=28405
+  [   99.493474] MemAlloc: crond(969) seq=18 gfp=0x24201ca order=0 delay=30793 uninterruptible
+  [   99.536027] MemAlloc: vmtoolsd(1912) seq=64 gfp=0x24201ca order=0 delay=30798 uninterruptible
+  [   99.582630] MemAlloc: master(3682) seq=2 gfp=0x24201ca order=0 delay=10886
+  [   99.626574] MemAlloc: nmbd(3709) seq=9 gfp=0x24201ca order=0 delay=24354
+  [   99.669191] MemAlloc: smbd(3737) seq=2 gfp=0x24201ca order=0 delay=7130
+  [   99.714555] MemAlloc: smbd(3753) seq=2 gfp=0x24201ca order=0 delay=6616 uninterruptible
+  [   99.758412] MemAlloc: oom-write(3786) seq=25322 gfp=0x24280ca order=0 delay=30951
+  [   99.793156] MemAlloc: write(3787) seq=46308 gfp=0x2400240 order=0 delay=30798 uninterruptible exiting
+  [   99.871842] MemAlloc: write(3788) uninterruptible dying victim
+
+You can check whether memory allocations are making forward progress.
+You can check where memory allocations are stalling using stack trace
+of reported task which follows each MemAlloc line. You can check memory
+information (SysRq-m) which follows end of MemAlloc lines.
