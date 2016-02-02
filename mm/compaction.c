@@ -116,6 +116,63 @@ static struct page *pageblock_pfn_to_page(unsigned long start_pfn,
 
 #ifdef CONFIG_COMPACTION
 
+/*
+ * order == -1 is expected when compacting via
+ * /proc/sys/vm/compact_memory
+ */
+static inline bool is_via_compact_memory(int order)
+{
+	return order == -1;
+}
+
+#define COMPACT_MIN_SCAN_LIMIT (pageblock_nr_pages)
+
+static bool excess_migration_scan_limit(struct compact_control *cc)
+{
+	return cc->migration_scan_limit < 0 ? true : false;
+}
+
+static void set_migration_scan_limit(struct compact_control *cc)
+{
+	struct zone *zone = cc->zone;
+	int order = cc->order;
+	unsigned long limit = zone->managed_pages;
+
+	cc->migration_scan_limit = LONG_MAX;
+	if (is_via_compact_memory(order))
+		return;
+
+	if (!compaction_deferred(zone, order))
+		return;
+
+	/*
+	 * Do not allow async compaction during limit work. In this case,
+	 * async compaction would not be easy to succeed and we need to
+	 * ensure that COMPACT_COMPLETE occurs by sync compaction for
+	 * algorithm correctness and prevention of async compaction will
+	 * lead it.
+	 */
+	if (cc->mode == MIGRATE_ASYNC) {
+		cc->migration_scan_limit = -1;
+		return;
+	}
+
+	/* Migration scanner usually scans less than 1/4 pages */
+	limit >>= 2;
+
+	/*
+	 * Deferred compaction restart compaction every 64 compaction
+	 * attempts and it rescans whole zone range. To imitate it,
+	 * we set limit to 1/64 of scannable range.
+	 */
+	limit >>= 6;
+
+	/* Degradation scan limit according to defer shift */
+	limit >>= zone->compact_defer_shift;
+
+	cc->migration_scan_limit = max(limit, COMPACT_MIN_SCAN_LIMIT);
+}
+
 /* Do not skip compaction more than 64 times */
 #define COMPACT_MAX_DEFER_SHIFT 6
 
@@ -124,13 +181,13 @@ static struct page *pageblock_pfn_to_page(unsigned long start_pfn,
  * allocation success. 1 << compact_defer_limit compactions are skipped up
  * to a limit of 1 << COMPACT_MAX_DEFER_SHIFT
  */
-void defer_compaction(struct zone *zone, int order)
+static void defer_compaction(struct zone *zone, int order)
 {
-	zone->compact_considered = 0;
-	zone->compact_defer_shift++;
-
-	if (order < zone->compact_order_failed)
+	if (order < zone->compact_order_failed) {
+		zone->compact_defer_shift = 0;
 		zone->compact_order_failed = order;
+	} else
+		zone->compact_defer_shift++;
 
 	if (zone->compact_defer_shift > COMPACT_MAX_DEFER_SHIFT)
 		zone->compact_defer_shift = COMPACT_MAX_DEFER_SHIFT;
@@ -138,19 +195,13 @@ void defer_compaction(struct zone *zone, int order)
 	trace_mm_compaction_defer_compaction(zone, order);
 }
 
-/* Returns true if compaction should be skipped this time */
+/* Returns true if compaction is limited */
 bool compaction_deferred(struct zone *zone, int order)
 {
-	unsigned long defer_limit = 1UL << zone->compact_defer_shift;
-
 	if (order < zone->compact_order_failed)
 		return false;
 
-	/* Avoid possible overflow */
-	if (++zone->compact_considered > defer_limit)
-		zone->compact_considered = defer_limit;
-
-	if (zone->compact_considered >= defer_limit)
+	if (!zone->compact_defer_shift)
 		return false;
 
 	trace_mm_compaction_deferred(zone, order);
@@ -158,20 +209,13 @@ bool compaction_deferred(struct zone *zone, int order)
 	return true;
 }
 
-/*
- * Update defer tracking counters after successful compaction of given order,
- * which means an allocation either succeeded (alloc_success == true) or is
- * expected to succeed.
- */
-void compaction_defer_reset(struct zone *zone, int order,
-		bool alloc_success)
+/* Update defer tracking counters after successful compaction of given order */
+static void compaction_defer_reset(struct zone *zone, int order)
 {
-	if (alloc_success) {
-		zone->compact_considered = 0;
+	if (order >= zone->compact_order_failed) {
 		zone->compact_defer_shift = 0;
-	}
-	if (order >= zone->compact_order_failed)
 		zone->compact_order_failed = order + 1;
+	}
 
 	trace_mm_compaction_defer_reset(zone, order);
 }
@@ -182,8 +226,7 @@ bool compaction_restarting(struct zone *zone, int order)
 	if (order < zone->compact_order_failed)
 		return false;
 
-	return zone->compact_defer_shift == COMPACT_MAX_DEFER_SHIFT &&
-		zone->compact_considered >= 1UL << zone->compact_defer_shift;
+	return zone->compact_defer_shift == COMPACT_MAX_DEFER_SHIFT;
 }
 
 /* Returns true if the pageblock should be scanned for pages to isolate. */
@@ -208,13 +251,18 @@ static void reset_cached_positions(struct zone *zone)
  * should be skipped for page isolation when the migrate and free page scanner
  * meet.
  */
-static void __reset_isolation_suitable(struct zone *zone)
+static void __reset_isolation_suitable(struct zone *zone, bool restart)
 {
 	unsigned long start_pfn = zone->zone_start_pfn;
 	unsigned long end_pfn = zone_end_pfn(zone);
 	unsigned long pfn;
 
 	zone->compact_blockskip_flush = false;
+
+	if (restart) {
+		/* To prevent restart at next compaction attempt */
+		zone->compact_defer_shift = COMPACT_MAX_DEFER_SHIFT - 1;
+	}
 
 	/* Walk the zone and mark every pageblock as suitable for isolation */
 	for (pfn = start_pfn; pfn < end_pfn; pfn += pageblock_nr_pages) {
@@ -246,7 +294,7 @@ void reset_isolation_suitable(pg_data_t *pgdat)
 
 		/* Only flush if a full compaction finished recently */
 		if (zone->compact_blockskip_flush)
-			__reset_isolation_suitable(zone);
+			__reset_isolation_suitable(zone, false);
 	}
 }
 
@@ -256,10 +304,9 @@ void reset_isolation_suitable(pg_data_t *pgdat)
  */
 static void update_pageblock_skip(struct compact_control *cc,
 			struct page *page, unsigned long nr_isolated,
-			bool migrate_scanner)
+			unsigned long pfn, bool migrate_scanner)
 {
 	struct zone *zone = cc->zone;
-	unsigned long pfn;
 
 	if (cc->ignore_skip_hint)
 		return;
@@ -267,12 +314,15 @@ static void update_pageblock_skip(struct compact_control *cc,
 	if (!page)
 		return;
 
-	if (nr_isolated)
+	/*
+	 * Always update cached_pfn if compaction has scan_limit,
+	 * otherwise we would scan same range over and over.
+	 */
+	if (cc->migration_scan_limit == LONG_MAX && nr_isolated)
 		return;
 
-	set_pageblock_skip(page);
-
-	pfn = page_to_pfn(page);
+	if (!nr_isolated)
+		set_pageblock_skip(page);
 
 	/* Update where async and sync compaction should restart */
 	if (migrate_scanner) {
@@ -295,7 +345,7 @@ static inline bool isolation_suitable(struct compact_control *cc,
 
 static void update_pageblock_skip(struct compact_control *cc,
 			struct page *page, unsigned long nr_isolated,
-			bool migrate_scanner)
+			unsigned long pfn, bool migrate_scanner)
 {
 }
 #endif /* CONFIG_COMPACTION */
@@ -526,10 +576,6 @@ isolate_fail:
 
 	if (locked)
 		spin_unlock_irqrestore(&cc->zone->lock, flags);
-
-	/* Update the pageblock-skip if the whole pageblock was scanned */
-	if (blockpfn == end_pfn)
-		update_pageblock_skip(cc, valid_page, total_isolated, false);
 
 	count_compact_events(COMPACTFREE_SCANNED, nr_scanned);
 	if (total_isolated)
@@ -832,12 +878,7 @@ isolate_success:
 	if (locked)
 		spin_unlock_irqrestore(&zone->lru_lock, flags);
 
-	/*
-	 * Update the pageblock-skip information and cached scanner pfn,
-	 * if the whole pageblock was scanned without isolating any page.
-	 */
-	if (low_pfn == end_pfn)
-		update_pageblock_skip(cc, valid_page, nr_isolated, true);
+	cc->migration_scan_limit -= nr_scanned;
 
 	trace_mm_compaction_isolate_migratepages(start_pfn, low_pfn,
 						nr_scanned, nr_isolated);
@@ -947,6 +988,7 @@ static void isolate_freepages(struct compact_control *cc)
 	unsigned long block_end_pfn;	/* end of current pageblock */
 	unsigned long low_pfn;	     /* lowest pfn scanner is able to scan */
 	struct list_head *freelist = &cc->freepages;
+	unsigned long nr_isolated;
 
 	/*
 	 * Initialise the free scanner. The starting point is where we last
@@ -998,8 +1040,16 @@ static void isolate_freepages(struct compact_control *cc)
 			continue;
 
 		/* Found a block suitable for isolating free pages from. */
-		isolate_freepages_block(cc, &isolate_start_pfn,
+		nr_isolated = isolate_freepages_block(cc, &isolate_start_pfn,
 					block_end_pfn, freelist, false);
+
+		/*
+		 * Update the pageblock-skip if the whole pageblock
+		 * was scanned
+		 */
+		if (isolate_start_pfn == block_end_pfn)
+			update_pageblock_skip(cc, page, nr_isolated,
+				block_start_pfn - pageblock_nr_pages, false);
 
 		/*
 		 * If we isolated enough freepages, or aborted due to async
@@ -1172,6 +1222,14 @@ static isolate_migrate_t isolate_migratepages(struct zone *zone,
 			cc->last_migrated_pfn = isolate_start_pfn;
 
 		/*
+		 * Update the pageblock-skip if the whole pageblock
+		 * was scanned without isolating any page.
+		 */
+		if (low_pfn == end_pfn)
+			update_pageblock_skip(cc, page, cc->nr_migratepages,
+						end_pfn, true);
+
+		/*
 		 * Either we isolated something and proceed with migration. Or
 		 * we failed and compact_zone should decide if we should
 		 * continue or not.
@@ -1184,15 +1242,6 @@ static isolate_migrate_t isolate_migratepages(struct zone *zone,
 	cc->migrate_pfn = low_pfn;
 
 	return cc->nr_migratepages ? ISOLATE_SUCCESS : ISOLATE_NONE;
-}
-
-/*
- * order == -1 is expected when compacting via
- * /proc/sys/vm/compact_memory
- */
-static inline bool is_via_compact_memory(int order)
-{
-	return order == -1;
 }
 
 static int __compact_finished(struct zone *zone, struct compact_control *cc,
@@ -1223,6 +1272,9 @@ static int __compact_finished(struct zone *zone, struct compact_control *cc,
 
 	if (is_via_compact_memory(cc->order))
 		return COMPACT_CONTINUE;
+
+	if (excess_migration_scan_limit(cc))
+		return COMPACT_PARTIAL;
 
 	/* Compaction run is not finished if the watermark is not met */
 	watermark = low_wmark_pages(zone);
@@ -1362,7 +1414,7 @@ static int compact_zone(struct zone *zone, struct compact_control *cc)
 	 * this reset as it'll reset the cached information when going to sleep.
 	 */
 	if (compaction_restarting(zone, cc->order) && !current_is_kswapd())
-		__reset_isolation_suitable(zone);
+		__reset_isolation_suitable(zone, true);
 
 	/*
 	 * Setup to move all movable pages to the end of the zone. Used cached
@@ -1381,6 +1433,10 @@ static int compact_zone(struct zone *zone, struct compact_control *cc)
 		zone->compact_cached_migrate_pfn[1] = cc->migrate_pfn;
 	}
 	cc->last_migrated_pfn = 0;
+
+	set_migration_scan_limit(cc);
+	if (excess_migration_scan_limit(cc))
+		return COMPACT_SKIPPED;
 
 	trace_mm_compaction_begin(start_pfn, cc->migrate_pfn,
 				cc->free_pfn, end_pfn, sync);
@@ -1549,9 +1605,6 @@ unsigned long try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
 		int status;
 		int zone_contended;
 
-		if (compaction_deferred(zone, order))
-			continue;
-
 		status = compact_zone_order(zone, order, gfp_mask, mode,
 				&zone_contended, alloc_flags,
 				ac->classzone_idx);
@@ -1565,13 +1618,8 @@ unsigned long try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
 		/* If a normal allocation would succeed, stop compacting */
 		if (zone_watermark_ok(zone, order, low_wmark_pages(zone),
 					ac->classzone_idx, alloc_flags)) {
-			/*
-			 * We think the allocation will succeed in this zone,
-			 * but it is not certain, hence the false. The caller
-			 * will repeat this with true if allocation indeed
-			 * succeeds in this zone.
-			 */
-			compaction_defer_reset(zone, order, false);
+			compaction_defer_reset(zone, order);
+
 			/*
 			 * It is possible that async compaction aborted due to
 			 * need_resched() and the watermarks were ok thanks to
@@ -1652,16 +1700,14 @@ static void __compact_pgdat(pg_data_t *pgdat, struct compact_control *cc)
 		 * cached scanner positions.
 		 */
 		if (is_via_compact_memory(cc->order))
-			__reset_isolation_suitable(zone);
+			__reset_isolation_suitable(zone, false);
 
-		if (is_via_compact_memory(cc->order) ||
-				!compaction_deferred(zone, cc->order))
-			compact_zone(zone, cc);
+		compact_zone(zone, cc);
 
 		if (cc->order > 0) {
 			if (zone_watermark_ok(zone, cc->order,
 						low_wmark_pages(zone), 0, 0))
-				compaction_defer_reset(zone, cc->order, false);
+				compaction_defer_reset(zone, cc->order);
 		}
 
 		VM_BUG_ON(!list_empty(&cc->freepages));

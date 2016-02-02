@@ -514,11 +514,9 @@ struct zone {
 
 #ifdef CONFIG_COMPACTION
 	/*
-	 * On compaction failure, 1<<compact_defer_shift compactions
-	 * are skipped before trying again. The number attempted since
-	 * last failure is tracked with compact_considered.
+	 * On compaction failure, compaction will be limited by
+	 * compact_defer_shift.
 	 */
-	unsigned int		compact_considered;
 	unsigned int		compact_defer_shift;
 	int			compact_order_failed;
 #endif

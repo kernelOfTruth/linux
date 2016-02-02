@@ -2789,7 +2789,6 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
 		struct zone *zone = page_zone(page);
 
 		zone->compact_blockskip_flush = false;
-		compaction_defer_reset(zone, order, true);
 		count_vm_event(COMPACTSUCCESS);
 		return page;
 	}
@@ -5248,6 +5247,9 @@ static void __paginginit free_area_init_core(struct pglist_data *pgdat)
 		zone_seqlock_init(zone);
 		zone->zone_pgdat = pgdat;
 		zone_pcp_init(zone);
+#ifdef CONFIG_COMPACTION
+		zone->compact_order_failed = MAX_ORDER;
+#endif
 
 		/* For bootup, initialized properly in watermark setup */
 		mod_zone_page_state(zone, NR_ALLOC_BATCH, zone->managed_pages);
