@@ -21,14 +21,15 @@
 #define CLEAR_MNT_MARK(m) ((m)->mnt.mnt_flags &= ~MNT_MARKED)
 #define IS_MNT_LOCKED(m) ((m)->mnt.mnt_flags & MNT_LOCKED)
 
-#define CL_EXPIRE    		0x01
-#define CL_SLAVE     		0x02
-#define CL_COPY_UNBINDABLE	0x04
-#define CL_MAKE_SHARED 		0x08
-#define CL_PRIVATE 		0x10
-#define CL_SHARED_TO_SLAVE	0x20
-#define CL_UNPRIVILEGED		0x40
-#define CL_COPY_MNT_NS_FILE	0x80
+#define CL_EXPIRE		0x001
+#define CL_SLAVE		0x002
+#define CL_COPY_UNBINDABLE	0x004
+#define CL_MAKE_SHARED		0x008
+#define CL_PRIVATE		0x010
+#define CL_SHARED_TO_SLAVE	0x020
+#define CL_UNPRIVILEGED		0x040
+#define CL_COPY_MNT_NS_FILE	0x080
+#define CL_MAKE_RDONLY		0x100
 
 #define CL_COPY_ALL		(CL_COPY_UNBINDABLE | CL_COPY_MNT_NS_FILE)
 
