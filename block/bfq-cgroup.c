@@ -654,6 +654,18 @@ static void bfq_bic_update_cgroup(struct bfq_io_cq *bic, struct bio *bio)
 	if (unlikely(!bfqd) || likely(bic->blkcg_id == id))
 		return;
 
+	/*
+	 * If we have a non-root cgroup, we can depend on that to
+	 * do proper throttling of writes. Turn off wbt for that
+	 * case.
+	*/
+	if (blkcg != &blkcg_root) {
+		struct request_queue *q = bfqd->queue;
+
+		if (q->rq_wb)
+			wbt_disable(q->rq_wb);
+	}
+
 	bfqg = __bfq_bic_change_cgroup(bfqd, bic, blkcg);
 	BUG_ON(!bfqg);
 	bic->blkcg_id = id;
