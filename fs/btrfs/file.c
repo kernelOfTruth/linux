@@ -1703,7 +1703,9 @@ again:
 			btrfs_end_write_no_snapshoting(root);
 			btrfs_delalloc_release_metadata(inode, release_bytes);
 		} else {
-			btrfs_delalloc_release_space(inode, pos, release_bytes);
+			btrfs_delalloc_release_space(inode,
+						round_down(pos, root->sectorsize),
+						release_bytes);
 		}
 	}
 
@@ -2031,7 +2033,7 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	     BTRFS_I(inode)->last_trans
 	     <= root->fs_info->last_trans_committed)) {
 		/*
-		 * We'v had everything committed since the last time we were
+		 * We've had everything committed since the last time we were
 		 * modified so clear this flag in case it was set for whatever
 		 * reason, it's no longer relevant.
 		 */
@@ -2379,7 +2381,7 @@ static int btrfs_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 
 	/* Check the aligned pages after the first unaligned page,
 	 * if offset != orig_start, which means the first unaligned page
-	 * including serveral following pages are already in holes,
+	 * including several following pages are already in holes,
 	 * the extra check can be skipped */
 	if (offset == orig_start) {
 		/* after truncate page, check hole again */
