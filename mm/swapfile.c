@@ -643,6 +643,7 @@ swp_entry_t get_swap_page(void)
 {
 	struct swap_info_struct *si, *next;
 	pgoff_t offset;
+	bool first = true;
 
 	if (atomic_long_read(&nr_swap_pages) <= 0)
 		goto noswap;
@@ -656,6 +657,12 @@ start_over:
 		plist_requeue(&si->avail_list, &swap_avail_head);
 		spin_unlock(&swap_avail_lock);
 		spin_lock(&si->lock);
+		/* at 98% usage lets try the other swaps */
+		if (first && si->inuse_pages / 98 * 100 > si->pages) {
+			spin_lock(&swap_avail_lock);
+			spin_unlock(&si->lock);
+			goto nextsi;
+		}
 		if (!si->highest_bit || !(si->flags & SWP_WRITEOK)) {
 			spin_lock(&swap_avail_lock);
 			if (plist_node_empty(&si->avail_list)) {
@@ -694,6 +701,10 @@ nextsi:
 		 */
 		if (plist_node_empty(&next->avail_list))
 			goto start_over;
+	}
+	if (first) {
+		first = false;
+		goto start_over;
 	}
 
 	spin_unlock(&swap_avail_lock);
