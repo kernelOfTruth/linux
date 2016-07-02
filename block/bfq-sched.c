@@ -10,6 +10,8 @@
  * Copyright (C) 2016 Paolo Valente <paolo.valente@unimore.it>
  */
 
+static struct bfq_group *bfqq_group(struct bfq_queue *bfqq);
+
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
 #define for_each_entity(entity)	\
 	for (; entity ; entity = entity->parent)
@@ -21,8 +23,6 @@
 static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd,
 						 int extract,
 						 struct bfq_data *bfqd);
-
-static struct bfq_group *bfqq_group(struct bfq_queue *bfqq);
 
 static void bfq_update_budget(struct bfq_entity *next_in_service)
 {
@@ -81,7 +81,6 @@ static int bfq_update_next_in_service(struct bfq_sched_data *sd)
 		bfq_log_bfqg((struct bfq_data *)bfqg->bfqd, bfqg,
 			     "update_next_in_service: chosen this entity");
 	}
-
 exit:
 	return 1;
 }
@@ -185,6 +184,7 @@ static void bfq_calc_finish(struct bfq_entity *entity, unsigned long service)
 		bfq_log_bfqq(bfqq->bfqd, bfqq,
 			"calc_finish: start %llu, finish %llu, delta %llu",
 			start, finish, delta);
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	} else {
 		struct bfq_group *bfqg =
 			container_of(entity, struct bfq_group, entity);
@@ -195,6 +195,7 @@ static void bfq_calc_finish(struct bfq_entity *entity, unsigned long service)
 		bfq_log_bfqg((struct bfq_data *)bfqg->bfqd, bfqg,
 			"calc_finish group: start %llu, finish %llu, delta %llu",
 			start, finish, delta);
+#endif
 	}
 }
 
@@ -920,6 +921,7 @@ static void __bfq_activate_entity(struct bfq_entity *entity,
 			bfq_log_bfqq(bfqq->bfqd, bfqq,
 				     "__activate_entity: new queue finish %llu",
 				     ((entity->finish>>10)*1000)>>12);
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 		} else {
 			struct bfq_group *bfqg =
 				container_of(entity, struct bfq_group, entity);
@@ -927,6 +929,7 @@ static void __bfq_activate_entity(struct bfq_entity *entity,
 			bfq_log_bfqg((struct bfq_data *)bfqg->bfqd, bfqg,
 				     "__activate_entity: new group finish %llu",
 				     ((entity->finish>>10)*1000)>>12);
+#endif
 		}
 	}
 
@@ -936,6 +939,7 @@ static void __bfq_activate_entity(struct bfq_entity *entity,
 		bfq_log_bfqq(bfqq->bfqd, bfqq,
 			"__activate_entity: queue %seligible in st %p",
 			     entity->start <= st->vtime ? "" : "non ", st);
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	} else {
 		struct bfq_group *bfqg =
 			container_of(entity, struct bfq_group, entity);
@@ -943,6 +947,7 @@ static void __bfq_activate_entity(struct bfq_entity *entity,
 		bfq_log_bfqg((struct bfq_data *)bfqg->bfqd, bfqg,
 			"__activate_entity: group %seligible in st %p",
 			     entity->start <= st->vtime ? "" : "non ", st);
+#endif
 	}
 }
 
@@ -1074,6 +1079,7 @@ update:
 		if (bfqq)
 			bfq_log_bfqq(bfqq->bfqd, bfqq,
 				     "invoking udpdate_next for this queue");
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 		else {
 			struct bfq_group *bfqg =
 				container_of(entity,
@@ -1082,6 +1088,7 @@ update:
 			bfq_log_bfqg((struct bfq_data *)bfqg->bfqd, bfqg,
 				     "invoking udpdate_next for this entity");
 		}
+#endif
 		if (!bfq_update_next_in_service(sd))
 			break;
 	}
@@ -1179,6 +1186,7 @@ __bfq_lookup_next_entity(struct bfq_service_tree *st, bool force)
 			     "__lookup_next: start %llu vtime %llu st %p",
 			     ((entity->start>>10)*1000)>>12,
 			     ((st->vtime>>10)*1000)>>12, st);
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	else {
 		struct bfq_group *bfqg =
 			container_of(entity, struct bfq_group, entity);
@@ -1188,6 +1196,7 @@ __bfq_lookup_next_entity(struct bfq_service_tree *st, bool force)
 			     ((entity->start>>10)*1000)>>12,
 			     ((st->vtime>>10)*1000)>>12, st);
 	}
+#endif
 
 	/*
 	 * If the chosen entity does not match with the sched_data's
@@ -1236,6 +1245,7 @@ static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd,
 					     "idle chosen from st %p %d",
 					     st + BFQ_IOPRIO_CLASSES - 1,
 					BFQ_IOPRIO_CLASSES - 1) ;
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 			else {
 				struct bfq_group *bfqg =
 				container_of(entity, struct bfq_group, entity);
@@ -1245,6 +1255,7 @@ static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd,
 					     st + BFQ_IOPRIO_CLASSES - 1,
 					BFQ_IOPRIO_CLASSES - 1) ;
 			}
+#endif
 			i = BFQ_IOPRIO_CLASSES - 1;
 			bfqd->bfq_class_idle_last_service = jiffies;
 			sd->next_in_service = entity;
@@ -1259,6 +1270,7 @@ static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd,
 				bfq_log_bfqq(bfqd, bfqq,
 					     "chosen from st %p %d",
 					     st + i, i) ;
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 			else {
 				struct bfq_group *bfqg =
 				container_of(entity, struct bfq_group, entity);
@@ -1266,7 +1278,9 @@ static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd,
 				bfq_log_bfqg(bfqd, bfqg,
 					     "chosen from st %p %d",
 					     st + i, i) ;
-			}}
+			}
+#endif
+			}
 
 			if (extract) {
 				bfq_check_next_in_service(sd, entity);
@@ -1304,6 +1318,7 @@ static struct bfq_queue *bfq_get_next_queue(struct bfq_data *bfqd)
 
 	sd = &bfqd->root_group->sched_data;
 	for (; sd ; sd = entity->my_sched_data) {
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 		if (entity) {
 			struct bfq_group *bfqg =
 				container_of(entity, struct bfq_group, entity);
@@ -1313,6 +1328,7 @@ static struct bfq_queue *bfq_get_next_queue(struct bfq_data *bfqd)
 		} else
 			bfq_log_bfqg(bfqd, bfqd->root_group,
 				     "get_next_queue: lookup in root group");
+#endif
 
 		entity = bfq_lookup_next_entity(sd, 1, bfqd);
 
@@ -1321,6 +1337,7 @@ static struct bfq_queue *bfq_get_next_queue(struct bfq_data *bfqd)
 			bfq_log_bfqq(bfqd, bfqq,
 			     "get_next_queue: this queue, finish %llu",
 				(((entity->finish>>10)*1000)>>10)>>2);
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 		else {
 			struct bfq_group *bfqg =
 				container_of(entity, struct bfq_group, entity);
@@ -1329,6 +1346,7 @@ static struct bfq_queue *bfq_get_next_queue(struct bfq_data *bfqd)
 			     "get_next_queue: this entity, finish %llu",
 				(((entity->finish>>10)*1000)>>10)>>2);
 		}
+#endif
 
 		BUG_ON(!entity);
 		entity->service = 0;
@@ -1368,9 +1386,7 @@ static void bfq_activate_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 	bfq_clear_bfqq_non_blocking_wait_rq(bfqq);
 }
 
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
 static void bfqg_stats_update_dequeue(struct bfq_group *bfqg);
-#endif
 
 /*
  * Called when the bfqq no longer has requests pending, remove it from
