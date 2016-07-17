@@ -3602,7 +3602,7 @@ static void bfq_set_next_ioprio_data(struct bfq_queue *bfqq,
 		break;
 	}
 
-	if (bfqq->new_ioprio < 0 || bfqq->new_ioprio >= IOPRIO_BE_NR) {
+	if (bfqq->new_ioprio >= IOPRIO_BE_NR) {
 		printk(KERN_CRIT "bfq_set_next_ioprio_data: new_ioprio %d\n",
 				 bfqq->new_ioprio);
 		BUG();
