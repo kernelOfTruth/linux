@@ -2182,8 +2182,13 @@ static void bfq_arm_slice_timer(struct bfq_data *bfqd)
 	sl = bfqd->bfq_slice_idle;
 	/*
 	 * Unless the queue is being weight-raised or the scenario is
-	 * asymmetric, grant only minimum idle time if the queue is
-	 * seeky.
+	 * asymmetric, grant only minimum idle time if the queue
+	 * is seeky. A long idling is preserved for a weight-raised
+	 * queue, or, more in general, in an asymemtric scenario,
+	 * because a long idling is needed for guaranteeing to a queue
+	 * its reserved share of the throughput (in particular, it is
+	 * needed if the queue has a higher weight than some other
+	 * queue).
 	 */
 	if (BFQQ_SEEKY(bfqq) && bfqq->wr_coeff == 1 &&
 	    bfq_symmetric_scenario(bfqd))
@@ -2791,7 +2796,7 @@ static void bfq_bfqq_expire(struct bfq_data *bfqd,
 	 * estimated peak rate is actually an average over the disk
 	 * surface, these processes may timeout just for bad luck. To
 	 * avoid punishing them, do not charge time to processes that
-	 * succeeded in consuming at least 2/3 of thier budget. This
+	 * succeeded in consuming at least 2/3 of their budget. This
 	 * allows BFQ to preserve enough elasticity to still perform
 	 * bandwidth, and not time, distribution with little unlucky
 	 * or quasi-sequential processes.
@@ -2892,7 +2897,7 @@ static bool bfq_bfqq_budget_timeout(struct bfq_queue *bfqq)
  * function __bfq_activate_entity. Hence we return true only if this
  * condition does not hold, or if the queue is slow enough to deserve
  * only to be kicked off for preserving a high throughput.
-*/
+ */
 static bool bfq_may_expire_for_budg_timeout(struct bfq_queue *bfqq)
 {
 	bfq_log_bfqq(bfqq->bfqd, bfqq,
@@ -2961,7 +2966,7 @@ static bool bfq_bfqq_may_idle(struct bfq_queue *bfqq)
 	 */
 	idling_boosts_thr = !bfqd->hw_tag ||
 		(!blk_queue_nonrot(bfqd->queue) && bfq_bfqq_IO_bound(bfqq) &&
-		 bfq_bfqq_idle_window(bfqq)) ;
+		 bfq_bfqq_idle_window(bfqq));
 
 	/*
 	 * The value of the next variable,
