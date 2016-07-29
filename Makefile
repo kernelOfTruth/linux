@@ -1,7 +1,7 @@
 VERSION = 4
 PATCHLEVEL = 7
 SUBLEVEL = 0
-EXTRAVERSION = -bfq
+EXTRAVERSION = _dtop-I.1
 NAME = Psychotic Stoned Sheep
 
 # *DOCUMENTATION*
