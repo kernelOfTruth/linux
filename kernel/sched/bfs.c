@@ -7451,11 +7451,20 @@ int sched_cpu_activate(unsigned int cpu)
 	 * 2) At runtime, if cpuset_cpu_active() fails to rebuild the
 	 *    domains.
 	 */
+	read_lock(&tasklist_lock);
 	rq_grq_lock_irqsave(rq, &flags);
 	if (rq->rd) {
 		BUG_ON(!cpumask_test_cpu(cpu, rq->rd->span));
 		set_rq_online(rq);
 	}
+	/* mark rq preemptable */
+	cpumask_set_cpu(cpu, &grq.cpu_preemptable_mask);
+	tasks_cpu_hotplug(cpu);
+	grq.noc = num_online_cpus();
+	/* set grq.cpu_idle_map when cpu is online */
+	cpumask_set_cpu(cpu, &grq.cpu_idle_map);
+	rq_grq_unlock_irqrestore(rq, &flags);
+	read_unlock(&tasklist_lock);
 	rq_grq_unlock_irqrestore(rq, &flags);
 
 	return 0;
@@ -7495,24 +7504,11 @@ int sched_cpu_deactivate(unsigned int cpu)
 
 int sched_cpu_starting(unsigned int cpu)
 {
-	struct rq *rq = cpu_rq(cpu);
-	unsigned long flags;
-
 	/*
 	 * BFS doesn't have rq start time record
 	 * set_cpu_rq_start_time(cpu);
 	 */
 	sched_rq_cpu_starting(cpu);
-	read_lock(&tasklist_lock);
-	rq_grq_lock_irqsave(rq, &flags);
-	/* mark rq preemptable */
-	cpumask_set_cpu(cpu, &grq.cpu_preemptable_mask);
-	tasks_cpu_hotplug(cpu);
-	grq.noc = num_online_cpus();
-	/* set grq.cpu_idle_map when cpu is online */
-	cpumask_set_cpu(cpu, &grq.cpu_idle_map);
-	rq_grq_unlock_irqrestore(rq, &flags);
-	read_unlock(&tasklist_lock);
 
 	return 0;
 }
