@@ -176,7 +176,7 @@ extern void get_iowait_load(unsigned long *nr_waiters, unsigned long *load);
 
 extern void calc_global_load(unsigned long ticks);
 
-#if defined(CONFIG_SMP) && defined(CONFIG_NO_HZ_COMMON)
+#if defined(CONFIG_SMP) && defined(CONFIG_NO_HZ_COMMON) && !defined(CONFIG_SCHED_BFS)
 extern void cpu_load_update_nohz_start(void);
 extern void cpu_load_update_nohz_stop(void);
 #else
@@ -338,8 +338,6 @@ extern void init_idle(struct task_struct *idle, int cpu);
 extern void init_idle_bootup_task(struct task_struct *idle);
 
 extern cpumask_var_t cpu_isolated_map;
-
-extern int runqueue_is_locked(int cpu);
 
 #if defined(CONFIG_SMP) && defined(CONFIG_NO_HZ_COMMON)
 extern void nohz_balance_enter_idle(int cpu);
@@ -1462,9 +1460,13 @@ struct task_struct {
 	unsigned int flags;	/* per process flags, defined below */
 	unsigned int ptrace;
 
-#ifdef CONFIG_SMP
-	struct llist_node wake_entry;
+#if defined(CONFIG_SMP) || defined(CONFIG_SCHED_BFS)
 	int on_cpu;
+#endif
+#if defined(CONFIG_SMP) && !defined(CONFIG_SCHED_BFS)
+	struct llist_node wake_entry;
+#endif
+#ifdef CONFIG_SMP
 	unsigned int wakee_flips;
 	unsigned long wakee_flip_decay_ts;
 	struct task_struct *last_wakee;
@@ -1472,12 +1474,27 @@ struct task_struct {
 	int wake_cpu;
 #endif
 	int on_rq;
-
 	int prio, static_prio, normal_prio;
 	unsigned int rt_priority;
+#ifdef CONFIG_SCHED_BFS
+	int time_slice;
+	u64 deadline;
+	u64 priodl; /* 8bits prio and 56bits deadline for quick processing */
+	struct list_head run_list;
+	u64 last_ran;
+	u64 sched_time; /* sched_clock time spent running */
+#ifdef CONFIG_SMT_NICE
+	int smt_bias; /* Policy/nice level bias across smt siblings */
+#endif
+	u64 cached;		/* task cached indicator */
+	u64 policy_stick_timeout;
+	u64 policy_cached_timeout;
+	unsigned long rt_timeout;
+#else /* CONFIG_SCHED_BFS */
 	const struct sched_class *sched_class;
 	struct sched_entity se;
 	struct sched_rt_entity rt;
+#endif
 #ifdef CONFIG_CGROUP_SCHED
 	struct task_group *sched_task_group;
 #endif
@@ -1495,6 +1512,9 @@ struct task_struct {
 	unsigned int policy;
 	int nr_cpus_allowed;
 	cpumask_t cpus_allowed;
+#ifdef CONFIG_SCHED_BFS
+	cpumask_t cpus_allowed_master;
+#endif
 
 #ifdef CONFIG_PREEMPT_RCU
 	int rcu_read_lock_nesting;
@@ -1598,6 +1618,9 @@ struct task_struct {
 	int __user *clear_child_tid;		/* CLONE_CHILD_CLEARTID */
 
 	cputime_t utime, stime, utimescaled, stimescaled;
+#ifdef CONFIG_SCHED_BFS
+	unsigned long utime_pc, stime_pc;
+#endif
 	cputime_t gtime;
 	struct prev_cputime prev_cputime;
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
@@ -1933,6 +1956,38 @@ extern int arch_task_struct_size __read_mostly;
 #else
 # define arch_task_struct_size (sizeof(struct task_struct))
 #endif
+
+#ifdef CONFIG_SCHED_BFS
+void cpu_scaling(int cpu);
+void cpu_nonscaling(int cpu);
+#define tsk_seruntime(t)		((t)->sched_time)
+#define tsk_rttimeout(t)		((t)->rt_timeout)
+
+void print_scheduler_version(void);
+
+#define is_iso_policy(policy)	((policy) == SCHED_ISO)
+#define iso_task(p)		unlikely(is_iso_policy((p)->policy))
+
+#else /* CFS */
+extern int runqueue_is_locked(int cpu);
+static inline void cpu_scaling(int cpu)
+{
+}
+
+static inline void cpu_nonscaling(int cpu)
+{
+}
+#define tsk_seruntime(t)	((t)->se.sum_exec_runtime)
+#define tsk_rttimeout(t)	((t)->rt.timeout)
+
+static inline void print_scheduler_version(void)
+{
+	printk(KERN_INFO"CFS CPU scheduler.\n");
+}
+
+#define iso_task(p)		(false)
+
+#endif /* CONFIG_SCHED_BFS */
 
 /* Future-safe accessor for struct task_struct's cpus_allowed. */
 #define tsk_cpus_allowed(tsk) (&(tsk)->cpus_allowed)
@@ -2358,7 +2413,7 @@ static inline int set_cpus_allowed_ptr(struct task_struct *p,
 }
 #endif
 
-#ifdef CONFIG_NO_HZ_COMMON
+#if defined(CONFIG_NO_HZ_COMMON) && !defined(CONFIG_SCHED_BFS)
 void calc_load_enter_idle(void);
 void calc_load_exit_idle(void);
 #else
@@ -2459,7 +2514,7 @@ extern unsigned long long
 task_sched_runtime(struct task_struct *task);
 
 /* sched_exec is called by processes performing an exec */
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP) && !defined(CONFIG_SCHED_BFS)
 extern void sched_exec(void);
 #else
 #define sched_exec()   {}
@@ -3287,7 +3342,7 @@ static inline unsigned int task_cpu(const struct task_struct *p)
 	return 0;
 }
 
-static inline void set_task_cpu(struct task_struct *p, unsigned int cpu)
+static inline void set_task_cpu(struct task_struct *p, int cpu)
 {
 }
 
