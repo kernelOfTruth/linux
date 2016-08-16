@@ -139,7 +139,7 @@
 void print_scheduler_version(void)
 {
 	printk(KERN_INFO "BFS CPU scheduler v0.472 by Con Kolivas.\n");
-	printk(KERN_INFO "BFS enhancement patchset v4.7_0472_vrq0 by Alfred Chen.\n");
+	printk(KERN_INFO "BFS enhancement patchset v4.7_0472_vrq2 by Alfred Chen.\n");
 }
 
 /* BFS default rr interval in ms */
@@ -1560,14 +1560,6 @@ task_preemptable_rq(struct task_struct *p, int only_preempt_idle)
 			if (!smt_should_schedule(p, cpu))
 				return NULL;
 #endif
-			/*
-			 * If we have decided this task should preempt this CPU,
-			 * set the task's CPU to match so there is no discrepancy
-			 * in earliest_deadline_task which biases away tasks with
-			 * a different CPU set. This means waking tasks are
-			 * treated differently to rescheduling tasks.
-			 */
-			set_task_cpu(p, cpu);
 			return cpu_rq(cpu);
 		}
 		cpu = cpumask_next(cpu, &check);
@@ -1738,6 +1730,8 @@ static inline void task_preempt_rq(struct task_struct *p, struct rq * rq)
 		wq_worker_waking_up(p, cpu);
 
 	ttwu_do_wakeup(rq, p, 0);
+	cpufreq_trigger(rq->clock, rq->rq_running +
+			(queued_notrunning() + grq.nr_uninterruptible) / grq.noc);
 }
 
 /*
@@ -4018,6 +4012,7 @@ is_task_deactivate_sched(struct rq *rq, int cpu, struct task_struct *prev,
 
 				to_wakeup = wq_worker_sleeping(prev);
 				if (to_wakeup) {
+					WARN_ON_ONCE(to_wakeup == prev);
 					/* This shouldn't happen, but does */
 					if (unlikely(to_wakeup == prev)) {
 						deactivate = false;
@@ -4155,6 +4150,7 @@ static void __sched notrace __schedule(bool preempt)
 		next->cached = 0ULL;
 		rq->curr = next;
 		++*switch_count;
+		rq->nr_switches++;
 
 		trace_sched_switch(preempt, prev, next);
 		rq = context_switch(rq, prev, next); /* unlocks the grq */
@@ -7396,21 +7392,16 @@ static void tasks_cpu_hotplug(int cpu)
 		return;
 
 	do_each_thread(t, p) {
-		if ((p->cached == 1ULL || p->cached == 3ULL) && task_cpu(p) == cpu)
+		if ((p->cached == 1ULL || p->cached == 3ULL) &&
+		    task_cpu(p) == cpu)
 			p->cached = 4ULL;
 
 		if (cpumask_test_cpu(cpu, &p->cpus_allowed_master)) {
 			count++;
-			if (likely(cpumask_and(tsk_cpus_allowed(p),
-					   &p->cpus_allowed_master,
-					   cpu_online_mask))) {
-				p->nr_cpus_allowed =
-					cpumask_weight(tsk_cpus_allowed(p));
-				continue;
-			}
-			cpumask_copy(tsk_cpus_allowed(p),
-				     &p->cpus_allowed_master);
-			cpumask_set_cpu(0, tsk_cpus_allowed(p));
+			if (unlikely(!cpumask_and(tsk_cpus_allowed(p),
+						  &p->cpus_allowed_master,
+						  cpu_online_mask)))
+				cpumask_set_cpu(0, tsk_cpus_allowed(p));
 			p->nr_cpus_allowed = cpumask_weight(tsk_cpus_allowed(p));
 		}
 		if (!cpumask_test_cpu(task_cpu(p), tsk_cpus_allowed(p)))
@@ -7465,7 +7456,6 @@ int sched_cpu_activate(unsigned int cpu)
 	cpumask_set_cpu(cpu, &grq.cpu_idle_map);
 	rq_grq_unlock_irqrestore(rq, &flags);
 	read_unlock(&tasklist_lock);
-	rq_grq_unlock_irqrestore(rq, &flags);
 
 	return 0;
 }
@@ -7509,7 +7499,6 @@ int sched_cpu_starting(unsigned int cpu)
 	 * set_cpu_rq_start_time(cpu);
 	 */
 	sched_rq_cpu_starting(cpu);
-
 	return 0;
 }
 
