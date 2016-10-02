@@ -431,12 +431,25 @@ struct bfq_data {
 	/* on-disk position of the last served request */
 	sector_t last_position;
 
+	u64 last_completion;
+
+	/* time of first request dispatch in probing window */
+	u64 first_dispatch;
+	/* time of last dispatch */
+	u64 last_dispatch;
+
 	/* beginning of the last budget */
 	ktime_t last_budget_start;
 	/* beginning of the last idle slice */
 	ktime_t last_idling_start;
-	/* number of samples used to calculate @peak_rate */
+	/* number of samples in last window */
 	int peak_rate_samples;
+	/* number of samples of seq dispatches in last window */
+	u32 sequential_samples;
+	/* total number of sectors transferred during last window */
+	u64 tot_sectors_dispatched;
+	/* Time elapsed from first dispatch in sampling window */
+	u32 delta_from_first_us;
 	/* peak transfer rate observed for a budget */
 	u64 peak_rate;
 	/* maximum budget allotted to a bfq_queue before rescheduling */
