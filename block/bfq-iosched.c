@@ -1118,32 +1118,13 @@ static void bfq_update_bfqq_wr_on_rq_arrival(struct bfq_data *bfqd,
 				     jiffies,
 				     jiffies_to_msecs(bfqq->
 						      wr_cur_max_time));
-		} else if (time_before(
-				   bfqq->last_wr_start_finish +
-				   bfqq->wr_cur_max_time,
-				   jiffies +
-				   bfqd->bfq_wr_rt_max_time) &&
-			   soft_rt) {
+		} else if (soft_rt) {
 			/*
-			 * The remaining weight-raising time is lower
-			 * than bfqd->bfq_wr_rt_max_time, which means
-			 * that the application is enjoying weight
-			 * raising either because deemed soft-rt in
-			 * the near past, or because deemed interactive
-			 * a long ago.
-			 * In both cases, resetting now the current
-			 * remaining weight-raising time for the
-			 * application to the weight-raising duration
-			 * for soft rt applications would not cause any
-			 * latency increase for the application (as the
-			 * new duration would be higher than the
-			 * remaining time).
-			 *
-			 * In addition, the application is now meeting
-			 * the requirements for being deemed soft rt.
-			 * In the end we can correctly and safely
-			 * (re)charge the weight-raising duration for
-			 * the application with the weight-raising
+			 * The application is now or still meeting the
+			 * requirements for being deemed soft rt.  We
+			 * can then correctly and safely (re)charge
+			 * the weight-raising duration for the
+			 * application with the weight-raising
 			 * duration for soft rt applications.
 			 *
 			 * In particular, doing this recharge now, i.e.,
@@ -1170,11 +1151,16 @@ static void bfq_update_bfqq_wr_on_rq_arrival(struct bfq_data *bfqd,
 			bfqq->last_wr_start_finish = jiffies;
 			bfqq->wr_cur_max_time =
 				bfqd->bfq_wr_rt_max_time;
-			bfqq->wr_coeff = bfqd->bfq_wr_coeff *
-				BFQ_SOFTRT_WEIGHT_FACTOR;
-			bfq_log_bfqq(bfqd, bfqq,
-				     "switching to soft_rt wr, or "
-				     " just moving forward duration");
+			if (bfqq->wr_coeff < bfqd->bfq_wr_coeff *
+			    BFQ_SOFTRT_WEIGHT_FACTOR) {
+				bfqq->wr_coeff = bfqd->bfq_wr_coeff *
+					BFQ_SOFTRT_WEIGHT_FACTOR;
+				bfq_log_bfqq(bfqd, bfqq,
+					"moving forward soft_rt wr duration");
+
+			} else
+				bfq_log_bfqq(bfqd, bfqq,
+					     "switching to soft_rt wr");
 		}
 	}
 }
