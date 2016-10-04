@@ -3577,6 +3577,9 @@ static int bfq_dispatch_requests(struct request_queue *q, int force)
 	if (unlikely(force))
 		return bfq_forced_dispatch(bfqd);
 
+	if (bfqd->strict_guarantees && bfqd->rq_in_driver > 0)
+		return 0;
+
 	bfqq = bfq_select_queue(bfqd);
 	if (!bfqq)
 		return 0;
