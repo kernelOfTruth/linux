@@ -2433,7 +2433,9 @@ static unsigned long nr_uninterruptible(void)
  */
 bool single_task_running(void)
 {
-	if (cpu_rq(smp_processor_id())->sl->entries == 1)
+	struct rq *rq = cpu_rq(smp_processor_id());
+
+	if (!rq->sl->entries && !rq_idle(rq))
 		return true;
 	else
 		return false;
