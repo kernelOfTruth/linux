@@ -578,6 +578,52 @@ static inline void prepare_lock_switch(struct rq *rq, struct task_struct *next)
 	next->on_cpu = 1;
 }
 
+/*
+ * resched_task - mark a task 'to be rescheduled now'.
+ *
+ * On UP this means the setting of the need_resched flag, on SMP it
+ * might also involve a cross-CPU call to trigger the scheduler on
+ * the target CPU.
+ */
+void resched_task(struct task_struct *p)
+{
+	int cpu;
+#ifdef CONFIG_LOCKDEP
+	struct rq *rq = task_rq(p);
+
+	lockdep_assert_held(&rq->lock);
+#endif
+	if (test_tsk_need_resched(p))
+		return;
+
+	set_tsk_need_resched(p);
+
+	cpu = task_cpu(p);
+	if (cpu == smp_processor_id()) {
+		set_preempt_need_resched();
+		return;
+	}
+
+	smp_send_reschedule(cpu);
+}
+
+/* Entered with rq locked */
+static inline void resched_if_idle(struct rq *rq)
+{
+	if (rq_idle(rq))
+		resched_task(rq->curr);
+}
+
+/*
+ * A task that is not running or queued will not have a node set.
+ * A task that is queued but not running will have a node set.
+ * A task that is currently running will have ->on_cpu set but no node set.
+ */
+static inline bool task_queued(struct task_struct *p)
+{
+	return !skiplist_node_empty(&p->node);
+}
+
 static void enqueue_task(struct task_struct *p, struct rq *rq);
 
 static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
@@ -607,7 +653,12 @@ static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 		raw_spin_unlock(&rq->lock);
 
 		rq_lock(rq2);
-		enqueue_task(prev, rq2);
+		/* Check that someone else hasn't already queued prev */
+		if (likely(!task_queued(prev))) {
+			enqueue_task(prev, rq2);
+			/* Wake up the CPU if it's not already running */
+			resched_if_idle(rq2);
+		}
 		rq_unlock(rq2);
 
 		local_irq_enable();
@@ -658,16 +709,6 @@ static inline int longest_deadline_diff(void)
 static inline int ms_longest_deadline_diff(void)
 {
 	return NS_TO_MS(longest_deadline_diff());
-}
-
-/*
- * A task that is not running or queued will not have a node set.
- * A task that is queued but not running will have a node set.
- * A task that is currently running will have ->on_cpu set but no node set.
- */
-static inline bool task_queued(struct task_struct *p)
-{
-	return !skiplist_node_empty(&p->node);
 }
 
 static unsigned long rq_load_avg(struct rq *rq)
@@ -1092,8 +1133,6 @@ static inline void resched_suitable_idle(struct task_struct *p)
 {
 }
 
-static void resched_task(struct task_struct *p);
-
 static inline void resched_curr(struct rq *rq)
 {
 	resched_task(rq->curr);
@@ -1257,35 +1296,6 @@ static inline void __set_tsk_resched(struct task_struct *p)
 {
 	set_tsk_need_resched(p);
 	set_preempt_need_resched();
-}
-
-/*
- * resched_task - mark a task 'to be rescheduled now'.
- *
- * On UP this means the setting of the need_resched flag, on SMP it
- * might also involve a cross-CPU call to trigger the scheduler on
- * the target CPU.
- */
-void resched_task(struct task_struct *p)
-{
-	int cpu;
-#ifdef CONFIG_LOCKDEP
-	struct rq *rq = task_rq(p);
-
-	lockdep_assert_held(&rq->lock);
-#endif
-	if (test_tsk_need_resched(p))
-		return;
-
-	set_tsk_need_resched(p);
-
-	cpu = task_cpu(p);
-	if (cpu == smp_processor_id()) {
-		set_preempt_need_resched();
-		return;
-	}
-
-	smp_send_reschedule(cpu);
 }
 
 /**
