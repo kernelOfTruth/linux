@@ -7252,11 +7252,11 @@ void __init sched_init_smp(void)
 		}
 #endif
 #ifdef CONFIG_SCHED_SMT
-		for_each_cpu(other_cpu, thread_cpumask(cpu))
-			rq->cpu_locality[other_cpu] = 1;
 		if (cpumask_weight(thread_cpumask(cpu)) > 1) {
 			cpumask_copy(&rq->thread_mask, thread_cpumask(cpu));
 			cpumask_clear_cpu(cpu, &rq->thread_mask);
+			for_each_cpu(other_cpu, thread_cpumask(cpu))
+				rq->cpu_locality[other_cpu] = 1;
 			rq->siblings_idle = siblings_cpu_idle;
 			smt_threads = true;
 		}
