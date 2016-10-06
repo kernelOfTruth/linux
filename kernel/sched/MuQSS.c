@@ -711,11 +711,6 @@ static inline int ms_longest_deadline_diff(void)
 	return NS_TO_MS(longest_deadline_diff());
 }
 
-static unsigned long rq_load_avg(struct rq *rq)
-{
-	return rq->sl->entries * SCHED_CAPACITY_SCALE;
-}
-
 /*
  * Update the load average for feeding into cpu frequency governors. Use a
  * rough estimate of a rolling average with ~ time constant of 32ms.
@@ -726,12 +721,12 @@ static void update_load_avg(struct rq *rq)
 	/* rq clock can go backwards so skip update if that happens */
 	if (likely(rq->clock > rq->load_update)) {
 		unsigned long us_interval = (rq->clock - rq->load_update) >> 10;
-		long load;
+		long load, curload = rq->sl->entries + !rq_idle(rq);
 
 		load = rq->load_avg - (rq->load_avg * us_interval * 5 / 262144);
 		if (unlikely(load < 0))
 			load = 0;
-		load += (rq->sl->entries + !rq_idle(rq)) * rq_load_avg(rq) * us_interval * 5 / 262144;
+		load += curload * curload * SCHED_CAPACITY_SCALE * us_interval * 5 / 262144;
 		rq->load_avg = load;
 	}
 	rq->load_update = rq->clock;
