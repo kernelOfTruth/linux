@@ -971,10 +971,8 @@ static inline void atomic_set_cpu(int cpu, cpumask_t *cpumask)
  */
 static inline void set_cpuidle_map(int cpu)
 {
-	if (likely(cpu_online(cpu))) {
+	if (likely(cpu_online(cpu)))
 		atomic_set_cpu(cpu, &grq.cpu_idle_map);
-		grq.idle_cpus = true;
-	}
 }
 
 static inline void atomic_clear_cpu(int cpu, cpumask_t *cpumask)
@@ -984,15 +982,11 @@ static inline void atomic_clear_cpu(int cpu, cpumask_t *cpumask)
 
 static inline void clear_cpuidle_map(int cpu)
 {
-	cpumask_clear_cpu(cpu, &grq.cpu_idle_map);
-	if (cpumask_empty(&grq.cpu_idle_map))
-		grq.idle_cpus = false;
+	atomic_clear_cpu(cpu, &grq.cpu_idle_map);
 }
 
 static bool suitable_idle_cpus(struct task_struct *p)
 {
-	if (!grq.idle_cpus)
-		return false;
 	return (cpumask_intersects(&p->cpus_allowed, &grq.cpu_idle_map));
 }
 
@@ -1102,6 +1096,12 @@ static bool resched_best_idle(struct task_struct *p)
 	best_cpu = best_mask_cpu(task_cpu(p), task_rq(p), &tmpmask);
 	rq = cpu_rq(best_cpu);
 	if (!smt_schedule(p, rq))
+		return false;
+	/*
+	 * Given we do this lockless, do one last check that the rq is still
+	 * idle by the time we get here
+	 */
+	if (unlikely(!rq_idle(rq)))
 		return false;
 	resched_curr(rq);
 	return true;
@@ -7355,7 +7355,6 @@ void __init sched_init(void)
 #ifdef CONFIG_SMP
 	init_defrootdomain();
 	atomic_set(&grq.qnr, 0);
-	grq.idle_cpus = 0;
 	cpumask_clear(&grq.cpu_idle_map);
 #else
 	uprq = &per_cpu(runqueues, 0);
