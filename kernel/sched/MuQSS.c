@@ -347,28 +347,9 @@ static inline void update_rq_clock(struct rq *rq)
 	update_rq_clock_task(rq, delta);
 }
 
-static inline int task_current(struct rq *rq, struct task_struct *p)
+static inline bool task_running(struct task_struct *p)
 {
-	return rq->curr == p;
-}
-
-static inline int task_running(struct rq *rq, struct task_struct *p)
-{
-#ifdef CONFIG_SMP
 	return p->on_cpu;
-#else
-	return task_current(rq, p);
-#endif
-}
-
-static inline int task_on_rq_queued(struct task_struct *p)
-{
-	return p->on_rq == TASK_ON_RQ_QUEUED;
-}
-
-static inline int task_on_rq_migrating(struct task_struct *p)
-{
-	return p->on_rq == TASK_ON_RQ_MIGRATING;
 }
 
 static inline void rq_lock(struct rq *rq)
@@ -647,19 +628,7 @@ static void enqueue_task(struct task_struct *p, struct rq *rq);
 
 static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 {
-#ifdef CONFIG_SMP
-	/*
-	 * After ->on_cpu is cleared, the task can be moved to a different CPU.
-	 * We must ensure this doesn't happen until the switch is completely
-	 * finished.
-	 *
-	 * In particular, the load of prev->state in finish_task_switch() must
-	 * happen before this.
-	 *
-	 * Pairs with the smp_cond_load_acquire() in try_to_wake_up().
-	 */
-	smp_store_release(&prev->on_cpu, 0);
-#endif
+	prev->on_cpu = 0;
 #ifdef CONFIG_DEBUG_SPINLOCK
 	/* this is a valid case when another task releases the spinlock */
 	rq->lock.owner = current;
@@ -677,16 +646,16 @@ static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 	 * the local runqueue lock but leave interrupts disabled and grab the
 	 * remote lock we're migrating it to before enabling them.
 	 */
-	if (unlikely(task_on_rq_migrating(prev))) {
+	if (unlikely(rq->migrate)) {
 		struct rq *rq2 = task_rq(prev);
 
+		rq->migrate = false;
 		raw_spin_unlock(&rq->lock);
 
 		rq_lock(rq2);
 		/* Check that someone else hasn't already queued prev */
 		if (likely(!task_queued(prev))) {
 			enqueue_task(prev, rq2);
-			prev->on_rq = TASK_ON_RQ_QUEUED;
 			/* Wake up the CPU if it's not already running */
 			resched_if_idle(rq2);
 		}
@@ -1218,9 +1187,8 @@ static void activate_task(struct task_struct *p, struct rq *rq)
 	p->prio = effective_prio(p);
 	if (task_contributes_to_load(p))
 		atomic_dec(&grq.nr_uninterruptible);
-
 	enqueue_task(p, rq);
-	p->on_rq = TASK_ON_RQ_QUEUED;
+	p->on_rq = 1;
 	atomic_inc(&grq.nr_running);
 	inc_qnr();
 }
@@ -1310,7 +1278,7 @@ static inline void return_task(struct task_struct *p, struct rq *rq,
 		 * lock is dropped in finish_lock_switch.
 		 */
 		if (unlikely(task_cpu(p) != cpu))
-			p->on_rq = TASK_ON_RQ_MIGRATING;
+			rq->migrate = true;
 		else
 #endif
 			enqueue_task(p, rq);
@@ -1354,8 +1322,8 @@ inline int task_curr(const struct task_struct *p)
  */
 unsigned long wait_task_inactive(struct task_struct *p, long match_state)
 {
-	int running, queued;
 	unsigned long flags;
+	bool running, on_rq;
 	unsigned long ncsw;
 	struct rq *rq;
 
@@ -1373,7 +1341,7 @@ unsigned long wait_task_inactive(struct task_struct *p, long match_state)
 		 * if the runqueue has changed and p is actually now
 		 * running somewhere else!
 		 */
-		while (task_running(rq, p)) {
+		while (task_running(p) && p == rq->curr) {
 			if (match_state && unlikely(p->state != match_state))
 				return 0;
 			cpu_relax();
@@ -1386,8 +1354,8 @@ unsigned long wait_task_inactive(struct task_struct *p, long match_state)
 		 */
 		rq = task_rq_lock(p, &flags);
 		trace_sched_wait_task(p);
-		running = task_running(rq, p);
-		queued = task_on_rq_queued(p);
+		running = task_running(p);
+		on_rq = p->on_rq;
 		ncsw = 0;
 		if (!match_state || p->state == match_state)
 			ncsw = p->nvcsw | LONG_MIN; /* sets MSB */
@@ -1419,7 +1387,7 @@ unsigned long wait_task_inactive(struct task_struct *p, long match_state)
 		 * running right now), it's preempted, and we should
 		 * yield - it could be a while.
 		 */
-		if (unlikely(queued)) {
+		if (unlikely(on_rq)) {
 			ktime_t to = ktime_set(0, NSEC_PER_SEC / HZ);
 
 			set_current_state(TASK_UNINTERRUPTIBLE);
@@ -1558,13 +1526,6 @@ static inline int __set_cpus_allowed_ptr(struct task_struct *p,
 }
 #endif /* CONFIG_SMP */
 
-/*
- * wake flags
- */
-#define WF_SYNC		0x01		/* waker goes to sleep after wakeup */
-#define WF_FORK		0x02		/* child wakeup after fork */
-#define WF_MIGRATED	0x04		/* internal use, task got migrated */
-
 static void
 ttwu_stat(struct task_struct *p, int cpu, int wake_flags)
 {
@@ -1594,71 +1555,6 @@ ttwu_stat(struct task_struct *p, int cpu, int wake_flags)
 	schedstat_inc(rq, ttwu_count);
 #endif /* CONFIG_SCHEDSTATS */
 }
-
-static inline void ttwu_activate(struct rq *rq, struct task_struct *p)
-{
-	activate_task(p, rq);
-
-	/* if a worker is waking up, notify workqueue */
-	if (p->flags & PF_WQ_WORKER)
-		wq_worker_waking_up(p, cpu_of(rq));
-}
-
-/*
- * Mark the task runnable and perform wakeup-preemption.
- */
-static void ttwu_do_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
-{
-	/*
-	 * Sync wakeups (i.e. those types of wakeups where the waker
-	 * has indicated that it will leave the CPU in short order)
-	 * don't trigger a preemption if there are no idle cpus,
-	 * instead waiting for current to deschedule.
-	 */
-	if (wake_flags & WF_SYNC)
-		resched_suitable_idle(p);
-	else
-		try_preempt(p, rq);
-	p->state = TASK_RUNNING;
-	trace_sched_wakeup(p);
-}
-
-static void
-ttwu_do_activate(struct rq *rq, struct task_struct *p, int wake_flags)
-{
-	lockdep_assert_held(&rq->lock);
-
-#ifdef CONFIG_SMP
-	if (p->sched_contributes_to_load)
-		atomic_dec(&grq.nr_uninterruptible);
-#endif
-
-	ttwu_activate(rq, p);
-	ttwu_do_wakeup(rq, p, wake_flags);
-}
-
-/*
- * Called in case the task @p isn't fully descheduled from its runqueue,
- * in this case we must do a remote wakeup. Its a 'light' wakeup though,
- * since all we need to do is flip p->state to TASK_RUNNING, since
- * the task is still ->on_rq.
- */
-static int ttwu_remote(struct task_struct *p, int wake_flags)
-{
-	struct rq *rq;
-	int ret = 0;
-
-	rq = __task_rq_lock(p);
-	if (likely(task_on_rq_queued(p))) {
-		update_clocks(rq);
-		ttwu_do_wakeup(rq, p, wake_flags);
-		ret = 1;
-	}
-	__task_rq_unlock(rq);
-
-	return ret;
-}
-
 
 void wake_up_if_idle(int cpu)
 {
@@ -1692,15 +1588,43 @@ void scheduler_ipi(void)
 }
 #endif
 
+static inline void ttwu_activate(struct task_struct *p, struct rq *rq,
+				 bool is_sync)
+{
+	activate_task(p, rq);
+
+	/*
+	 * Sync wakeups (i.e. those types of wakeups where the waker
+	 * has indicated that it will leave the CPU in short order)
+	 * don't trigger a preemption if there are no idle cpus,
+	 * instead waiting for current to deschedule.
+	 */
+	if (!is_sync || suitable_idle_cpus(p))
+		try_preempt(p, rq);
+}
+
+static inline void ttwu_post_activation(struct task_struct *p, struct rq *rq,
+					bool success)
+{
+	trace_sched_wakeup(p);
+	p->state = TASK_RUNNING;
+
+	/*
+	 * if a worker is waking up, notify workqueue.
+	 */
+	if ((p->flags & PF_WQ_WORKER) && success)
+		wq_worker_waking_up(p, cpu_of(rq));
+}
+
 /*
  * For a task that's just being woken up we have a valuable balancing
  * opportunity so choose the nearest cache most lightly loaded runqueue.
  * Entered with rq locked and returns with the chosen runqueue locked.
  */
-static inline int select_best_cpu(struct task_struct *p)
+static struct rq *select_best_rq(struct task_struct *p, struct rq *rq)
 {
-	struct rq *rq = task_rq(p), *best_rq = rq;
 	unsigned int idlest = ~0U;
+	struct rq *best_rq = rq;
 	int i;
 
 	for (i = 0; i < num_possible_cpus(); i++) {
@@ -1719,17 +1643,25 @@ static inline int select_best_cpu(struct task_struct *p)
 		if (!idlest)
 			break;
 	}
-	return best_rq->cpu;
+	if (best_rq == rq)
+		goto out;
+
+	/* Switch runqueues and locks */
+	__task_rq_unlock(rq);
+	/* Holding pi_lock here */
+	set_task_cpu(p, best_rq->cpu);
+	rq_lock(best_rq);
+out:
+	return best_rq;
 }
 
-static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)
-{
-	struct rq *rq = cpu_rq(cpu);
 
-	rq_lock(rq);
-	ttwu_do_activate(rq, p, wake_flags);
-	rq_unlock(rq);
-}
+/*
+ * wake flags
+ */
+#define WF_SYNC		0x01		/* waker goes to sleep after wakeup */
+#define WF_FORK		0x02		/* child wakeup after fork */
+#define WF_MIGRATED	0x4		/* internal use, task got migrated */
 
 /***
  * try_to_wake_up - wake up a thread
@@ -1746,11 +1678,13 @@ static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)
  * Return: %true if @p was woken up, %false if it was already running.
  * or @state didn't match @p's state.
  */
-static int
-try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
+static bool try_to_wake_up(struct task_struct *p, unsigned int state,
+			  int wake_flags)
 {
+	bool success = false, queued, running;
 	unsigned long flags;
-	int cpu, success = 0;
+	struct rq *rq;
+	int cpu;
 
 	/*
 	 * If we are going to wake up a thread waiting for CONDITION we
@@ -1759,86 +1693,39 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 	 * set_current_state() the waiting thread does.
 	 */
 	smp_mb__before_spinlock();
-	raw_spin_lock_irqsave(&p->pi_lock, flags);
+
+	/*
+	 * No need to do time_lock_rq as we only need to update the rq clock
+	 * if we activate the task
+	 */
+	rq = task_rq_lock(p, &flags);
+	queued = task_queued(p);
+	running = task_running(p);
+
+	if (!queued && !running)
+		rq = select_best_rq(p, rq);
+
+	cpu = task_cpu(p);
+
 	/* state is a volatile long, どうして、分からない */
 	if (!((unsigned int)p->state & state))
-		goto out;
+		goto out_unlock;
 
 	trace_sched_waking(p);
 
-	success = 1; /* we're going to change ->state */
-	cpu = task_cpu(p);
+	if (queued || running)
+		goto out_running;
 
-	/*
-	 * Ensure we load p->on_rq _after_ p->state, otherwise it would
-	 * be possible to, falsely, observe p->on_rq == 0 and get stuck
-	 * in smp_cond_load_acquire() below.
-	 *
-	 * sched_ttwu_pending()                 try_to_wake_up()
-	 *   [S] p->on_rq = 1;                  [L] P->state
-	 *       UNLOCK rq->lock  -----.
-	 *                              \
-	 *				 +---   RMB
-	 * schedule()                   /
-	 *       LOCK rq->lock    -----'
-	 *       UNLOCK rq->lock
-	 *
-	 * [task p]
-	 *   [S] p->state = UNINTERRUPTIBLE     [L] p->on_rq
-	 *
-	 * Pairs with the UNLOCK+LOCK on rq->lock from the
-	 * last wakeup of our task and the schedule that got our task
-	 * current.
-	 */
-	smp_rmb();
-	if (p->on_rq && ttwu_remote(p, wake_flags))
-		goto stat;
+	ttwu_activate(p, rq, wake_flags & WF_SYNC);
+	success = true;
 
-#ifdef CONFIG_SMP
-	/*
-	 * Ensure we load p->on_cpu _after_ p->on_rq, otherwise it would be
-	 * possible to, falsely, observe p->on_cpu == 0.
-	 *
-	 * One must be running (->on_cpu == 1) in order to remove oneself
-	 * from the runqueue.
-	 *
-	 *  [S] ->on_cpu = 1;	[L] ->on_rq
-	 *      UNLOCK rq->lock
-	 *			RMB
-	 *      LOCK   rq->lock
-	 *  [S] ->on_rq = 0;    [L] ->on_cpu
-	 *
-	 * Pairs with the full barrier implied in the UNLOCK+LOCK on rq->lock
-	 * from the consecutive calls to schedule(); the first switching to our
-	 * task, the second putting it to sleep.
-	 */
-	smp_rmb();
+out_running:
+	ttwu_post_activation(p, rq, success);
+out_unlock:
+	task_rq_unlock(rq, p, &flags);
 
-	/*
-	 * If the owning (remote) cpu is still in the middle of schedule() with
-	 * this task as prev, wait until its done referencing the task.
-	 *
-	 * Pairs with the smp_store_release() in finish_lock_switch().
-	 *
-	 * This ensures that tasks getting woken will be fully ordered against
-	 * their previous state and preserve Program Order.
-	 */
-	smp_cond_load_acquire(&p->on_cpu, !VAL);
-
-	p->sched_contributes_to_load = !!task_contributes_to_load(p);
-	p->state = TASK_WAKING;
-
-	cpu = select_best_cpu(p);
-	if (task_cpu(p) != cpu)
-		set_task_cpu(p, cpu);
-#endif /* CONFIG_SMP */
-
-	ttwu_queue(p, cpu, wake_flags);
-stat:
 	if (schedstat_enabled())
 		ttwu_stat(p, cpu, wake_flags);
-out:
-	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 
 	return success;
 }
@@ -1854,6 +1741,7 @@ out:
 static void try_to_wake_up_local(struct task_struct *p)
 {
 	struct rq *rq = task_rq(p);
+	bool success = false;
 
 	if (WARN_ON_ONCE(rq != this_rq()) ||
 	    WARN_ON_ONCE(p == current))
@@ -1878,12 +1766,17 @@ static void try_to_wake_up_local(struct task_struct *p)
 
 	trace_sched_waking(p);
 
-	if (!task_on_rq_queued(p))
-		ttwu_activate(rq, p);
-
-	ttwu_do_wakeup(rq, p, 0);
-	if (schedstat_enabled())
-		ttwu_stat(p, smp_processor_id(), 0);
+	if (!task_queued(p)) {
+		if (likely(!task_running(p))) {
+			schedstat_inc(rq, ttwu_count);
+			schedstat_inc(rq, ttwu_local);
+		}
+		ttwu_activate(p, rq, false);
+		if (schedstat_enabled())
+			ttwu_stat(p, smp_processor_id(), 0);
+		success = true;
+	}
+	ttwu_post_activation(p, rq, success);
 out:
 	raw_spin_unlock(&p->pi_lock);
 }
@@ -1925,13 +1818,6 @@ int sched_fork(unsigned long __maybe_unused clone_flags, struct task_struct *p)
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	INIT_HLIST_HEAD(&p->preempt_notifiers);
 #endif
-	/*
-	 * We mark the process as NEW here. This guarantees that
-	 * nobody will actually run it, and a signal or other external
-	 * event cannot wake it up and insert it on the runqueue either.
-	 */
-	p->state = TASK_NEW;
-
 	/*
 	 * The process state is set to the same value of the process executing
 	 * do_fork() code. That is running. This guarantees that nobody will
@@ -2082,7 +1968,6 @@ void wake_up_new_task(struct task_struct *p)
 	parent = p->parent;
 
 	raw_spin_lock_irqsave(&p->pi_lock, flags);
-	p->state = TASK_RUNNING;
 	if (unlikely(needs_other_cpu(p, task_cpu(p))))
  		set_task_cpu(p, cpumask_any(tsk_cpus_allowed(p)));
 	rq = __task_rq_lock(p);
@@ -3004,7 +2889,7 @@ static inline u64 do_task_delta_exec(struct task_struct *p, struct rq *rq)
 	 * project cycles that may never be accounted to this
 	 * thread, breaking clock_gettime().
 	 */
-	if (p == rq->curr && task_on_rq_queued(p)) {
+	if (p == rq->curr && p->on_rq) {
 		update_clocks(rq);
 		ns = rq->clock_task - rq->rq_last_ran;
 		if (unlikely((s64)ns < 0))
@@ -3038,7 +2923,7 @@ unsigned long long task_sched_runtime(struct task_struct *p)
 	 * If we see ->on_cpu without ->on_rq, the task is leaving, and has
 	 * been accounted, so we're correct here as well.
 	 */
-	if (!p->on_cpu || !task_on_rq_queued(p))
+	if (!p->on_cpu || !p->on_rq)
 		return tsk_seruntime(p);
 #endif
 
@@ -4052,7 +3937,7 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	trace_sched_pi_setprio(p, prio);
 	oldprio = p->prio;
 	p->prio = prio;
-	if (task_running(rq, p)){
+	if (task_running(p)){
 		if (prio > oldprio)
 			resched_task(p);
 	} else if (task_queued(p)) {
@@ -4111,7 +3996,7 @@ void set_user_nice(struct task_struct *p, long nice)
 		enqueue_task(p, rq);
 		if (new_static < old_static)
 			try_preempt(p, rq);
-	} else if (task_running(rq, p)) {
+	} else if (task_running(p)) {
 		reset_rq_task(rq, p);
 		if (old_static < new_static)
 			resched_task(p);
@@ -4258,7 +4143,7 @@ static void __setscheduler(struct task_struct *p, struct rq *rq, int policy,
 	} else
 		p->prio = p->normal_prio;
 
-	if (task_running(rq, p)) {
+	if (task_running(p)) {
 		reset_rq_task(rq, p);
 		resched_task(p);
 	} else if (task_queued(p)) {
@@ -5125,7 +5010,7 @@ again:
 	 * If we're the only runnable task on the rq and target rq also
 	 * has only one task, there's absolutely no point in yielding.
 	 */
-	if (task_running(p_rq, p) || p->state) {
+	if (task_running(p) || p->state) {
 		yielded = -ESRCH;
 		goto out_irq;
 	}
@@ -5432,7 +5317,7 @@ void init_idle(struct task_struct *idle, int cpu)
 	rcu_read_unlock();
 
 	rq->curr = rq->idle = idle;
-	idle->on_rq = TASK_ON_RQ_QUEUED;
+	idle->on_cpu = 1;
 	raw_spin_unlock(&rq->lock);
 	raw_spin_unlock_irqrestore(&idle->pi_lock, flags);
 
@@ -5702,7 +5587,7 @@ static int __set_cpus_allowed_ptr(struct task_struct *p,
 	if (cpumask_test_cpu(task_cpu(p), new_mask))
 		goto out;
 
-	if (task_running(rq, p)) {
+	if (task_running(p)) {
 		/* Task is running on the wrong cpu now, reschedule it. */
 		if (rq == this_rq()) {
 			set_tsk_need_resched(p);
@@ -5762,7 +5647,7 @@ static void bind_zero(int src_cpu)
 			bound++;
 			if (task_cpu(p) == src_cpu) {
 				set_task_cpu(p, 0);
-				if (task_running(task_rq(p), p))
+				if (task_running(p))
 					resched_task(p);
 			}
 		}
@@ -7496,6 +7381,7 @@ void __init sched_init(void)
 		rq->dither = false;
 		set_rq_task(rq, &init_task);
 #ifdef CONFIG_SMP
+		rq->migrate = false;
 		rq->sd = NULL;
 		rq->rd = NULL;
 		rq->online = false;
