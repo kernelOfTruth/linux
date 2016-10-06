@@ -731,10 +731,12 @@ static void update_load_avg(struct rq *rq)
 		load = rq->load_avg - (rq->load_avg * us_interval * 5 / 262144);
 		if (unlikely(load < 0))
 			load = 0;
-		load += rq->sl->entries * rq_load_avg(rq) * us_interval * 5 / 262144;
+		load += (rq->sl->entries + !rq_idle(rq)) * rq_load_avg(rq) * us_interval * 5 / 262144;
 		rq->load_avg = load;
 	}
 	rq->load_update = rq->clock;
+	if (likely(rq->cpu == smp_processor_id()))
+		cpufreq_trigger(rq->niffies, rq->load_avg);
 }
 
 /*
@@ -1194,8 +1196,6 @@ static void activate_task(struct task_struct *p, struct rq *rq)
 	p->on_rq = 1;
 	atomic_inc(&grq.nr_running);
 	inc_qnr();
-	update_load_avg(rq);
-	cpufreq_trigger(rq->niffies, rq->load_avg);
 }
 
 /*
@@ -1210,7 +1210,6 @@ static inline void deactivate_task(struct task_struct *p, struct rq *rq)
 	p->on_rq = 0;
 	atomic_dec(&grq.nr_running);
 	update_load_avg(rq);
-	cpufreq_trigger(rq->niffies, rq->load_avg);
 }
 
 #ifdef CONFIG_SMP
@@ -3203,7 +3202,6 @@ void scheduler_tick(void)
 	update_rq_clock(rq);
 	update_cpu_clock_tick(rq, rq->curr);
 	update_load_avg(rq);
-	cpufreq_trigger(rq->niffies, rq->load_avg);
 	if (!rq_idle(rq))
 		task_running_tick(rq);
 	else
