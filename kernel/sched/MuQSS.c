@@ -1348,7 +1348,7 @@ unsigned long wait_task_inactive(struct task_struct *p, long match_state)
 		}
 
 		/*
-		 * Ok, time to look more closely! We need the grq
+		 * Ok, time to look more closely! We need the rq
 		 * lock now, to be *sure*. If we're wrong, we'll
 		 * just go back and repeat.
 		 */
@@ -1695,7 +1695,7 @@ static bool try_to_wake_up(struct task_struct *p, unsigned int state,
 	smp_mb__before_spinlock();
 
 	/*
-	 * No need to do time_lock_grq as we only need to update the rq clock
+	 * No need to do time_lock_rq as we only need to update the rq clock
 	 * if we activate the task
 	 */
 	rq = task_rq_lock(p, &flags);
@@ -1731,12 +1731,12 @@ out_unlock:
 }
 
 /**
- * try_to_wake_up_local - try to wake up a local task with grq lock held
+ * try_to_wake_up_local - try to wake up a local task with rq lock held
  * @p: the thread to be awakened
  *
  * Put @p on the run-queue if it's not already there. The caller must
- * ensure that grq is locked and, @p is not the current task.
- * grq stays locked over invocation.
+ * ensure that rq is locked and, @p is not the current task.
+ * rq stays locked over invocation.
  */
 static void try_to_wake_up_local(struct task_struct *p)
 {
