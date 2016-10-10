@@ -402,6 +402,19 @@ static inline struct rq *this_rq_lock(void)
 }
 
 /*
+ * Any time we have two runqueues locked we use that as an opportunity to
+ * synchronise niffies to the highest value as idle ticks may have artificially
+ * kept niffies low on one CPU and the truth can only be later.
+ */
+static inline void synchronise_niffies(struct rq *rq1, struct rq *rq2)
+{
+	if (rq1->niffies > rq2->niffies)
+		rq2->niffies = rq1->niffies;
+	else
+		rq1->niffies = rq2->niffies;
+}
+
+/*
  * double_rq_lock - safely lock two runqueues
  *
  * Note this does not disable interrupts like task_rq_lock,
@@ -432,6 +445,7 @@ static inline void double_rq_lock(struct rq *rq1, struct rq *rq2)
 		__acquire(rq2->lock);	/* Fake it out ;) */
 	} else
 		__double_rq_lock(rq1, rq2);
+	synchronise_niffies(rq1, rq2);
 }
 
 /*
@@ -462,6 +476,7 @@ static inline void lock_second_rq(struct rq *rq1, struct rq *rq2)
 		raw_spin_unlock(&rq1->lock);
 		__double_rq_lock(rq1, rq2);
 	}
+	synchronise_niffies(rq1, rq2);
 }
 
 static inline void lock_all_rqs(void)
@@ -489,11 +504,12 @@ static inline void unlock_all_rqs(void)
 }
 
 /* Specially nest trylock an rq */
-static inline bool trylock_rq(struct rq *rq)
+static inline bool trylock_rq(struct rq *this_rq, struct rq *rq)
 {
 	if (unlikely(!do_raw_spin_trylock(&rq->lock)))
 		return false;
 	spin_acquire(&rq->lock.dep_map, SINGLE_DEPTH_NESTING, 1, _RET_IP_);
+	synchronise_niffies(this_rq, rq);
 	return true;
 }
 
@@ -682,6 +698,7 @@ static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 
 		raw_spin_unlock(&rq->lock);
 
+		raw_spin_lock(&prev->pi_lock);
 		rq_lock(rq2);
 		/* Check that someone else hasn't already queued prev */
 		if (likely(task_on_rq_migrating(prev) && !task_queued(prev))) {
@@ -691,6 +708,7 @@ static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 			resched_if_idle(rq2);
 		}
 		rq_unlock(rq2);
+		raw_spin_unlock(&prev->pi_lock);
 
 		local_irq_enable();
 	} else
@@ -779,7 +797,6 @@ static void update_load_avg(struct rq *rq)
 static void dequeue_task(struct task_struct *p, struct rq *rq)
 {
 	skiplist_delete(rq->sl, &p->node);
-	sched_info_dequeued(task_rq(p), p);
 	update_load_avg(rq);
 }
 
@@ -867,13 +884,7 @@ static void enqueue_task(struct task_struct *p, struct rq *rq)
 	 */
 	randseed = (rq->niffies >> 10) & 0xFFFFFFFF;
 	skiplist_insert(rq->sl, &p->node, sl_id, p, randseed);
-	sched_info_queued(rq, p);
 	update_load_avg(rq);
-}
-
-static inline void requeue_task(struct task_struct *p)
-{
-	sched_info_queued(task_rq(p), p);
 }
 
 /*
@@ -1226,6 +1237,7 @@ static void activate_task(struct task_struct *p, struct rq *rq)
 		atomic_dec(&grq.nr_uninterruptible);
 
 	enqueue_task(p, rq);
+	sched_info_queued(rq, p);
 	p->on_rq = TASK_ON_RQ_QUEUED;
 	atomic_inc(&grq.nr_running);
 	inc_qnr();
@@ -1240,6 +1252,7 @@ static inline void deactivate_task(struct task_struct *p, struct rq *rq)
 	if (task_contributes_to_load(p))
 		atomic_inc(&grq.nr_uninterruptible);
 
+	sched_info_dequeued(rq, p);
 	p->on_rq = 0;
 	atomic_dec(&grq.nr_running);
 	update_load_avg(rq);
@@ -1841,7 +1854,6 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 	smp_cond_load_acquire(&p->on_cpu, !VAL);
 
 	p->sched_contributes_to_load = !!task_contributes_to_load(p);
-	p->state = TASK_WAKING;
 
 	cpu = select_best_cpu(p);
 	if (task_cpu(p) != cpu)
@@ -2102,12 +2114,6 @@ void wake_up_new_task(struct task_struct *p)
  		set_task_cpu(p, cpumask_any(tsk_cpus_allowed(p)));
 	rq = __task_rq_lock(p);
 	rq_curr = rq->curr;
-
-	/*
-	 * Reinit new task deadline as its creator deadline could have changed
-	 * since call to dup_task_struct().
-	 */
-	p->deadline = rq->rq_deadline;
 
 	/*
 	 * Make sure we do not leak PI boosting priority to the child.
@@ -3311,7 +3317,6 @@ static void task_running_tick(struct rq *rq)
 	p = rq->curr;
 
 	rq_lock(rq);
-	requeue_task(p);
 	__set_tsk_resched(p);
 	rq_unlock(rq);
 }
@@ -3492,7 +3497,7 @@ task_struct *earliest_deadline_task(struct rq *rq, int cpu, struct task_struct *
 
 		/* if (i) implies other_rq != rq */
 		if (i) {
-			if (unlikely(!trylock_rq(other_rq)))
+			if (unlikely(!trylock_rq(rq, other_rq)))
 				continue;
 			/* Need to reevaluate entries after locking */
 			entries = other_rq->sl->entries;
@@ -5013,7 +5018,6 @@ SYSCALL_DEFINE0(sched_yield)
 	p = current;
 	rq = this_rq_lock();
 	schedstat_inc(task_rq(p), yld_count);
-	requeue_task(p);
 
 	/*
 	 * Since we are going to call schedule() anyway, there's
@@ -5717,7 +5721,7 @@ static int __set_cpus_allowed_ptr(struct task_struct *p,
 	if (cpumask_test_cpu(task_cpu(p), new_mask))
 		goto out;
 
-	if (task_running(rq, p) || p->state == TASK_WAKING) {
+	if (task_running(rq, p)) {
 		/* Task is running on the wrong cpu now, reschedule it. */
 		if (rq == this_rq()) {
 			set_tsk_need_resched(p);
