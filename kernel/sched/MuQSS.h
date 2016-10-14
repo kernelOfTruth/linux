@@ -22,9 +22,6 @@ struct rq {
 
 	/* Stored data about rq->curr to work outside rq lock */
 	u64 rq_deadline;
-	unsigned int rq_policy;
-	int rq_time_slice;
-	u64 rq_last_ran;
 	int rq_prio;
 
 	unsigned long last_scheduler_tick; /* Last jiffy this RQ ticked */
