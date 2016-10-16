@@ -44,6 +44,8 @@ struct rq {
 	skiplist_node node;
 	skiplist *sl;
 #ifdef CONFIG_SMP
+	struct task_struct *preempt; /* Preempt triggered on this task */
+
 	int cpu;		/* cpu of this runqueue */
 	bool online;
 
@@ -75,7 +77,7 @@ struct rq {
 
 	u64 clock, old_clock, last_tick;
 	u64 clock_task;
-	bool dither;
+	int dither;
 
 	int iso_ticks;
 	bool iso_refractory;

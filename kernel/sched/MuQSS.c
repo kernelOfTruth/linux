@@ -1032,6 +1032,8 @@ static void resched_curr(struct rq *rq)
 	if (test_tsk_need_resched(rq->curr))
 		return;
 
+	rq->preempt = rq->curr;
+
 	/* We're doing this without holding the rq lock if it's not task_rq */
 	set_tsk_need_resched(rq->curr);
 
@@ -1118,6 +1120,24 @@ bool cpus_share_cache(int this_cpu, int that_cpu)
 	return (this_rq->cpu_locality[that_cpu] < 3);
 }
 
+/* As per resched_curr but only will resched idle task */
+static inline void resched_idle(struct rq *rq)
+{
+	if (test_tsk_need_resched(rq->idle))
+		return;
+
+	rq->preempt = rq->idle;
+
+	set_tsk_need_resched(rq->idle);
+
+	if (rq_local(rq)) {
+		set_preempt_need_resched();
+		return;
+	}
+
+	smp_send_reschedule(rq->cpu);
+}
+
 static struct rq *resched_best_idle(struct task_struct *p, int cpu)
 {
 	cpumask_t tmpmask;
@@ -1129,13 +1149,7 @@ static struct rq *resched_best_idle(struct task_struct *p, int cpu)
 	rq = cpu_rq(best_cpu);
 	if (!smt_schedule(p, rq))
 		return NULL;
-	/*
-	 * Given we do this lockless, do one last check that the rq is still
-	 * idle by the time we get here
-	 */
-	if (unlikely(!rq_idle(rq)))
-		return NULL;
-	resched_curr(rq);
+	resched_idle(rq);
 	return rq;
 }
 
@@ -1261,6 +1275,7 @@ static inline void deactivate_task(struct task_struct *p, struct rq *rq)
 
 	p->on_rq = 0;
 	atomic_dec(&grq.nr_running);
+	sched_info_dequeued(rq, p);
 }
 
 #ifdef CONFIG_SMP
@@ -2200,7 +2215,7 @@ void wake_up_new_task(struct task_struct *p)
 			 */
 			rq_curr->time_slice = 0;
 			__set_tsk_resched(rq_curr);
-			time_slice_expired(p, rq);
+			time_slice_expired(p, new_rq);
 			if (suitable_idle_cpus(p))
 				resched_best_idle(p, task_cpu(p));
 			else if (unlikely(rq != new_rq))
@@ -2218,7 +2233,7 @@ void wake_up_new_task(struct task_struct *p)
 				try_preempt(p, new_rq);
 		}
 	} else {
-		time_slice_expired(p, rq);
+		time_slice_expired(p, new_rq);
 		try_preempt(p, new_rq);
 	}
 	double_rq_unlock(rq, new_rq);
@@ -3316,12 +3331,12 @@ static void task_running_tick(struct rq *rq)
 	if (iso_task(p)) {
 		if (task_running_iso(p)) {
 			if (rq->iso_refractory) {
-			/*
-			 * SCHED_ISO task is running as RT and limit
-			 * has been hit. Force it to reschedule as
-			 * SCHED_NORMAL by zeroing its time_slice
-			 */
-			p->time_slice = 0;
+				/*
+				 * SCHED_ISO task is running as RT and limit
+				 * has been hit. Force it to reschedule as
+				 * SCHED_NORMAL by zeroing its time_slice
+				 */
+				p->time_slice = 0;
 			}
 		} else if (!rq->iso_refractory) {
 			/* Can now run again ISO. Reschedule to pick up prio */
@@ -3335,16 +3350,9 @@ static void task_running_tick(struct rq *rq)
 	 * run out of time slice in the interim. Otherwise, if they have
 	 * less than RESCHED_US μs of time slice left they will be rescheduled.
 	 */
-	if (rq->dither) {
-		if (p->time_slice > HALF_JIFFY_US)
-			return;
-		else
-			p->time_slice = 0;
-	} else if (p->time_slice >= RESCHED_US)
-			return;
+	if (p->time_slice - rq->dither >= RESCHED_US)
+		return;
 out_resched:
-	p = rq->curr;
-
 	rq_lock(rq);
 	__set_tsk_resched(p);
 	rq_unlock(rq);
@@ -3752,6 +3760,7 @@ static void __sched notrace __schedule(bool preempt)
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
 	prev = rq->curr;
+	idle = rq->idle;
 
 	/*
 	 * do_exit() calls schedule() with preemption disabled as an exception;
@@ -3776,6 +3785,22 @@ static void __sched notrace __schedule(bool preempt)
 	 */
 	smp_mb__before_spinlock();
 	rq_lock(rq);
+#ifdef CONFIG_SMP
+	if (rq->preempt) {
+		/*
+		 * Make sure resched_curr hasn't triggered a preemption
+		 * locklessly on a task that has since scheduled away. Spurious
+		 * wakeup of idle is okay though.
+		 */
+		if (unlikely(preempt && prev != idle && !test_tsk_need_resched(prev))) {
+			rq->preempt = NULL;
+			clear_preempt_need_resched();
+			rq_unlock_irq(rq);
+			return;
+		}
+		rq->preempt = NULL;
+	}
+#endif
 
 	switch_count = &prev->nivcsw;
 	if (!preempt && prev->state) {
@@ -3810,14 +3835,13 @@ static void __sched notrace __schedule(bool preempt)
 	update_clocks(rq);
 	update_cpu_clock_switch(rq, prev);
 	if (rq->clock - rq->last_tick > HALF_JIFFY_NS)
-		rq->dither = false;
+		rq->dither = 0;
 	else
-		rq->dither = true;
+		rq->dither = HALF_JIFFY_US;
 
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 
-	idle = rq->idle;
 	if (idle != prev) {
 		/* Update all the information stored on struct rq */
 		prev->deadline = rq->rq_deadline;
@@ -7544,7 +7568,7 @@ void __init sched_init(void)
 		rq->last_jiffy = jiffies;
 		rq->user_pc = rq->nice_pc = rq->softirq_pc = rq->system_pc =
 			      rq->iowait_pc = rq->idle_pc = 0;
-		rq->dither = false;
+		rq->dither = 0;
 		set_rq_task(rq, &init_task);
 		rq->iso_ticks = 0;
 		rq->iso_refractory = false;
