@@ -1,5 +1,5 @@
 /*
- * BFQ-v8r3 for 4.8.0: data structures and common functions prototypes.
+ * BFQ-v8r4 for 4.8.0: data structures and common functions prototypes.
  *
  * Based on ideas and code from CFQ:
  * Copyright (C) 2003 Jens Axboe <axboe@kernel.dk>
@@ -298,6 +298,10 @@ struct bfq_queue {
 	 * last transition from idle to backlogged.
 	 */
 	unsigned long service_from_backlogged;
+	/*
+	 * Value of wr start time when switching to soft rt
+	 */
+	unsigned long wr_start_at_switch_to_srt;
 
 	unsigned long split_time; /* time of last split */
 };
@@ -352,6 +356,13 @@ struct bfq_io_cq {
 	 * with another cooperating queue.
 	 */
 	bool was_in_burst_list;
+
+	/*
+	 * Similar to previous fields: save wr information.
+	 */
+	unsigned long saved_wr_coeff;
+	unsigned long saved_last_wr_start_finish;
+	unsigned long saved_wr_start_at_switch_to_srt;
 };
 
 enum bfq_device_speed {
@@ -431,27 +442,32 @@ struct bfq_data {
 	/* on-disk position of the last served request */
 	sector_t last_position;
 
+	/* time of last request completion (ns) */
 	u64 last_completion;
 
-	/* time of first request dispatch in probing window */
+	/* time of first rq dispatch in current observation interval (ns) */
 	u64 first_dispatch;
-	/* time of last dispatch */
+	/* time of last rq dispatch in current observation interval (ns) */
 	u64 last_dispatch;
 
 	/* beginning of the last budget */
 	ktime_t last_budget_start;
 	/* beginning of the last idle slice */
 	ktime_t last_idling_start;
-	/* number of samples in last window */
+
+	/* number of samples in current observation interval */
 	int peak_rate_samples;
-	/* number of samples of seq dispatches in last window */
+	/* num of samples of seq dispatches in current observation interval */
 	u32 sequential_samples;
-	/* total number of sectors transferred during last window */
+	/* total num of sectors transferred in current observation interval */
 	u64 tot_sectors_dispatched;
-	/* Time elapsed from first dispatch in sampling window */
-	u32 delta_from_first_us;
-	/* peak transfer rate observed for a budget */
-	u64 peak_rate;
+	/* max rq size seen during current observation interval (sectors) */
+	u32 last_rq_max_size;
+	/* time elapsed from first dispatch in current observ. interval (us) */
+	u64 delta_from_first;
+	/* current estimate of device peak rate */
+	u32 peak_rate;
+
 	/* maximum budget allotted to a bfq_queue before rescheduling */
 	int bfq_max_budget;
 
@@ -470,7 +486,7 @@ struct bfq_data {
 	/* maximum allowed backward seek */
 	unsigned int bfq_back_max;
 	/* maximum idling time */
-	u64 bfq_slice_idle;
+	u32 bfq_slice_idle;
 	/* last time CLASS_IDLE was served */
 	u64 bfq_class_idle_last_service;
 
