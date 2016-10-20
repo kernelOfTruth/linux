@@ -175,10 +175,17 @@ static inline int timeslice(void)
  * variables and a cpu bitmap set atomically.
  */
 struct global_rq {
-	atomic_t nr_running;
-	atomic_t nr_uninterruptible;
-	atomic64_t nr_switches;
-	atomic_t qnr; /* queued not running */
+#ifdef CONFIG_SMP
+	atomic_t nr_running ____cacheline_aligned_in_smp;
+	atomic_t nr_uninterruptible ____cacheline_aligned_in_smp;
+	atomic64_t nr_switches ____cacheline_aligned_in_smp;
+	atomic_t qnr ____cacheline_aligned_in_smp; /* queued not running */
+#else
+	atomic_t nr_running ____cacheline_aligned;
+	atomic_t nr_uninterruptible ____cacheline_aligned;
+	atomic64_t nr_switches ____cacheline_aligned;
+	atomic_t qnr ____cacheline_aligned; /* queued not running */
+#endif
 #ifdef CONFIG_SMP
 	cpumask_t cpu_idle_map;
 #endif
@@ -217,7 +224,11 @@ static struct root_domain def_root_domain;
 #endif /* CONFIG_SMP */
 
 /* There can be only one */
-static struct global_rq grq;
+#ifdef CONFIG_SMP
+static struct global_rq grq ____cacheline_aligned_in_smp;
+#else
+static struct global_rq grq ____cacheline_aligned;
+#endif
 
 static DEFINE_MUTEX(sched_hotcpu_mutex);
 
@@ -328,8 +339,6 @@ static inline void update_clocks(struct rq *rq)
 
 	update_rq_clock(rq);
 	ndiff = rq->clock - rq->old_clock;
-	if (unlikely(!ndiff))
-		return;
 	rq->old_clock = rq->clock;
 	ndiff -= rq->niffies - rq->last_niffy;
 	jdiff = jiffies - rq->last_jiffy;
@@ -585,6 +594,121 @@ static inline void __task_rq_unlock(struct rq *rq)
 	rq_unlock(rq);
 }
 
+/*
+ * cmpxchg based fetch_or, macro so it works for different integer types
+ */
+#define fetch_or(ptr, mask)						\
+	({								\
+		typeof(ptr) _ptr = (ptr);				\
+		typeof(mask) _mask = (mask);				\
+		typeof(*_ptr) _old, _val = *_ptr;			\
+									\
+		for (;;) {						\
+			_old = cmpxchg(_ptr, _val, _val | _mask);	\
+			if (_old == _val)				\
+				break;					\
+			_val = _old;					\
+		}							\
+	_old;								\
+})
+
+#if defined(CONFIG_SMP) && defined(TIF_POLLING_NRFLAG)
+/*
+ * Atomically set TIF_NEED_RESCHED and test for TIF_POLLING_NRFLAG,
+ * this avoids any races wrt polling state changes and thereby avoids
+ * spurious IPIs.
+ */
+static bool set_nr_and_not_polling(struct task_struct *p)
+{
+	struct thread_info *ti = task_thread_info(p);
+	return !(fetch_or(&ti->flags, _TIF_NEED_RESCHED) & _TIF_POLLING_NRFLAG);
+}
+
+/*
+ * Atomically set TIF_NEED_RESCHED if TIF_POLLING_NRFLAG is set.
+ *
+ * If this returns true, then the idle task promises to call
+ * sched_ttwu_pending() and reschedule soon.
+ */
+static bool set_nr_if_polling(struct task_struct *p)
+{
+	struct thread_info *ti = task_thread_info(p);
+	typeof(ti->flags) old, val = READ_ONCE(ti->flags);
+
+	for (;;) {
+		if (!(val & _TIF_POLLING_NRFLAG))
+			return false;
+		if (val & _TIF_NEED_RESCHED)
+			return true;
+		old = cmpxchg(&ti->flags, val, val | _TIF_NEED_RESCHED);
+		if (old == val)
+			break;
+		val = old;
+	}
+	return true;
+}
+
+#else
+static bool set_nr_and_not_polling(struct task_struct *p)
+{
+	set_tsk_need_resched(p);
+	return true;
+}
+
+#ifdef CONFIG_SMP
+static bool set_nr_if_polling(struct task_struct *p)
+{
+	return false;
+}
+#endif
+#endif
+
+void wake_q_add(struct wake_q_head *head, struct task_struct *task)
+{
+	struct wake_q_node *node = &task->wake_q;
+
+	/*
+	 * Atomically grab the task, if ->wake_q is !nil already it means
+	 * its already queued (either by us or someone else) and will get the
+	 * wakeup due to that.
+	 *
+	 * This cmpxchg() implies a full barrier, which pairs with the write
+	 * barrier implied by the wakeup in wake_up_q().
+	 */
+	if (cmpxchg(&node->next, NULL, WAKE_Q_TAIL))
+		return;
+
+	get_task_struct(task);
+
+	/*
+	 * The head is context local, there can be no concurrency.
+	 */
+	*head->lastp = node;
+	head->lastp = &node->next;
+}
+
+void wake_up_q(struct wake_q_head *head)
+{
+	struct wake_q_node *node = head->first;
+
+	while (node != WAKE_Q_TAIL) {
+		struct task_struct *task;
+
+		task = container_of(node, struct task_struct, wake_q);
+		BUG_ON(!task);
+		/* task can safely be re-inserted now */
+		node = node->next;
+		task->wake_q.next = NULL;
+
+		/*
+		 * wake_up_process() implies a wmb() to pair with the queueing
+		 * in wake_q_add() so as not to miss wakeups.
+		 */
+		wake_up_process(task);
+		put_task_struct(task);
+	}
+}
+
 static inline void prepare_lock_switch(struct rq *rq, struct task_struct *next)
 {
 	next->on_cpu = 1;
@@ -608,15 +732,17 @@ void resched_task(struct task_struct *p)
 	if (test_tsk_need_resched(p))
 		return;
 
-	set_tsk_need_resched(p);
-
 	cpu = task_cpu(p);
 	if (cpu == smp_processor_id()) {
+		set_tsk_need_resched(p);
 		set_preempt_need_resched();
 		return;
 	}
 
-	smp_send_reschedule(cpu);
+	if (set_nr_and_not_polling(p))
+		smp_send_reschedule(cpu);
+	else
+		trace_sched_wake_idle_without_ipi(cpu);
 }
 
 /*
@@ -692,11 +818,6 @@ static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 static inline bool deadline_before(u64 deadline, u64 time)
 {
 	return (deadline < time);
-}
-
-static inline bool deadline_after(u64 deadline, u64 time)
-{
-	return (deadline > time);
 }
 
 /*
@@ -906,7 +1027,7 @@ static inline int queued_notrunning(void)
 /* Entered with rq locked */
 static inline void resched_if_idle(struct rq *rq)
 {
-	if (rq_idle(rq) && rq->online)
+	if (rq_idle(rq))
 		resched_task(rq->curr);
 }
 
@@ -1031,20 +1152,26 @@ static bool suitable_idle_cpus(struct task_struct *p)
  */
 static void resched_curr(struct rq *rq)
 {
+	int cpu;
+
 	if (test_tsk_need_resched(rq->curr))
 		return;
 
 	rq->preempt = rq->curr;
+	cpu = rq->cpu;
 
 	/* We're doing this without holding the rq lock if it's not task_rq */
-	set_tsk_need_resched(rq->curr);
 
-	if (rq_local(rq)) {
+	if (cpu == smp_processor_id()) {
+		set_tsk_need_resched(rq->curr);
 		set_preempt_need_resched();
 		return;
 	}
 
-	smp_send_reschedule(rq->cpu);
+	if (set_nr_and_not_polling(rq->curr))
+		smp_send_reschedule(cpu);
+	else
+		trace_sched_wake_idle_without_ipi(cpu);
 }
 
 #define CPUIDLE_DIFF_THREAD	(1)
@@ -1253,7 +1380,7 @@ static void activate_task(struct task_struct *p, struct rq *rq)
 	if (unlikely(prof_on == SLEEP_PROFILING)) {
 		if (p->state == TASK_UNINTERRUPTIBLE)
 			profile_hits(SLEEP_PROFILING, (void *)get_wchan(p),
-				     (rq->clock_task - p->last_ran) >> 20);
+				     (rq->clock - p->last_ran) >> 20);
 	}
 
 	p->prio = effective_prio(p);
@@ -1711,6 +1838,74 @@ static int ttwu_remote(struct task_struct *p, int wake_flags)
 	return ret;
 }
 
+#ifdef CONFIG_SMP
+static bool sched_smp_initialized __read_mostly;
+
+void sched_ttwu_pending(void)
+{
+	struct rq *rq = this_rq();
+	struct llist_node *llist = llist_del_all(&rq->wake_list);
+	struct task_struct *p;
+	unsigned long flags;
+
+	if (!llist)
+		return;
+
+	raw_spin_lock_irqsave(&rq->lock, flags);
+
+	while (llist) {
+		int wake_flags = 0;
+
+		p = llist_entry(llist, struct task_struct, wake_entry);
+		llist = llist_next(llist);
+
+		ttwu_do_activate(rq, p, wake_flags);
+	}
+
+	raw_spin_unlock_irqrestore(&rq->lock, flags);
+}
+
+void scheduler_ipi(void)
+{
+	/*
+	 * Fold TIF_NEED_RESCHED into the preempt_count; anybody setting
+	 * TIF_NEED_RESCHED remotely (for the first time) will also send
+	 * this IPI.
+	 */
+	preempt_fold_need_resched();
+
+	if (llist_empty(&this_rq()->wake_list) && (!idle_cpu(smp_processor_id()) || need_resched()))
+		return;
+
+	/*
+	 * Not all reschedule IPI handlers call irq_enter/irq_exit, since
+	 * traditionally all their work was done from the interrupt return
+	 * path. Now that we actually do some work, we need to make sure
+	 * we do call them.
+	 *
+	 * Some archs already do call them, luckily irq_enter/exit nest
+	 * properly.
+	 *
+	 * Arguably we should visit all archs and update all handlers,
+	 * however a fair share of IPIs are still resched only so this would
+	 * somewhat pessimize the simple resched case.
+	 */
+	irq_enter();
+	sched_ttwu_pending();
+	irq_exit();
+}
+
+static void ttwu_queue_remote(struct task_struct *p, int cpu, int wake_flags)
+{
+	struct rq *rq = cpu_rq(cpu);
+
+	if (llist_add(&p->wake_entry, &cpu_rq(cpu)->wake_list)) {
+		if (!set_nr_if_polling(rq->idle))
+			smp_send_reschedule(cpu);
+		else
+			trace_sched_wake_idle_without_ipi(cpu);
+	}
+}
 
 void wake_up_if_idle(int cpu)
 {
@@ -1722,33 +1917,18 @@ void wake_up_if_idle(int cpu)
 	if (!is_idle_task(rcu_dereference(rq->curr)))
 		goto out;
 
-	rq_lock_irqsave(rq, &flags);
-	if (likely(is_idle_task(rq->curr)))
-		smp_send_reschedule(cpu);
-	/* Else cpu is not in idle, do nothing here */
-	rq_unlock_irqrestore(rq, &flags);
+	if (set_nr_if_polling(rq->idle)) {
+		trace_sched_wake_idle_without_ipi(cpu);
+	} else {
+		rq_lock_irqsave(rq, &flags);
+		if (likely(is_idle_task(rq->curr)))
+			smp_send_reschedule(cpu);
+		/* Else cpu is not in idle, do nothing here */
+		rq_unlock_irqrestore(rq, &flags);
+	}
 
 out:
 	rcu_read_unlock();
-}
-
-static bool sched_smp_initialized __read_mostly;
-
-#ifdef CONFIG_SMP
-void scheduler_ipi(void)
-{
-	/*
-	 * Fold TIF_NEED_RESCHED into the preempt_count; anybody setting
-	 * TIF_NEED_RESCHED remotely (for the first time) will also send
-	 * this IPI.
-	 */
-	preempt_fold_need_resched();
-
-	if (!idle_cpu(smp_processor_id()) || need_resched())
-		return;
-
-	irq_enter();
-	irq_exit();
 }
 
 static int valid_task_cpu(struct task_struct *p)
@@ -1761,8 +1941,9 @@ static int valid_task_cpu(struct task_struct *p)
 		cpumask_and(&valid_mask, tsk_cpus_allowed(p), cpu_active_mask);
 
 	if (unlikely(!cpumask_weight(&valid_mask))) {
+		/* Hotplug boot threads do this before the CPU is up */
 		WARN_ON(sched_smp_initialized);
-		return smp_processor_id();
+		return cpumask_any(tsk_cpus_allowed(p));
 	}
 	return cpumask_any(&valid_mask);
 }
@@ -1827,6 +2008,13 @@ static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)
 {
 	struct rq *rq = cpu_rq(cpu);
 
+#if defined(CONFIG_SMP)
+	if (!cpus_share_cache(smp_processor_id(), cpu)) {
+		sched_clock_cpu(cpu); /* sync clocks x-cpu */
+		ttwu_queue_remote(p, cpu, wake_flags);
+		return;
+	}
+#endif
 	rq_lock(rq);
 	ttwu_do_activate(rq, p, wake_flags);
 	rq_unlock(rq);
@@ -2803,7 +2991,6 @@ static void update_rq_clock_task(struct rq *rq, s64 delta)
 		delta -= steal;
 	}
 #endif
-
 	rq->clock_task += delta;
 }
 
@@ -3021,7 +3208,7 @@ static void pc_user_time(struct rq *rq, struct task_struct *p,
 static void
 update_cpu_clock_tick(struct rq *rq, struct task_struct *p)
 {
-	long account_ns = rq->clock_task - p->last_ran;
+	long account_ns = rq->clock - p->last_ran;
 	struct task_struct *idle = rq->idle;
 	unsigned long account_pc;
 
@@ -3045,14 +3232,13 @@ update_cpu_clock_tick(struct rq *rq, struct task_struct *p)
 ts_account:
 	/* time_slice accounting is done in usecs to avoid overflow on 32bit */
 	if (p->policy != SCHED_FIFO && p != idle) {
-		s64 time_diff = rq->clock - rq->timekeep_clock;
+		s64 time_diff = rq->clock - p->last_ran;
 
 		niffy_diff(&time_diff, 1);
 		p->time_slice -= NS_TO_US(time_diff);
 	}
 
-	p->last_ran = rq->clock_task;
-	rq->timekeep_clock = rq->clock;
+	p->last_ran = rq->clock;
 }
 
 /*
@@ -3063,7 +3249,7 @@ ts_account:
 static void
 update_cpu_clock_switch(struct rq *rq, struct task_struct *p)
 {
-	long account_ns = rq->clock_task - p->last_ran;
+	long account_ns = rq->clock - p->last_ran;
 	struct task_struct *idle = rq->idle;
 	unsigned long account_pc;
 
@@ -3082,14 +3268,13 @@ update_cpu_clock_switch(struct rq *rq, struct task_struct *p)
 ts_account:
 	/* time_slice accounting is done in usecs to avoid overflow on 32bit */
 	if (p->policy != SCHED_FIFO && p != idle) {
-		s64 time_diff = rq->clock - rq->timekeep_clock;
+		s64 time_diff = rq->clock - p->last_ran;
 
 		niffy_diff(&time_diff, 1);
 		p->time_slice -= NS_TO_US(time_diff);
 	}
 
-	p->last_ran = rq->clock_task;
-	rq->timekeep_clock = rq->clock;
+	p->last_ran = rq->clock;
 }
 
 /*
@@ -3109,7 +3294,7 @@ static inline u64 do_task_delta_exec(struct task_struct *p, struct rq *rq)
 	 */
 	if (p == rq->curr && task_on_rq_queued(p)) {
 		update_rq_clock(rq);
-		ns = rq->clock_task - p->last_ran;
+		ns = rq->clock - p->last_ran;
 		if (unlikely((s64)ns < 0))
 			ns = 0;
 	}
@@ -3657,7 +3842,7 @@ static inline void schedule_debug(struct task_struct *prev)
 static inline void set_rq_task(struct rq *rq, struct task_struct *p)
 {
 	rq->rq_deadline = p->deadline;
-	p->last_ran = rq->clock_task;
+	p->last_ran = rq->clock;
 	rq->rq_prio = p->prio;
 #ifdef CONFIG_SMT_NICE
 	rq->rq_mm = p->mm;
@@ -5497,7 +5682,7 @@ void init_idle(struct task_struct *idle, int cpu)
 
 	raw_spin_lock_irqsave(&idle->pi_lock, flags);
 	raw_spin_lock(&rq->lock);
-	idle->last_ran = rq->clock_task;
+	idle->last_ran = rq->clock;
 	idle->state = TASK_RUNNING;
 	/* Setting prio to illegal value shouldn't matter when never queued */
 	idle->prio = PRIO_LIMIT;
@@ -5561,52 +5746,6 @@ int task_can_attach(struct task_struct *p,
 		ret = -EINVAL;
 
 	return ret;
-}
-
-void wake_q_add(struct wake_q_head *head, struct task_struct *task)
-{
-	struct wake_q_node *node = &task->wake_q;
-
-	/*
-	 * Atomically grab the task, if ->wake_q is !nil already it means
-	 * its already queued (either by us or someone else) and will get the
-	 * wakeup due to that.
-	 *
-	 * This cmpxchg() implies a full barrier, which pairs with the write
-	 * barrier implied by the wakeup in wake_up_q().
-	 */
-	if (cmpxchg(&node->next, NULL, WAKE_Q_TAIL))
-		return;
-
-	get_task_struct(task);
-
-	/*
-	 * The head is context local, there can be no concurrency.
-	 */
-	*head->lastp = node;
-	head->lastp = &node->next;
-}
-
-void wake_up_q(struct wake_q_head *head)
-{
-	struct wake_q_node *node = head->first;
-
-	while (node != WAKE_Q_TAIL) {
-		struct task_struct *task;
-
-		task = container_of(node, struct task_struct, wake_q);
-		BUG_ON(!task);
-		/* task can safely be re-inserted now */
-		node = node->next;
-		task->wake_q.next = NULL;
-
-		/*
-		 * wake_up_process() implies a wmb() to pair with the queueing
-		 * in wake_q_add() so as not to miss wakeups.
-		 */
-		wake_up_process(task);
-		put_task_struct(task);
-	}
 }
 
 void resched_cpu(int cpu)
@@ -5719,8 +5858,10 @@ void wake_up_idle_cpu(int cpu)
 	if (cpu == smp_processor_id())
 		return;
 
-	set_tsk_need_resched(cpu_rq(cpu)->idle);
-	smp_send_reschedule(cpu);
+	if (set_nr_and_not_polling(cpu_rq(cpu)->idle))
+		smp_send_reschedule(cpu);
+	else
+		trace_sched_wake_idle_without_ipi(cpu);
 }
 
 void wake_up_nohz_cpu(int cpu)
@@ -7581,7 +7722,7 @@ void __init sched_init(void)
 		skiplist_init(&rq->node);
 		rq->sl = new_skiplist(&rq->node);
 		raw_spin_lock_init(&rq->lock);
-		rq->niffies = 0;
+		rq->clock = rq->old_clock = rq->last_niffy = rq->niffies = 0;
 		rq->last_jiffy = jiffies;
 		rq->user_pc = rq->nice_pc = rq->softirq_pc = rq->system_pc =
 			      rq->iowait_pc = rq->idle_pc = 0;
@@ -7806,6 +7947,25 @@ void set_curr_task(int cpu, struct task_struct *p)
 /*
  * Use precise platform statistics if available:
  */
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING
+
+#ifndef __ARCH_HAS_VTIME_TASK_SWITCH
+void vtime_common_task_switch(struct task_struct *prev)
+{
+	if (is_idle_task(prev))
+		vtime_account_idle(prev);
+	else
+		vtime_account_system(prev);
+
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+	vtime_account_user(prev);
+#endif
+	arch_vtime_task_switch(prev);
+}
+#endif
+
+#endif /* CONFIG_VIRT_CPU_ACCOUNTING */
+
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 void task_cputime_adjusted(struct task_struct *p, cputime_t *ut, cputime_t *st)
 {
@@ -7833,6 +7993,26 @@ void vtime_account_system_irqsafe(struct task_struct *tsk)
 	local_irq_restore(flags);
 }
 EXPORT_SYMBOL_GPL(vtime_account_system_irqsafe);
+
+/*
+ * Archs that account the whole time spent in the idle task
+ * (outside irq) as idle time can rely on this and just implement
+ * vtime_account_system() and vtime_account_idle(). Archs that
+ * have other meaning of the idle time (s390 only includes the
+ * time spent by the CPU when it's in low power mode) must override
+ * vtime_account().
+ */
+#ifndef __ARCH_HAS_VTIME_ACCOUNT
+void vtime_account_irq_enter(struct task_struct *tsk)
+{
+	if (!in_interrupt() && is_idle_task(tsk))
+		vtime_account_idle(tsk);
+	else
+		vtime_account_system(tsk);
+}
+EXPORT_SYMBOL_GPL(vtime_account_irq_enter);
+#endif /* __ARCH_HAS_VTIME_ACCOUNT */
+
 #else /* CONFIG_VIRT_CPU_ACCOUNTING_NATIVE */
 /*
  * Perform (stime * rtime) / total, but avoid multiplication overflow by

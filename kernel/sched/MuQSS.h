@@ -39,7 +39,6 @@ struct rq {
 	int rq_smt_bias; /* Policy/nice level bias across smt siblings */
 #endif
 	/* Accurate timekeeping data */
-	u64 timekeep_clock;
 	unsigned long user_pc, nice_pc, irq_pc, softirq_pc, system_pc,
 		iowait_pc, idle_pc;
 	atomic_t nr_iowait;
@@ -104,6 +103,11 @@ struct rq {
 	unsigned int ttwu_count;
 	unsigned int ttwu_local;
 #endif /* CONFIG_SCHEDSTATS */
+
+#ifdef CONFIG_SMP
+	struct llist_head wake_list;
+#endif
+
 #ifdef CONFIG_CPU_IDLE
 	/* Must be inspected within a rcu lock section */
 	struct cpuidle_state *idle_state;
@@ -208,12 +212,11 @@ static inline void unregister_sched_domain_sysctl(void)
 }
 #endif
 
-static inline void sched_ttwu_pending(void) { }
-
 #ifdef CONFIG_SMP
-
+extern void sched_ttwu_pending(void);
 extern void set_cpus_allowed_common(struct task_struct *p, const struct cpumask *new_mask);
-
+#else
+static inline void sched_ttwu_pending(void) { }
 #endif
 
 #ifdef CONFIG_CPU_IDLE
