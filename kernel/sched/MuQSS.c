@@ -121,10 +121,11 @@
  * Some helpers for converting to/from various scales. Use shifts to get
  * approximate multiples of ten for less overhead.
  */
-#define JIFFIES_TO_NS(TIME)	((TIME) * (1000000000 / HZ))
-#define JIFFY_NS		(1000000000 / HZ)
-#define HALF_JIFFY_NS		(1000000000 / HZ / 2)
-#define HALF_JIFFY_US		(1000000 / HZ / 2)
+#define JIFFIES_TO_NS(TIME)	((TIME) * (1073741824 / HZ))
+#define JIFFY_NS		(1073741824 / HZ)
+#define NS_TO_JIFFIES(TIME)	((TIME) / JIFFY_NS)
+#define HALF_JIFFY_NS		(1073741824 / HZ / 2)
+#define HALF_JIFFY_US		(1048576 / HZ / 2)
 #define MS_TO_NS(TIME)		((TIME) << 20)
 #define MS_TO_US(TIME)		((TIME) << 10)
 #define NS_TO_MS(TIME)		((TIME) >> 20)
@@ -134,7 +135,7 @@
 
 void print_scheduler_version(void)
 {
-	printk(KERN_INFO "MuQSS CPU scheduler v0.112 by Con Kolivas.\n");
+	printk(KERN_INFO "MuQSS CPU scheduler v0.114 by Con Kolivas.\n");
 }
 
 /*
@@ -263,27 +264,6 @@ int __weak arch_sd_sibling_asym_packing(void)
 struct rq *uprq;
 #endif /* CONFIG_SMP */
 
-/*
- * Sanity check should sched_clock return bogus values. We make sure it does
- * not appear to go backwards, and use jiffies to determine the maximum and
- * minimum it could possibly have increased, and round down to the nearest
- * jiffy when it falls outside this.
- */
-static inline void niffy_diff(s64 *niff_diff, int jiff_diff)
-{
-	unsigned long min_diff, max_diff;
-
-	if (jiff_diff > 1)
-		min_diff = JIFFIES_TO_NS(jiff_diff - 1);
-	else
-		min_diff = 1;
-	/*  Round up to the nearest tick for maximum */
-	max_diff = JIFFIES_TO_NS(jiff_diff + 1);
-
-	if (unlikely(*niff_diff < min_diff || *niff_diff > max_diff))
-		*niff_diff = min_diff;
-}
-
 #ifdef CONFIG_SMP
 static inline int cpu_of(struct rq *rq)
 {
@@ -334,18 +314,26 @@ static inline void update_rq_clock(struct rq *rq)
  */
 static inline void update_clocks(struct rq *rq)
 {
-	s64 ndiff;
+	s64 ndiff, minndiff;
 	long jdiff;
 
 	update_rq_clock(rq);
 	ndiff = rq->clock - rq->old_clock;
 	rq->old_clock = rq->clock;
-	ndiff -= rq->niffies - rq->last_niffy;
 	jdiff = jiffies - rq->last_jiffy;
-	niffy_diff(&ndiff, jdiff);
-	rq->last_jiffy += jdiff;
+
+	/* Subtract any niffies added by balancing with other rqs */
+	ndiff -= rq->niffies - rq->last_niffy;
+	minndiff = JIFFIES_TO_NS(jdiff) - rq->niffies + rq->last_jiffy_niffies;
+	if (minndiff < 0)
+		minndiff = 0;
+	ndiff = max(ndiff, minndiff);
 	rq->niffies += ndiff;
 	rq->last_niffy = rq->niffies;
+	if (jdiff) {
+		rq->last_jiffy += jdiff;
+		rq->last_jiffy_niffies = rq->niffies;
+	}
 }
 
 static inline int task_current(struct rq *rq, struct task_struct *p)
@@ -1380,7 +1368,7 @@ static void activate_task(struct task_struct *p, struct rq *rq)
 	if (unlikely(prof_on == SLEEP_PROFILING)) {
 		if (p->state == TASK_UNINTERRUPTIBLE)
 			profile_hits(SLEEP_PROFILING, (void *)get_wchan(p),
-				     (rq->clock - p->last_ran) >> 20);
+				     (rq->niffies - p->last_ran) >> 20);
 	}
 
 	p->prio = effective_prio(p);
@@ -2236,8 +2224,8 @@ int sched_fork(unsigned long __maybe_unused clone_flags, struct task_struct *p)
 	p->utimescaled =
 	p->stimescaled =
 	p->sched_time =
-	p->stime_pc =
-	p->utime_pc = 0;
+	p->stime_ns =
+	p->utime_ns = 0;
 	skiplist_node_init(&p->node);
 
 	/*
@@ -3082,86 +3070,89 @@ void thread_group_cputime(struct task_struct *tsk, struct task_cputime *times)
 }
 
 /*
- * On each tick, see what percentage of that tick was attributed to each
- * component and add the percentage to the _pc values. Once a _pc value has
- * accumulated one tick's worth, account for that. This means the total
- * percentage of load components will always be 128 (pseudo 100) per tick.
+ * On each tick, add the number of nanoseconds to the unbanked variables and
+ * once one tick's worth has accumulated, account it allowing for accurate
+ * sub-tick accounting and totals.
  */
-static void pc_idle_time(struct rq *rq, struct task_struct *idle, unsigned long pc)
+static void pc_idle_time(struct rq *rq, struct task_struct *idle, unsigned long ns)
 {
 	u64 *cpustat = kcpustat_this_cpu->cpustat;
+	unsigned long ticks;
 
 	if (atomic_read(&rq->nr_iowait) > 0) {
-		rq->iowait_pc += pc;
-		if (rq->iowait_pc >= 128) {
-			cpustat[CPUTIME_IOWAIT] += (__force u64)cputime_one_jiffy * rq->iowait_pc / 128;
-			rq->iowait_pc %= 128;
+		rq->iowait_ns += ns;
+		if (rq->iowait_ns >= JIFFY_NS) {
+			ticks = NS_TO_JIFFIES(rq->iowait_ns);
+			cpustat[CPUTIME_IOWAIT] += (__force u64)cputime_one_jiffy * ticks;
+			rq->iowait_ns %= JIFFY_NS;
 		}
 	} else {
-		rq->idle_pc += pc;
-		if (rq->idle_pc >= 128) {
-			cpustat[CPUTIME_IDLE] += (__force u64)cputime_one_jiffy * rq->idle_pc / 128;
-			rq->idle_pc %= 128;
+		rq->idle_ns += ns;
+		if (rq->idle_ns >= JIFFY_NS) {
+			ticks = NS_TO_JIFFIES(rq->idle_ns);
+			cpustat[CPUTIME_IDLE] += (__force u64)cputime_one_jiffy * ticks;
+			rq->idle_ns %= JIFFY_NS;
 		}
 	}
 	acct_update_integrals(idle);
 }
 
-static void
-pc_system_time(struct rq *rq, struct task_struct *p, int hardirq_offset,
-	       unsigned long pc, unsigned long ns)
+static void pc_system_time(struct rq *rq, struct task_struct *p,
+			   int hardirq_offset, unsigned long ns)
 {
-	u64 *cpustat = kcpustat_this_cpu->cpustat;
 	cputime_t one_jiffy_scaled = cputime_to_scaled(cputime_one_jiffy);
+	u64 *cpustat = kcpustat_this_cpu->cpustat;
+	unsigned long ticks;
 
-	p->stime_pc += pc;
-	if (p->stime_pc >= 128) {
-		int jiffs = p->stime_pc / 128;
-
-		p->stime_pc %= 128;
-		p->stime += (__force u64)cputime_one_jiffy * jiffs;
-		p->stimescaled += one_jiffy_scaled * jiffs;
-		account_group_system_time(p, cputime_one_jiffy * jiffs);
+	p->stime_ns += ns;
+	if (p->stime_ns >= JIFFY_NS) {
+		ticks = NS_TO_JIFFIES(p->stime_ns);
+		p->stime_ns %= JIFFY_NS;
+		p->stime += (__force u64)cputime_one_jiffy * ticks;
+		p->stimescaled += one_jiffy_scaled * ticks;
+		account_group_system_time(p, cputime_one_jiffy * ticks);
 	}
 	p->sched_time += ns;
 	account_group_exec_runtime(p, ns);
 
 	if (hardirq_count() - hardirq_offset) {
-		rq->irq_pc += pc;
-		if (rq->irq_pc >= 128) {
-			cpustat[CPUTIME_IRQ] += (__force u64)cputime_one_jiffy * rq->irq_pc / 128;
-			rq->irq_pc %= 128;
+		rq->irq_ns += ns;
+		if (rq->irq_ns >= JIFFY_NS) {
+			ticks = NS_TO_JIFFIES(rq->irq_ns);
+			cpustat[CPUTIME_IRQ] += (__force u64)cputime_one_jiffy * ticks;
+			rq->irq_ns %= JIFFY_NS;
 		}
 	} else if (in_serving_softirq()) {
-		rq->softirq_pc += pc;
-		if (rq->softirq_pc >= 128) {
-			cpustat[CPUTIME_SOFTIRQ] += (__force u64)cputime_one_jiffy * rq->softirq_pc / 128;
-			rq->softirq_pc %= 128;
+		rq->softirq_ns += ns;
+		if (rq->softirq_ns >= JIFFY_NS) {
+			ticks = NS_TO_JIFFIES(rq->softirq_ns);
+			cpustat[CPUTIME_SOFTIRQ] += (__force u64)cputime_one_jiffy * ticks;
+			rq->softirq_ns %= JIFFY_NS;
 		}
 	} else {
-		rq->system_pc += pc;
-		if (rq->system_pc >= 128) {
-			cpustat[CPUTIME_SYSTEM] += (__force u64)cputime_one_jiffy * rq->system_pc / 128;
-			rq->system_pc %= 128;
+		rq->system_ns += ns;
+		if (rq->system_ns >= JIFFY_NS) {
+			ticks = NS_TO_JIFFIES(rq->system_ns);
+			cpustat[CPUTIME_SYSTEM] += (__force u64)cputime_one_jiffy * ticks;
+			rq->system_ns %= JIFFY_NS;
 		}
 	}
 	acct_update_integrals(p);
 }
 
-static void pc_user_time(struct rq *rq, struct task_struct *p,
-			 unsigned long pc, unsigned long ns)
+static void pc_user_time(struct rq *rq, struct task_struct *p, unsigned long ns)
 {
-	u64 *cpustat = kcpustat_this_cpu->cpustat;
 	cputime_t one_jiffy_scaled = cputime_to_scaled(cputime_one_jiffy);
+	u64 *cpustat = kcpustat_this_cpu->cpustat;
+	unsigned long ticks;
 
-	p->utime_pc += pc;
-	if (p->utime_pc >= 128) {
-		int jiffs = p->utime_pc / 128;
-
-		p->utime_pc %= 128;
-		p->utime += (__force u64)cputime_one_jiffy * jiffs;
-		p->utimescaled += one_jiffy_scaled * jiffs;
-		account_group_user_time(p, cputime_one_jiffy * jiffs);
+	p->utime_ns += ns;
+	if (p->utime_ns >= JIFFY_NS) {
+		ticks = NS_TO_JIFFIES(p->utime_ns);
+		p->utime_ns %= JIFFY_NS;
+		p->utime += (__force u64)cputime_one_jiffy * ticks;
+		p->utimescaled += one_jiffy_scaled * ticks;
+		account_group_user_time(p, cputime_one_jiffy * ticks);
 	}
 	p->sched_time += ns;
 	account_group_exec_runtime(p, ns);
@@ -3171,34 +3162,31 @@ static void pc_user_time(struct rq *rq, struct task_struct *p,
 		 * ksoftirqd time do not get accounted in cpu_softirq_time.
 		 * So, we have to handle it separately here.
 		 */
-		rq->softirq_pc += pc;
-		if (rq->softirq_pc >= 128) {
-			cpustat[CPUTIME_SOFTIRQ] += (__force u64)cputime_one_jiffy * rq->softirq_pc / 128;
-			rq->softirq_pc %= 128;
+		rq->softirq_ns += ns;
+		if (rq->softirq_ns >= JIFFY_NS) {
+			ticks = NS_TO_JIFFIES(rq->softirq_ns);
+			cpustat[CPUTIME_SOFTIRQ] += (__force u64)cputime_one_jiffy * ticks;
+			rq->softirq_ns %= JIFFY_NS;
 		}
 	}
 
 	if (task_nice(p) > 0 || idleprio_task(p)) {
-		rq->nice_pc += pc;
-		if (rq->nice_pc >= 128) {
-			cpustat[CPUTIME_NICE] += (__force u64)cputime_one_jiffy * rq->nice_pc / 128;
-			rq->nice_pc %= 128;
+		rq->nice_ns += ns;
+		if (rq->nice_ns >= JIFFY_NS) {
+			ticks = NS_TO_JIFFIES(rq->nice_ns);
+			cpustat[CPUTIME_NICE] += (__force u64)cputime_one_jiffy * ticks;
+			rq->nice_ns %= JIFFY_NS;
 		}
 	} else {
-		rq->user_pc += pc;
-		if (rq->user_pc >= 128) {
-			cpustat[CPUTIME_USER] += (__force u64)cputime_one_jiffy * rq->user_pc / 128;
-			rq->user_pc %= 128;
+		rq->user_ns += ns;
+		if (rq->user_ns >= JIFFY_NS) {
+			ticks = NS_TO_JIFFIES(rq->user_ns);
+			cpustat[CPUTIME_USER] += (__force u64)cputime_one_jiffy * ticks;
+			rq->user_ns %= JIFFY_NS;
 		}
 	}
 	acct_update_integrals(p);
 }
-
-/*
- * Convert nanoseconds to pseudo percentage of one tick. Use 128 for fast
- * shifts instead of 100
- */
-#define NS_TO_PC(NS)	(NS * 128 / JIFFY_NS)
 
 /*
  * This is called on clock ticks.
@@ -3208,37 +3196,29 @@ static void pc_user_time(struct rq *rq, struct task_struct *p,
 static void
 update_cpu_clock_tick(struct rq *rq, struct task_struct *p)
 {
-	long account_ns = rq->clock - p->last_ran;
+	s64 account_ns = rq->niffies - p->last_ran;
 	struct task_struct *idle = rq->idle;
-	unsigned long account_pc;
 
-	if (unlikely(account_ns < 0) || steal_account_process_tick())
+	if (steal_account_process_tick())
 		goto ts_account;
-
-	account_pc = NS_TO_PC(account_ns);
 
 	/* Accurate tick timekeeping */
 	if (user_mode(get_irq_regs()))
-		pc_user_time(rq, p, account_pc, account_ns);
-	else if (p != idle || (irq_count() != HARDIRQ_OFFSET))
-		pc_system_time(rq, p, HARDIRQ_OFFSET,
-			       account_pc, account_ns);
-	else
-		pc_idle_time(rq, idle, account_pc);
+		pc_user_time(rq, p, account_ns);
+	else if (p != idle || (irq_count() != HARDIRQ_OFFSET)) {
+		pc_system_time(rq, p, HARDIRQ_OFFSET, account_ns);
+	} else
+		pc_idle_time(rq, idle, account_ns);
 
 	if (sched_clock_irqtime)
 		irqtime_account_hi_si();
 
 ts_account:
 	/* time_slice accounting is done in usecs to avoid overflow on 32bit */
-	if (p->policy != SCHED_FIFO && p != idle) {
-		s64 time_diff = rq->clock - p->last_ran;
+	if (p->policy != SCHED_FIFO && p != idle)
+		p->time_slice -= NS_TO_US(account_ns);
 
-		niffy_diff(&time_diff, 1);
-		p->time_slice -= NS_TO_US(time_diff);
-	}
-
-	p->last_ran = rq->clock;
+	p->last_ran = rq->niffies;
 }
 
 /*
@@ -3249,32 +3229,18 @@ ts_account:
 static void
 update_cpu_clock_switch(struct rq *rq, struct task_struct *p)
 {
-	long account_ns = rq->clock - p->last_ran;
+	s64 account_ns = rq->niffies - p->last_ran;
 	struct task_struct *idle = rq->idle;
-	unsigned long account_pc;
-
-	if (unlikely(account_ns < 0))
-		goto ts_account;
-
-	account_pc = NS_TO_PC(account_ns);
 
 	/* Accurate subtick timekeeping */
-	if (p != idle) {
-		pc_user_time(rq, p, account_pc, account_ns);
-	}
+	if (p != idle)
+		pc_user_time(rq, p, account_ns);
 	else
-		pc_idle_time(rq, idle, account_pc);
+		pc_idle_time(rq, idle, account_ns);
 
-ts_account:
 	/* time_slice accounting is done in usecs to avoid overflow on 32bit */
-	if (p->policy != SCHED_FIFO && p != idle) {
-		s64 time_diff = rq->clock - p->last_ran;
-
-		niffy_diff(&time_diff, 1);
-		p->time_slice -= NS_TO_US(time_diff);
-	}
-
-	p->last_ran = rq->clock;
+	if (p->policy != SCHED_FIFO && p != idle)
+		p->time_slice -= NS_TO_US(account_ns);
 }
 
 /*
@@ -3293,10 +3259,8 @@ static inline u64 do_task_delta_exec(struct task_struct *p, struct rq *rq)
 	 * thread, breaking clock_gettime().
 	 */
 	if (p == rq->curr && task_on_rq_queued(p)) {
-		update_rq_clock(rq);
-		ns = rq->clock - p->last_ran;
-		if (unlikely((s64)ns < 0))
-			ns = 0;
+		update_clocks(rq);
+		ns = rq->niffies - p->last_ran;
 	}
 
 	return ns;
@@ -3842,19 +3806,9 @@ static inline void schedule_debug(struct task_struct *prev)
 static inline void set_rq_task(struct rq *rq, struct task_struct *p)
 {
 	rq->rq_deadline = p->deadline;
-	p->last_ran = rq->clock;
 	rq->rq_prio = p->prio;
 #ifdef CONFIG_SMT_NICE
 	rq->rq_mm = p->mm;
-	rq->rq_smt_bias = p->smt_bias;
-#endif
-}
-
-static void reset_rq_task(struct rq *rq, struct task_struct *p)
-{
-	rq->rq_deadline = p->deadline;
-	rq->rq_prio = p->prio;
-#ifdef CONFIG_SMT_NICE
 	rq->rq_smt_bias = p->smt_bias;
 #endif
 }
@@ -3959,6 +3913,7 @@ static void __sched notrace __schedule(bool preempt)
 	unsigned long *switch_count;
 	bool deactivate = false;
 	struct rq *rq;
+	u64 niffies;
 	int cpu;
 
 	cpu = smp_processor_id();
@@ -4036,7 +3991,13 @@ static void __sched notrace __schedule(bool preempt)
 		switch_count = &prev->nvcsw;
 	}
 
+	/*
+	 * Store the niffy value here for use by the next task's last_ran
+	 * below to avoid losing niffies due to update_clocks being called
+	 * again after this point.
+	 */
 	update_clocks(rq);
+	niffies = rq->niffies;
 	update_cpu_clock_switch(rq, prev);
 	if (rq->clock - rq->last_tick > HALF_JIFFY_NS)
 		rq->dither = 0;
@@ -4066,13 +4027,15 @@ static void __sched notrace __schedule(bool preempt)
 		}
 	}
 
+	set_rq_task(rq, next);
+	next->last_ran = niffies;
+
 	if (likely(prev != next)) {
 		/*
 		 * Don't reschedule an idle task or deactivated tasks
 		 */
 		if (prev != idle && !deactivate)
 			resched_suitable_idle(prev);
-		set_rq_task(rq, next);
 		if (next != idle)
 			check_siblings(rq);
 		else
@@ -4388,7 +4351,7 @@ void set_user_nice(struct task_struct *p, long nice)
 		if (new_static < old_static)
 			try_preempt(p, rq);
 	} else if (task_running(rq, p)) {
-		reset_rq_task(rq, p);
+		set_rq_task(rq, p);
 		if (old_static < new_static)
 			resched_task(p);
 	}
@@ -4535,7 +4498,7 @@ static void __setscheduler(struct task_struct *p, struct rq *rq, int policy,
 		p->prio = p->normal_prio;
 
 	if (task_running(rq, p)) {
-		reset_rq_task(rq, p);
+		set_rq_task(rq, p);
 		resched_task(p);
 	} else if (task_queued(p)) {
 		dequeue_task(rq, p, DEQUEUE_SAVE);
@@ -5682,7 +5645,7 @@ void init_idle(struct task_struct *idle, int cpu)
 
 	raw_spin_lock_irqsave(&idle->pi_lock, flags);
 	raw_spin_lock(&rq->lock);
-	idle->last_ran = rq->clock;
+	idle->last_ran = rq->niffies;
 	idle->state = TASK_RUNNING;
 	/* Setting prio to illegal value shouldn't matter when never queued */
 	idle->prio = PRIO_LIMIT;
@@ -7724,8 +7687,8 @@ void __init sched_init(void)
 		raw_spin_lock_init(&rq->lock);
 		rq->clock = rq->old_clock = rq->last_niffy = rq->niffies = 0;
 		rq->last_jiffy = jiffies;
-		rq->user_pc = rq->nice_pc = rq->softirq_pc = rq->system_pc =
-			      rq->iowait_pc = rq->idle_pc = 0;
+		rq->user_ns = rq->nice_ns = rq->softirq_ns = rq->system_ns =
+			      rq->iowait_ns = rq->idle_ns = 0;
 		rq->dither = 0;
 		set_rq_task(rq, &init_task);
 		rq->iso_ticks = 0;

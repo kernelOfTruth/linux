@@ -31,6 +31,7 @@ struct rq {
 	unsigned long last_jiffy; /* Last jiffy this RQ updated rq clock */
 	u64 niffies; /* Last time this RQ updated rq clock */
 	u64 last_niffy; /* Last niffies as updated by local clock */
+	u64 last_jiffy_niffies; /* Niffies @ last_jiffy */
 
 	u64 load_update; /* When we last updated load */
 	unsigned long load_avg; /* Rolling load average */
@@ -39,8 +40,8 @@ struct rq {
 	int rq_smt_bias; /* Policy/nice level bias across smt siblings */
 #endif
 	/* Accurate timekeeping data */
-	unsigned long user_pc, nice_pc, irq_pc, softirq_pc, system_pc,
-		iowait_pc, idle_pc;
+	unsigned long user_ns, nice_ns, irq_ns, softirq_ns, system_ns,
+		iowait_ns, idle_ns;
 	atomic_t nr_iowait;
 
 	skiplist_node node;
