@@ -135,7 +135,7 @@
 
 void print_scheduler_version(void)
 {
-	printk(KERN_INFO "MuQSS CPU scheduler v0.114 by Con Kolivas.\n");
+	printk(KERN_INFO "MuQSS CPU scheduler v0.115 by Con Kolivas.\n");
 }
 
 /*
@@ -181,14 +181,12 @@ struct global_rq {
 	atomic_t nr_uninterruptible ____cacheline_aligned_in_smp;
 	atomic64_t nr_switches ____cacheline_aligned_in_smp;
 	atomic_t qnr ____cacheline_aligned_in_smp; /* queued not running */
+	cpumask_t cpu_idle_map ____cacheline_aligned_in_smp;
 #else
 	atomic_t nr_running ____cacheline_aligned;
 	atomic_t nr_uninterruptible ____cacheline_aligned;
 	atomic64_t nr_switches ____cacheline_aligned;
 	atomic_t qnr ____cacheline_aligned; /* queued not running */
-#endif
-#ifdef CONFIG_SMP
-	cpumask_t cpu_idle_map;
 #endif
 };
 
@@ -702,6 +700,12 @@ static inline void prepare_lock_switch(struct rq *rq, struct task_struct *next)
 	next->on_cpu = 1;
 }
 
+static inline void smp_sched_reschedule(int cpu)
+{
+	if (likely(cpu_online(cpu)))
+		smp_send_reschedule(cpu);
+}
+
 /*
  * resched_task - mark a task 'to be rescheduled now'.
  *
@@ -728,7 +732,7 @@ void resched_task(struct task_struct *p)
 	}
 
 	if (set_nr_and_not_polling(p))
-		smp_send_reschedule(cpu);
+		smp_sched_reschedule(cpu);
 	else
 		trace_sched_wake_idle_without_ipi(cpu);
 }
@@ -1157,7 +1161,7 @@ static void resched_curr(struct rq *rq)
 	}
 
 	if (set_nr_and_not_polling(rq->curr))
-		smp_send_reschedule(cpu);
+		smp_sched_reschedule(cpu);
 	else
 		trace_sched_wake_idle_without_ipi(cpu);
 }
@@ -1252,7 +1256,7 @@ static inline void resched_idle(struct rq *rq)
 		return;
 	}
 
-	smp_send_reschedule(rq->cpu);
+	smp_sched_reschedule(rq->cpu);
 }
 
 static struct rq *resched_best_idle(struct task_struct *p, int cpu)
@@ -1633,7 +1637,7 @@ void kick_process(struct task_struct *p)
 	preempt_disable();
 	cpu = task_cpu(p);
 	if ((cpu != smp_processor_id()) && task_curr(p))
-		smp_send_reschedule(cpu);
+		smp_sched_reschedule(cpu);
 	preempt_enable();
 }
 EXPORT_SYMBOL_GPL(kick_process);
@@ -1889,7 +1893,7 @@ static void ttwu_queue_remote(struct task_struct *p, int cpu, int wake_flags)
 
 	if (llist_add(&p->wake_entry, &cpu_rq(cpu)->wake_list)) {
 		if (!set_nr_if_polling(rq->idle))
-			smp_send_reschedule(cpu);
+			smp_sched_reschedule(cpu);
 		else
 			trace_sched_wake_idle_without_ipi(cpu);
 	}
@@ -1910,7 +1914,7 @@ void wake_up_if_idle(int cpu)
 	} else {
 		rq_lock_irqsave(rq, &flags);
 		if (likely(is_idle_task(rq->curr)))
-			smp_send_reschedule(cpu);
+			smp_sched_reschedule(cpu);
 		/* Else cpu is not in idle, do nothing here */
 		rq_unlock_irqrestore(rq, &flags);
 	}
@@ -1972,7 +1976,7 @@ static inline int select_best_cpu(struct task_struct *p)
 		rq = other_rq;
 	}
 	if (unlikely(!rq))
-		return smp_processor_id();
+		return task_cpu(p);
 	return rq->cpu;
 }
 #else /* CONFIG_SMP */
@@ -3654,8 +3658,6 @@ static inline void check_deadline(struct task_struct *p, struct rq *rq)
 		time_slice_expired(p, rq);
 }
 
-#define BITOP_WORD(nr)		((nr) / BITS_PER_LONG)
-
 /*
  * Task selection with skiplists is a simple matter of picking off the first
  * task in the sorted list, an O(1) operation. The lookup is amortised O(1)
@@ -3672,8 +3674,9 @@ static inline void check_deadline(struct task_struct *p, struct rq *rq)
  * runqueue or a runqueue with more tasks than the current one with a better
  * key/deadline.
  */
-static inline struct
-task_struct *earliest_deadline_task(struct rq *rq, int cpu, struct task_struct *idle)
+#ifdef CONFIG_SMP
+static inline struct task_struct
+*earliest_deadline_task(struct rq *rq, int cpu, struct task_struct *idle)
 {
 	struct task_struct *edt = idle;
 	struct rq *locked = NULL;
@@ -3751,6 +3754,19 @@ task_struct *earliest_deadline_task(struct rq *rq, int cpu, struct task_struct *
 
 	return edt;
 }
+#else /* CONFIG_SMP */
+static inline struct task_struct
+*earliest_deadline_task(struct rq *rq, int cpu, struct task_struct *idle)
+{
+	struct task_struct *edt;
+
+	if (unlikely(!rq->sl->entries))
+		return idle;
+	edt = rq->node.next[0]->value;
+	take_task(rq, cpu, edt);
+	return edt;
+}
+#endif /* CONFIG_SMP */
 
 /*
  * Print scheduling while atomic bug:
@@ -3832,13 +3848,9 @@ static void check_smt_siblings(struct rq *this_rq)
 		rq = cpu_rq(other_cpu);
 		if (rq_idle(rq))
 			continue;
-		if (unlikely(!rq->online))
-			continue;
 		p = rq->curr;
-		if (!smt_schedule(p, this_rq)) {
-			set_tsk_need_resched(p);
-			smp_send_reschedule(other_cpu);
-		}
+		if (!smt_schedule(p, this_rq))
+			resched_curr(rq);
 	}
 }
 
@@ -3853,14 +3865,8 @@ static void wake_smt_siblings(struct rq *this_rq)
 		struct rq *rq;
 
 		rq = cpu_rq(other_cpu);
-		if (unlikely(!rq->online))
-			continue;
-		if (rq_idle(rq)) {
-			struct task_struct *p = rq->curr;
-
-			set_tsk_need_resched(p);
-			smp_send_reschedule(other_cpu);
-		}
+		if (rq_idle(rq))
+			resched_idle(rq);
 	}
 }
 #else
@@ -5610,7 +5616,7 @@ void set_cpus_allowed_common(struct task_struct *p, const struct cpumask *new_ma
 	p->nr_cpus_allowed = cpumask_weight(new_mask);
 }
 
-void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
+static void __do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
 {
 	struct rq *rq = task_rq(p);
 
@@ -5625,6 +5631,29 @@ void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
 		 */
 		lockdep_assert_held(&rq->lock);
 	}
+}
+
+/*
+ * Calling do_set_cpus_allowed from outside the scheduler code may make the
+ * task not be able to run on its current CPU so we resched it here.
+ */
+void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
+{
+	__do_set_cpus_allowed(p, new_mask);
+	if (needs_other_cpu(p, task_cpu(p))) {
+		set_task_cpu(p, valid_task_cpu(p));
+		resched_task(p);
+	}
+}
+
+/*
+ * For internal scheduler calls to do_set_cpus_allowed which will resched
+ * themselves if needed.
+ */
+static void _do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
+{
+	__do_set_cpus_allowed(p, new_mask);
+	/* __set_cpus_allowed_ptr will handle the reschedule in this variant */
 	if (needs_other_cpu(p, task_cpu(p)))
 		set_task_cpu(p, valid_task_cpu(p));
 }
@@ -5822,7 +5851,7 @@ void wake_up_idle_cpu(int cpu)
 		return;
 
 	if (set_nr_and_not_polling(cpu_rq(cpu)->idle))
-		smp_send_reschedule(cpu);
+		smp_sched_reschedule(cpu);
 	else
 		trace_sched_wake_idle_without_ipi(cpu);
 }
@@ -5882,7 +5911,7 @@ static int __set_cpus_allowed_ptr(struct task_struct *p,
 
 	queued = task_queued(p);
 
-	do_set_cpus_allowed(p, new_mask);
+	_do_set_cpus_allowed(p, new_mask);
 
 	if (p->flags & PF_KTHREAD) {
 		/*
