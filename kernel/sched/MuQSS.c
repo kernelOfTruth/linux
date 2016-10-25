@@ -135,7 +135,7 @@
 
 void print_scheduler_version(void)
 {
-	printk(KERN_INFO "MuQSS CPU scheduler v0.115 by Con Kolivas.\n");
+	printk(KERN_INFO "MuQSS CPU scheduler v0.116 by Con Kolivas.\n");
 }
 
 /*
@@ -1416,7 +1416,7 @@ void set_task_cpu(struct task_struct *p, unsigned int cpu)
 	WARN_ON_ONCE(debug_locks && !(lockdep_is_held(&p->pi_lock) ||
 				      lockdep_is_held(&task_rq(p)->lock)));
 #endif
-	if (p->wake_cpu == cpu)
+	if (task_cpu(p) == cpu)
 		return;
 	trace_sched_migrate_task(p, cpu);
 	perf_event_task_migrate(p);
@@ -2347,6 +2347,16 @@ int sysctl_schedstats(struct ctl_table *table, int write,
 static inline void init_schedstats(void) {}
 #endif /* CONFIG_SCHEDSTATS */
 
+static void update_cpu_clock_switch(struct rq *rq, struct task_struct *p);
+
+static void account_task_cpu(struct rq *rq, struct task_struct *p)
+{
+	update_clocks(rq);
+	/* This isn't really a context switch but accounting is the same */
+	update_cpu_clock_switch(rq, p);
+	p->last_ran = rq->niffies;
+}
+
 /*
  * wake_up_new_task - wake up a newly created task for the first time.
  *
@@ -2372,7 +2382,6 @@ void wake_up_new_task(struct task_struct *p)
 	}
 
 	double_rq_lock(rq, new_rq);
-	update_clocks(rq);
 	rq_curr = rq->curr;
 
 	/*
@@ -2380,7 +2389,6 @@ void wake_up_new_task(struct task_struct *p)
 	 */
 	p->prio = rq_curr->normal_prio;
 
-	activate_task(p, rq);
 	trace_sched_wakeup_new(p);
 
 	/*
@@ -2391,17 +2399,17 @@ void wake_up_new_task(struct task_struct *p)
 	 * modified within schedule() so it is always equal to
 	 * current->deadline.
 	 */
+	account_task_cpu(rq, rq_curr);
 	p->last_ran = rq_curr->last_ran;
 	if (likely(rq_curr->policy != SCHED_FIFO)) {
 		rq_curr->time_slice /= 2;
-		if (unlikely(rq_curr->time_slice < RESCHED_US)) {
+		if (rq_curr->time_slice < RESCHED_US) {
 			/*
 			 * Forking task has run out of timeslice. Reschedule it and
 			 * start its child with a new time slice and deadline. The
 			 * child will end up running first because its deadline will
 			 * be slightly earlier.
 			 */
-			rq_curr->time_slice = 0;
 			__set_tsk_resched(rq_curr);
 			time_slice_expired(p, new_rq);
 			if (suitable_idle_cpus(p))
@@ -2424,6 +2432,7 @@ void wake_up_new_task(struct task_struct *p)
 		time_slice_expired(p, new_rq);
 		try_preempt(p, new_rq);
 	}
+	activate_task(p, new_rq);
 	double_rq_unlock(rq, new_rq);
 	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 }
@@ -3197,8 +3206,7 @@ static void pc_user_time(struct rq *rq, struct task_struct *p, unsigned long ns)
  * Bank in p->sched_time the ns elapsed since the last tick or switch.
  * CPU scheduler quota accounting is also performed here in microseconds.
  */
-static void
-update_cpu_clock_tick(struct rq *rq, struct task_struct *p)
+static void update_cpu_clock_tick(struct rq *rq, struct task_struct *p)
 {
 	s64 account_ns = rq->niffies - p->last_ran;
 	struct task_struct *idle = rq->idle;
@@ -3230,8 +3238,7 @@ ts_account:
  * Bank in p->sched_time the ns elapsed since the last tick or switch.
  * CPU scheduler quota accounting is also performed here in microseconds.
  */
-static void
-update_cpu_clock_switch(struct rq *rq, struct task_struct *p)
+static void update_cpu_clock_switch(struct rq *rq, struct task_struct *p)
 {
 	s64 account_ns = rq->niffies - p->last_ran;
 	struct task_struct *idle = rq->idle;
@@ -3529,7 +3536,7 @@ void scheduler_tick(void)
 	struct rq *rq = cpu_rq(cpu);
 
 	sched_clock_tick();
-	update_rq_clock(rq);
+	update_clocks(rq);
 	update_load_avg(rq);
 	update_cpu_clock_tick(rq, rq->curr);
 	if (!rq_idle(rq))
@@ -5641,8 +5648,12 @@ void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
 {
 	__do_set_cpus_allowed(p, new_mask);
 	if (needs_other_cpu(p, task_cpu(p))) {
+		struct rq *rq;
+
 		set_task_cpu(p, valid_task_cpu(p));
+		rq = __task_rq_lock(p);
 		resched_task(p);
+		__task_rq_unlock(rq);
 	}
 }
 
@@ -5675,6 +5686,7 @@ void init_idle(struct task_struct *idle, int cpu)
 	raw_spin_lock_irqsave(&idle->pi_lock, flags);
 	raw_spin_lock(&rq->lock);
 	idle->last_ran = rq->niffies;
+	time_slice_expired(idle, rq);
 	idle->state = TASK_RUNNING;
 	/* Setting prio to illegal value shouldn't matter when never queued */
 	idle->prio = PRIO_LIMIT;
