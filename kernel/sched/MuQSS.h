@@ -85,6 +85,10 @@ struct rq {
 	int iso_ticks;
 	bool iso_refractory;
 
+#ifdef CONFIG_HIGH_RES_TIMERS
+	struct hrtimer hrexpiry_timer;
+#endif
+
 #ifdef CONFIG_SCHEDSTATS
 
 	/* latency stats */

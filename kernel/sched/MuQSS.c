@@ -123,6 +123,7 @@
  */
 #define JIFFIES_TO_NS(TIME)	((TIME) * (1073741824 / HZ))
 #define JIFFY_NS		(1073741824 / HZ)
+#define JIFFY_US		(1048576 / HZ)
 #define NS_TO_JIFFIES(TIME)	((TIME) / JIFFY_NS)
 #define HALF_JIFFY_NS		(1073741824 / HZ / 2)
 #define HALF_JIFFY_US		(1048576 / HZ / 2)
@@ -130,6 +131,7 @@
 #define MS_TO_US(TIME)		((TIME) << 10)
 #define NS_TO_MS(TIME)		((TIME) >> 20)
 #define NS_TO_US(TIME)		((TIME) >> 10)
+#define US_TO_NS(TIME)		((TIME) << 10)
 
 #define RESCHED_US	(100) /* Reschedule if less than this many μs left */
 
@@ -170,6 +172,8 @@ static inline int timeslice(void)
 {
 	return MS_TO_US(rr_interval);
 }
+
+static bool sched_smp_initialized __read_mostly;
 
 /*
  * The global runqueue data that all CPUs work off. Contains either atomic
@@ -1831,8 +1835,6 @@ static int ttwu_remote(struct task_struct *p, int wake_flags)
 }
 
 #ifdef CONFIG_SMP
-static bool sched_smp_initialized __read_mostly;
-
 void sched_ttwu_pending(void)
 {
 	struct rq *rq = this_rq();
@@ -3440,6 +3442,84 @@ void account_idle_ticks(unsigned long ticks)
 }
 #endif
 
+#ifdef CONFIG_HIGH_RES_TIMERS
+static inline int hrexpiry_enabled(struct rq *rq)
+{
+	if (unlikely(!cpu_active(cpu_of(rq)) || !sched_smp_initialized))
+		return 0;
+	return hrtimer_is_hres_active(&rq->hrexpiry_timer);
+}
+
+/*
+ * Use HR-timers to deliver accurate preemption points.
+ */
+static void hrexpiry_clear(struct rq *rq)
+{
+	if (!hrexpiry_enabled(rq))
+		return;
+	if (hrtimer_active(&rq->hrexpiry_timer))
+		hrtimer_cancel(&rq->hrexpiry_timer);
+}
+
+/*
+ * High-resolution time_slice expiry.
+ * Runs from hardirq context with interrupts disabled.
+ */
+static enum hrtimer_restart hrexpiry(struct hrtimer *timer)
+{
+	struct rq *rq = container_of(timer, struct rq, hrexpiry_timer);
+	struct task_struct *p = rq->curr;
+
+	WARN_ON_ONCE(cpu_of(rq) != smp_processor_id());
+
+	/*
+	 * We're doing this without the runqueue lock but this should always
+	 * be run on the local CPU. Time slice should run out in __schedule
+	 * but we set it to zero here in case niffies is slightly less.
+	 */
+	p->time_slice = 0;
+	__set_tsk_resched(p);
+
+	return HRTIMER_NORESTART;
+}
+
+/*
+ * Called to set the hrexpiry timer state.
+ *
+ * called with irqs disabled from the local CPU only
+ */
+static void hrexpiry_start(struct rq *rq, u64 delay)
+{
+	if (!hrexpiry_enabled(rq))
+		return;
+
+	hrtimer_start(&rq->hrexpiry_timer, ns_to_ktime(delay),
+		      HRTIMER_MODE_REL_PINNED);
+}
+
+static void init_rq_hrexpiry(struct rq *rq)
+{
+	hrtimer_init(&rq->hrexpiry_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	rq->hrexpiry_timer.function = hrexpiry;
+}
+
+static inline int rq_dither(struct rq *rq)
+{
+	if (!hrexpiry_enabled(rq))
+		return HALF_JIFFY_US;
+	return 0;
+}
+#else /* CONFIG_HIGH_RES_TIMERS */
+static inline void init_rq_hrexpiry(struct rq *rq)
+{
+}
+
+static inline int rq_dither(struct rq *rq)
+{
+	return HALF_JIFFY_US;
+}
+#endif /* CONFIG_HIGH_RES_TIMERS */
+
 /*
  * Functions to test for when SCHED_ISO tasks have used their allocated
  * quota as real time scheduling and convert them back to SCHED_NORMAL. All
@@ -3517,6 +3597,8 @@ static void task_running_tick(struct rq *rq)
 	 * allowed to run into the 2nd half of the next tick if they will
 	 * run out of time slice in the interim. Otherwise, if they have
 	 * less than RESCHED_US μs of time slice left they will be rescheduled.
+	 * Dither is used as a backup for when hrexpiry is disabled or high res
+	 * timers not configured in.
 	 */
 	if (p->time_slice - rq->dither >= RESCHED_US)
 		return;
@@ -3525,6 +3607,60 @@ out_resched:
 	__set_tsk_resched(p);
 	rq_unlock(rq);
 }
+
+#ifdef CONFIG_NO_HZ_FULL
+/*
+ * We can stop the timer tick any time highres timers are active since
+ * we rely entirely on highres timeouts for task expiry rescheduling.
+ */
+static void sched_stop_tick(struct rq *rq, int cpu)
+{
+	if (!hrexpiry_enabled(rq))
+		return;
+	if (!tick_nohz_full_enabled())
+		return;
+	if (!tick_nohz_full_cpu(cpu))
+		return;
+	tick_nohz_dep_clear_cpu(cpu, TICK_DEP_BIT_SCHED);
+}
+
+static void sched_start_tick(struct rq *rq, int cpu)
+{
+	tick_nohz_dep_set_cpu(cpu, TICK_DEP_BIT_SCHED);
+}
+
+/**
+ * scheduler_tick_max_deferment
+ *
+ * Keep at least one tick per second when a single
+ * active task is running.
+ *
+ * This makes sure that uptime continues to move forward, even
+ * with a very low granularity.
+ *
+ * Return: Maximum deferment in nanoseconds.
+ */
+u64 scheduler_tick_max_deferment(void)
+{
+	struct rq *rq = this_rq();
+	unsigned long next, now = READ_ONCE(jiffies);
+
+	next = rq->last_jiffy + HZ;
+
+	if (time_before_eq(next, now))
+		return 0;
+
+	return jiffies_to_nsecs(next - now);
+}
+#else
+static inline void sched_stop_tick(struct rq *rq, int cpu)
+{
+}
+
+static inline void sched_start_tick(struct rq *rq, int cpu)
+{
+}
+#endif
 
 /*
  * This function gets called by the timer code, with HZ frequency.
@@ -3546,6 +3682,7 @@ void scheduler_tick(void)
 	rq->last_scheduler_tick = rq->last_jiffy;
 	rq->last_tick = rq->clock;
 	perf_event_task_tick();
+	sched_stop_tick(rq, cpu);
 }
 
 #if defined(CONFIG_PREEMPT) && (defined(CONFIG_DEBUG_PREEMPT) || \
@@ -3828,6 +3965,17 @@ static inline void schedule_debug(struct task_struct *prev)
  */
 static inline void set_rq_task(struct rq *rq, struct task_struct *p)
 {
+#ifdef CONFIG_HIGH_RES_TIMERS
+	if (p == rq->idle || p->policy == SCHED_FIFO)
+		hrexpiry_clear(rq);
+	else
+		hrexpiry_start(rq, US_TO_NS(p->time_slice));
+#endif /* CONFIG_HIGH_RES_TIMERS */
+	if (rq->clock - rq->last_tick > HALF_JIFFY_NS)
+		rq->dither = 0;
+	else
+		rq->dither = rq_dither(rq);
+
 	rq->rq_deadline = p->deadline;
 	rq->rq_prio = p->prio;
 #ifdef CONFIG_SMT_NICE
@@ -4012,10 +4160,6 @@ static void __sched notrace __schedule(bool preempt)
 	update_clocks(rq);
 	niffies = rq->niffies;
 	update_cpu_clock_switch(rq, prev);
-	if (rq->clock - rq->last_tick > HALF_JIFFY_NS)
-		rq->dither = 0;
-	else
-		rq->dither = HALF_JIFFY_US;
 
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
@@ -7485,6 +7629,7 @@ int sched_cpu_dying(unsigned int cpu)
 	}
 	bind_zero(cpu);
 	double_rq_unlock(rq, cpu_rq(0));
+	hrexpiry_clear(rq);
 	local_irq_restore(flags);
 
 	return 0;
@@ -7655,6 +7800,7 @@ void __init sched_init_smp(void)
 #else
 void __init sched_init_smp(void)
 {
+	sched_smp_initialized = true;
 }
 #endif /* CONFIG_SMP */
 
@@ -7741,6 +7887,7 @@ void __init sched_init(void)
 		rq->cpu = i;
 		rq_attach_root(rq, &def_root_domain);
 #endif
+		init_rq_hrexpiry(rq);
 		atomic_set(&rq->nr_iowait, 0);
 	}
 
