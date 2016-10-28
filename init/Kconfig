@@ -30,6 +30,7 @@ menu "General setup"
 
 config SCHED_MUQSS
 	bool "MuQSS cpu scheduler"
+	select HIGH_RES_TIMERS
 	---help---
 	  The Multiple Queue Skiplist Scheduler for excellent interactivity and
 	  responsiveness on the desktop and highly scalable deterministic
@@ -374,7 +375,6 @@ config VIRT_CPU_ACCOUNTING_GEN
 	bool "Full dynticks CPU time accounting"
 	depends on HAVE_CONTEXT_TRACKING
 	depends on HAVE_VIRT_CPU_ACCOUNTING_GEN
-	depends on !SCHED_MUQSS
 	select VIRT_CPU_ACCOUNTING
 	select CONTEXT_TRACKING
 	help
@@ -552,7 +552,7 @@ config CONTEXT_TRACKING
 config CONTEXT_TRACKING_FORCE
 	bool "Force context tracking"
 	depends on CONTEXT_TRACKING
-	default y if !NO_HZ_FULL
+	default y if !NO_HZ_FULL && !SCHED_MUQSS
 	help
 	  The major pre-requirement for full dynticks to work is to
 	  support the context tracking subsystem. But there are also
