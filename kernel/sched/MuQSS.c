@@ -137,7 +137,7 @@
 
 void print_scheduler_version(void)
 {
-	printk(KERN_INFO "MuQSS CPU scheduler v0.120 by Con Kolivas.\n");
+	printk(KERN_INFO "MuQSS CPU scheduler v0.135 by Con Kolivas.\n");
 }
 
 /*
@@ -752,6 +752,13 @@ static inline bool task_queued(struct task_struct *p)
 static void enqueue_task(struct rq *rq, struct task_struct *p, int flags);
 static inline void resched_if_idle(struct rq *rq);
 
+/* Dodgy workaround till we figure out where the softirqs are going */
+static inline void do_pending_softirq(struct rq *rq, struct task_struct *next)
+{
+	if (unlikely(next == rq->idle && local_softirq_pending() && !in_interrupt()))
+		do_softirq_own_stack();
+}
+
 static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 {
 #ifdef CONFIG_SMP
@@ -808,9 +815,7 @@ static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 #endif
 	rq_unlock(rq);
 
-	/* Dodgy workaround till we figure out where the softirqs are going */
-	if (unlikely(current == rq->idle && local_softirq_pending() && !in_interrupt()))
-		do_softirq_own_stack();
+	do_pending_softirq(rq, current);
 
 	local_irq_enable();
 }
@@ -3494,6 +3499,12 @@ static inline struct task_struct
 		 * is locked so entries will always be accurate.
 		 */
 		if (!sched_interactive) {
+			/*
+			 * Don't reschedule balance across nodes unless the CPU
+			 * is idle.
+			 */
+			if (edt != idle && rq->cpu_locality[other_rq->cpu] > 3)
+				break;
 			if (entries <= best_entries)
 				continue;
 		} else if (!entries)
@@ -3518,8 +3529,8 @@ static inline struct task_struct
 		key = other_rq->node.next[0]->key;
 		/* Reevaluate key after locking */
 		if (unlikely(key >= best_key)) {
-			if (i)
-				unlock_rq(other_rq);
+			/* This will always be when rq != other_rq */
+			unlock_rq(other_rq);
 			continue;
 		}
 
@@ -3793,13 +3804,8 @@ static void __sched notrace __schedule(bool preempt)
 				struct task_struct *to_wakeup;
 
 				to_wakeup = wq_worker_sleeping(prev);
-				if (to_wakeup) {
-					/* This shouldn't happen, but does */
-					if (WARN_ONCE((to_wakeup == prev), "Waking up prev as worker\n"))
-						deactivate = false;
-					else
-						try_to_wake_up_local(to_wakeup);
-				}
+				if (to_wakeup)
+					try_to_wake_up_local(to_wakeup);
 			}
 		}
 		switch_count = &prev->nvcsw;
@@ -3851,7 +3857,9 @@ static void __sched notrace __schedule(bool preempt)
 		context_switch(rq, prev, next); /* unlocks the rq */
 	} else {
 		check_siblings(rq);
-		rq_unlock_irq(rq);
+		rq_unlock(rq);
+		do_pending_softirq(rq, next);
+		local_irq_enable();
 	}
 }
 
