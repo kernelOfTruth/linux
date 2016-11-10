@@ -1723,7 +1723,7 @@ static void process_timeout(unsigned long __data)
  *
  * In all cases the return value is guaranteed to be non-negative.
  */
-signed long __sched schedule_timeout(signed long timeout)
+static signed long __schedule_timeout(signed long timeout, bool freezable)
 {
 	struct timer_list timer;
 	unsigned long expire;
@@ -1759,7 +1759,7 @@ signed long __sched schedule_timeout(signed long timeout)
 
 	expire = timeout + jiffies;
 
-	if (timeout == 1 && hrtimer_resolution < NSEC_PER_SEC / HZ) {
+	if (timeout == 1 && !freezable && hrtimer_resolution < NSEC_PER_SEC / HZ) {
 		/*
 		 * Special case 1 as being a request for the minimum timeout
 		 * and use highres timers to timeout after 1ms to workaround
@@ -1783,7 +1783,19 @@ out_timeout:
 out:
 	return timeout < 0 ? 0 : timeout;
 }
+
+signed long __sched schedule_timeout(signed long timeout)
+{
+	return __schedule_timeout(timeout, false);
+}
 EXPORT_SYMBOL(schedule_timeout);
+
+signed long __sched fschedule_timeout(signed long timeout)
+{
+	return __schedule_timeout(timeout, true);
+}
+EXPORT_SYMBOL(fschedule_timeout);
+
 
 /*
  * We can use __set_current_state() here because schedule_timeout() calls
@@ -1799,14 +1811,14 @@ EXPORT_SYMBOL(schedule_timeout_interruptible);
 signed long __sched schedule_timeout_killable(signed long timeout)
 {
 	__set_current_state(TASK_KILLABLE);
-	return schedule_timeout(timeout);
+	return fschedule_timeout(timeout);
 }
 EXPORT_SYMBOL(schedule_timeout_killable);
 
 signed long __sched schedule_timeout_uninterruptible(signed long timeout)
 {
 	__set_current_state(TASK_UNINTERRUPTIBLE);
-	return schedule_timeout(timeout);
+	return fschedule_timeout(timeout);
 }
 EXPORT_SYMBOL(schedule_timeout_uninterruptible);
 
@@ -1817,7 +1829,7 @@ EXPORT_SYMBOL(schedule_timeout_uninterruptible);
 signed long __sched schedule_timeout_idle(signed long timeout)
 {
 	__set_current_state(TASK_IDLE);
-	return schedule_timeout(timeout);
+	return fschedule_timeout(timeout);
 }
 EXPORT_SYMBOL(schedule_timeout_idle);
 
