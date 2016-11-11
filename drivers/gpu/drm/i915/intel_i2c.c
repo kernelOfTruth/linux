@@ -280,7 +280,7 @@ gmbus_wait_hw_status(struct drm_i915_private *dev_priv,
 		if (gmbus2 & (GMBUS_SATOER | gmbus2_status))
 			break;
 
-		schedule_min_hrtimeout();
+		schedule_timeout(1);
 	}
 	finish_wait(&dev_priv->gmbus_wait_queue, &wait);
 

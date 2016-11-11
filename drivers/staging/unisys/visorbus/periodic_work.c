@@ -192,7 +192,7 @@ bool visor_periodic_work_stop(struct periodic_work *pw)
 		}
 		if (pw->is_scheduled) {
 			write_unlock(&pw->lock);
-			schedule_msec_hrtimeout_interruptible((10));
+			schedule_timeout_interruptible(msecs_to_jiffies(10));
 			write_lock(&pw->lock);
 		} else {
 			pw->want_to_stop = false;
