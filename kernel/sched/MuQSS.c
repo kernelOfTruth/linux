@@ -137,7 +137,7 @@
 
 void print_scheduler_version(void)
 {
-	printk(KERN_INFO "MuQSS CPU scheduler v0.135 by Con Kolivas.\n");
+	printk(KERN_INFO "MuQSS CPU scheduler v0.140 by Con Kolivas.\n");
 }
 
 /*
@@ -5516,6 +5516,7 @@ void init_idle(struct task_struct *idle, int cpu)
 	init_idle_preempt_count(idle, cpu);
 
 	ftrace_graph_init_idle_task(idle, cpu);
+	vtime_init_idle(idle, cpu);
 #ifdef CONFIG_SMP
 	sprintf(idle->comm, "%s/%d", INIT_TASK_COMM, cpu);
 #endif

@@ -507,7 +507,7 @@ visornic_disable_with_timeout(struct net_device *netdev, const int timeout)
 		}
 		set_current_state(TASK_INTERRUPTIBLE);
 		spin_unlock_irqrestore(&devdata->priv_lock, flags);
-		wait += schedule_msec_hrtimeout((10));
+		wait += schedule_timeout(msecs_to_jiffies(10));
 		spin_lock_irqsave(&devdata->priv_lock, flags);
 	}
 
@@ -518,7 +518,7 @@ visornic_disable_with_timeout(struct net_device *netdev, const int timeout)
 		while (1) {
 			set_current_state(TASK_INTERRUPTIBLE);
 			spin_unlock_irqrestore(&devdata->priv_lock, flags);
-			schedule_msec_hrtimeout((10));
+			schedule_timeout(msecs_to_jiffies(10));
 			spin_lock_irqsave(&devdata->priv_lock, flags);
 			if (atomic_read(&devdata->usage))
 				break;
@@ -650,7 +650,7 @@ visornic_enable_with_timeout(struct net_device *netdev, const int timeout)
 		}
 		set_current_state(TASK_INTERRUPTIBLE);
 		spin_unlock_irqrestore(&devdata->priv_lock, flags);
-		wait += schedule_msec_hrtimeout((10));
+		wait += schedule_timeout(msecs_to_jiffies(10));
 		spin_lock_irqsave(&devdata->priv_lock, flags);
 	}
 

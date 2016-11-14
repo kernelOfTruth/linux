@@ -180,8 +180,6 @@ static inline void freezable_schedule_unsafe(void)
 	freezer_count_unsafe();
 }
 
-extern signed long fschedule_timeout(signed long timeout);
-
 /*
  * Like freezable_schedule_timeout(), but should not block the freezer.  Do not
  * call this with locks held.
@@ -190,7 +188,7 @@ static inline long freezable_schedule_timeout(long timeout)
 {
 	long __retval;
 	freezer_do_not_count();
-	__retval = fschedule_timeout(timeout);
+	__retval = schedule_timeout(timeout);
 	freezer_count();
 	return __retval;
 }
@@ -203,8 +201,7 @@ static inline long freezable_schedule_timeout_interruptible(long timeout)
 {
 	long __retval;
 	freezer_do_not_count();
-	__set_current_state(TASK_INTERRUPTIBLE);
-	__retval = fschedule_timeout(timeout);
+	__retval = schedule_timeout_interruptible(timeout);
 	freezer_count();
 	return __retval;
 }
