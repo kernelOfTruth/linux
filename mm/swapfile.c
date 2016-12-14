@@ -937,11 +937,21 @@ bool reuse_swap_page(struct page *page, int *total_mapcount)
 	count = page_trans_huge_mapcount(page, total_mapcount);
 	if (count <= 1 && PageSwapCache(page)) {
 		count += page_swapcount(page);
-		if (count == 1 && !PageWriteback(page)) {
+		if (count != 1)
+			goto out;
+		if (!PageWriteback(page)) {
 			delete_from_swap_cache(page);
 			SetPageDirty(page);
+		} else {
+			struct address_space *mapping;
+
+			mapping = page_mapping(page);
+			if (bdi_cap_stable_pages_required(
+					inode_to_bdi(mapping->host)))
+				return false;
 		}
 	}
+out:
 	return count <= 1;
 }
 
@@ -2174,6 +2184,7 @@ static struct swap_info_struct *alloc_swap_info(void)
 static int claim_swapfile(struct swap_info_struct *p, struct inode *inode)
 {
 	int error;
+	struct address_space *swapper_space;
 
 	if (S_ISBLK(inode->i_mode)) {
 		p->bdev = bdgrab(I_BDEV(inode));
@@ -2195,6 +2206,9 @@ static int claim_swapfile(struct swap_info_struct *p, struct inode *inode)
 			return -EBUSY;
 	} else
 		return -EINVAL;
+
+	swapper_space = &swapper_spaces[p->type];
+	swapper_space->host = inode;
 
 	return 0;
 }
