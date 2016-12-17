@@ -399,6 +399,11 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
+		   -fsched-pressure -fschedule-insns -fno-tree-reassoc \
+		   -fsched2-use-superblocks \
+		   -fmodulo-sched -fmodulo-sched-allow-regmoves -freschedule-modulo-scheduled-loops \
+		   -fivopts -fgcse -fgcse-after-reload -ftree-partial-pre \
+		   -falign-functions=1 -falign-jumps=1 -falign-loops=1 -falign-labels=1 -fno-builtin -fno-builtin-memcpy -pipe \
 		   -std=gnu89 $(call cc-option,-fno-PIE)
 
 
