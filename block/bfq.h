@@ -440,6 +440,8 @@ struct bfq_data {
 
 	/* bfq_queue in service */
 	struct bfq_queue *in_service_queue;
+	/* candidate bfq_queue to become the next in-service queue */
+	struct bfq_queue *next_in_service_queue;
 	/* bfq_io_cq (bic) associated with the @in_service_queue */
 	struct bfq_io_cq *in_service_bic;
 
