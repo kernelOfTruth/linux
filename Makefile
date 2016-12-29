@@ -1,7 +1,7 @@
 VERSION = 4
 PATCHLEVEL = 9
 SUBLEVEL = 0
-EXTRAVERSION = _dtop-rt-I.1
+EXTRAVERSION = _dtop-rt-I.2
 NAME = Roaring Lionus
 
 # *DOCUMENTATION*
