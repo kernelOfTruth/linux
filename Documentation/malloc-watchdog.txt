@@ -1,0 +1,155 @@
+=================================
+Memory allocation stall watchdog.
+=================================
+
+
+- What is it?
+
+This is an extension to khungtaskd kernel thread, which is for warning
+that memory allocation requests are stalling, in order to catch unexplained
+hangups/reboots caused by memory allocation stalls.
+
+
+- Why need to use it?
+
+Currently, when something went wrong inside memory allocation request,
+the system might stall without any kernel messages.
+
+Although there is khungtaskd kernel thread as an asynchronous monitoring
+approach, khungtaskd kernel thread is not always helpful because memory
+allocating tasks unlikely sleep in uninterruptible state for
+/proc/sys/kernel/hung_task_timeout_secs seconds.
+
+Although there is warn_alloc() as a synchronous monitoring approach
+which emits
+
+  "%s: page allocation stalls for %ums, order:%u, mode:%#x(%pGg)\n"
+
+line, warn_alloc() is not bullet proof because allocating tasks can get
+stuck before calling warn_alloc() and/or allocating tasks are using
+__GFP_NOWARN flag and/or such lines are suppressed by ratelimiting and/or
+such lines are corrupted due to collisions.
+
+Unless we use asynchronous monitoring approach, we can fail to figure out
+that something went wrong inside memory allocation requests.
+
+People are reporting hang up problems and/or slowdown problem inside memory
+allocation request. But we are forcing people to use kernels without means
+to find out what was happening. The means are expected to work without
+knowledge to use trace points functionality, are expected to run without
+memory allocation, are expected to dump output without administrator's
+operation, are expected to work before watchdog timers reset the machine.
+
+This extension adds a state tracking mechanism for memory allocation requests
+to khungtaskd kernel thread, allowing administrators to figure out that the
+system hung up due to memory allocation stalls and/or to take administrator-
+controlled actions when memory allocation requests are stalling.
+
+
+- How to configure it?
+
+Build kernels with CONFIG_DETECT_HUNG_TASK=y and
+CONFIG_DETECT_MEMALLOC_STALL_TASK=y.
+
+Default scan interval is configured by CONFIG_DEFAULT_MEMALLOC_TASK_TIMEOUT.
+Scan interval can be changed at run time by writing timeout in seconds to
+/proc/sys/kernel/memalloc_task_timeout_secs. Writing 0 disables this scan.
+
+Even if you disable this scan, information about last memory allocation
+request is kept. That is, you will get some hint for understanding
+last-minute behavior of the kernel when you analyze vmcore (or memory
+snapshot of a virtualized machine).
+
+
+- How memory allocation stalls are reported?
+
+This extension will report allocation stalls by printing
+
+  MemAlloc-Info: stalling=$X dying=$Y1 exiting=$Y2 victim=$Z oom_count=$O
+
+line where $X > 0, followed by
+
+  MemAlloc: $name($pid) flags=$flags switches=$switches $state_of_allocation $state_of_task
+
+lines and corresponding stack traces.
+
+$O is number of times the OOM killer is invoked. If $O does not increase
+over time, allocation requests got stuck before calling the OOM killer.
+
+$name is that task's comm name string ("struct task_struct"->comm).
+
+$pid is that task's pid value ("struct task_struct"->pid).
+
+$flags is that task's flags value ("struct task_struct"->flags).
+
+$switches is that task's context switch counter ("struct task_struct"->nvcsw +
+"struct task_struct"->nivcsw) which is also checked by
+/proc/sys/kernel/hung_task_warnings for finding hung tasks.
+
+$state_of_allocation is reported only when that task is stalling inside
+__alloc_pages_slowpath(), in seq=$seq gfp=$gfp order=$order delay=$delay
+format where $seq is the sequence number for allocation request, $gfp is
+the gfp flags used for that allocation request, $order is the order,
+delay is jiffies elapsed since entering into __alloc_pages_slowpath().
+
+You can check for seq=$seq field for each reported process. If $seq is
+increasing over time, it will be simply overloaded (not a livelock but
+progress is too slow to wait) unless the caller is doing open-coded
+__GFP_NOFAIL allocation requests (effectively a livelock).
+
+$state_of_task is reported only when that task is dying, in combination
+of "uninterruptible" (where that task is in uninterruptible sleep,
+likely due to uninterruptible lock), "exiting" (where that task arrived
+at do_exit() function), "dying" (where that task has pending SIGKILL)
+and "victim" (where that task received TIF_MEMDIE, likely be only 1 task).
+
+
+- How the messages look like?
+
+An example of MemAlloc lines (grep of dmesg output) is shown below.
+You can use serial console and/or netconsole to save these messages
+when the system is stalling.
+
+  [  100.503284] MemAlloc-Info: stalling=8 dying=1 exiting=0 victim=1 oom_count=101421
+  [  100.505674] MemAlloc: kswapd0(54) flags=0xa40840 switches=84685
+  [  100.546645] MemAlloc: kworker/3:1(70) flags=0x4208060 switches=9462 seq=5 gfp=0x2400000(GFP_NOIO) order=0 delay=8207 uninterruptible
+  [  100.606034] MemAlloc: systemd-journal(469) flags=0x400100 switches=8380 seq=212 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=10620 uninterruptible
+  [  100.651766] MemAlloc: irqbalance(998) flags=0x400100 switches=4366 seq=5 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=5819
+  [  100.697590] MemAlloc: vmtoolsd(1928) flags=0x400100 switches=8542 seq=82 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=10620 uninterruptible
+  [  100.743312] MemAlloc: tuned(3737) flags=0x400040 switches=8220 seq=44 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=10620 uninterruptible
+  [  100.792038] MemAlloc: nmbd(3759) flags=0x400140 switches=8079 seq=198 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=10620 uninterruptible
+  [  100.839428] MemAlloc: oom-write(3814) flags=0x400000 switches=8126 seq=223446 gfp=0x24280ca(GFP_HIGHUSER_MOVABLE|__GFP_ZERO) order=0 delay=10620 uninterruptible
+  [  100.878846] MemAlloc: write(3816) flags=0x400000 switches=7440 uninterruptible dying victim
+  [  100.917971] MemAlloc: write(3820) flags=0x400000 switches=16130 seq=8714 gfp=0x342004a(GFP_NOFS|__GFP_HIGHMEM|__GFP_HARDWALL|__GFP_MOVABLE|__GFP_WRITE) order=0 delay=10620 uninterruptible
+  [  101.190979] MemAlloc-Info: stalling=8 dying=1 exiting=0 victim=1 oom_count=107514
+  [  111.194055] MemAlloc-Info: stalling=9 dying=1 exiting=0 victim=1 oom_count=199825
+  [  111.196624] MemAlloc: kswapd0(54) flags=0xa40840 switches=168410
+  [  111.238096] MemAlloc: kworker/3:1(70) flags=0x4208060 switches=18592 seq=5 gfp=0x2400000(GFP_NOIO) order=0 delay=18898
+  [  111.296920] MemAlloc: systemd-journal(469) flags=0x400100 switches=15918 seq=212 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=21311
+  [  111.343129] MemAlloc: systemd-logind(973) flags=0x400100 switches=7786 seq=3 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=10476
+  [  111.390142] MemAlloc: irqbalance(998) flags=0x400100 switches=11965 seq=5 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=16510
+  [  111.435170] MemAlloc: vmtoolsd(1928) flags=0x400100 switches=16230 seq=82 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=21311 uninterruptible
+  [  111.479089] MemAlloc: tuned(3737) flags=0x400040 switches=15850 seq=44 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=21311 uninterruptible
+  [  111.528294] MemAlloc: nmbd(3759) flags=0x400140 switches=15682 seq=198 gfp=0x24201ca(GFP_HIGHUSER_MOVABLE|__GFP_COLD) order=0 delay=21311
+  [  111.576371] MemAlloc: oom-write(3814) flags=0x400000 switches=15378 seq=223446 gfp=0x24280ca(GFP_HIGHUSER_MOVABLE|__GFP_ZERO) order=0 delay=21311 uninterruptible
+  [  111.617562] MemAlloc: write(3816) flags=0x400000 switches=7440 uninterruptible dying victim
+  [  111.661662] MemAlloc: write(3820) flags=0x400000 switches=24334 seq=8714 gfp=0x342004a(GFP_NOFS|__GFP_HIGHMEM|__GFP_HARDWALL|__GFP_MOVABLE|__GFP_WRITE) order=0 delay=21311 uninterruptible
+  [  111.956964] MemAlloc-Info: stalling=9 dying=1 exiting=0 victim=1 oom_count=206663
+
+You can check whether memory allocations are making forward progress.
+You can check where memory allocations are stalling using stack trace
+of reported task which follows each MemAlloc: line. You can check memory
+information (SysRq-m) and stuck workqueues information which follow the
+end of MemAlloc: lines. You can also check locks held (SysRq-d) if built
+with CONFIG_PROVE_LOCKING=y and lockdep is still active.
+
+This extension also serves as a hook for triggering actions when timeout
+expired. If you want to obtain more information, you can utilize dynamic
+probes using e.g. SystemTap. For example,
+
+  # stap -F -g -e 'probe kernel.function("check_memalloc_stalling_tasks").return { if ($return > 0) panic("MemAlloc stall detected."); }'
+
+will allow you to obtain vmcore by triggering the kernel panic. Since
+variables used by this extension is associated with "struct task_struct",
+you can obtain accurate snapshot using "foreach task" command from crash
+utility.

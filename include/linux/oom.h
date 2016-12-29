@@ -79,8 +79,12 @@ extern void oom_killer_enable(void);
 
 extern struct task_struct *find_lock_task_mm(struct task_struct *p);
 
+extern unsigned int out_of_memory_count;
+extern bool memalloc_maybe_stalling(void);
+
 /* sysctls */
 extern int sysctl_oom_dump_tasks;
 extern int sysctl_oom_kill_allocating_task;
 extern int sysctl_panic_on_oom;
+extern unsigned long sysctl_memalloc_task_timeout_secs;
 #endif /* _INCLUDE_LINUX_OOM_H */
