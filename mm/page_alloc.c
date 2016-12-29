@@ -3106,6 +3106,7 @@ __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 		.order = order,
 	};
 	struct page *page;
+	static bool wait_more;
 
 	*did_some_progress = 0;
 
@@ -3116,6 +3117,9 @@ __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 	if (!mutex_trylock(&oom_lock)) {
 		*did_some_progress = 1;
 		schedule_timeout_uninterruptible(1);
+		while (wait_more)
+			if (schedule_timeout_killable(1) < 0)
+				break;
 		return NULL;
 	}
 
@@ -3155,6 +3159,7 @@ __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 		if (gfp_mask & __GFP_THISNODE)
 			goto out;
 	}
+	wait_more = true;
 	/* Exhausted what can be done so it's blamo time */
 	if (out_of_memory(&oc) || WARN_ON_ONCE(gfp_mask & __GFP_NOFAIL)) {
 		*did_some_progress = 1;
@@ -3171,6 +3176,7 @@ __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 					ALLOC_NO_WATERMARKS, ac);
 		}
 	}
+	wait_more = false;
 out:
 	mutex_unlock(&oom_lock);
 	return page;
