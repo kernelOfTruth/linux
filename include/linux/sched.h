@@ -1485,32 +1485,6 @@ struct tlbflush_unmap_batch {
 	bool writable;
 };
 
-struct memalloc_info {
-	/*
-	 * 0: not doing __GFP_RECLAIM allocation.
-	 * 1: doing non-recursive __GFP_RECLAIM allocation.
-	 * 2: doing recursive __GFP_RECLAIM allocation.
-	 */
-	u8 valid;
-	/*
-	 * bit 0: Will be reported as OOM victim.
-	 * bit 1: Will be reported as dying task.
-	 * bit 2: Will be reported as stalling task.
-	 * bit 3: Will be reported as exiting task.
-	 * bit 7: Will be reported unconditionally.
-	 */
-	u8 type;
-	/* Index used for memalloc_in_flight[] counter. */
-	u8 idx;
-	/* For progress monitoring. */
-	unsigned int sequence;
-	/* Started time in jiffies as of valid == 1. */
-	unsigned long start;
-	/* Requested order and gfp flags as of valid == 1. */
-	unsigned int order;
-	gfp_t gfp;
-};
-
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/*
@@ -2029,9 +2003,6 @@ struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/* A live task holds one reference. */
 	atomic_t stack_refcount;
-#endif
-#ifdef CONFIG_DETECT_MEMALLOC_STALL_TASK
-	struct memalloc_info memalloc;
 #endif
 /* CPU-specific state of this task */
 	struct thread_struct thread;

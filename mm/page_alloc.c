@@ -3579,10 +3579,8 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	enum compact_result compact_result;
 	int compaction_retries = 0;
 	int no_progress_loops = 0;
-#ifndef CONFIG_DETECT_MEMALLOC_STALL_TASK
 	unsigned long alloc_start = jiffies;
 	unsigned int stall_timeout = 10 * HZ;
-#endif
 
 	/*
 	 * In the slowpath, we sanity check order to avoid ever trying to
@@ -3738,7 +3736,6 @@ retry:
 	if (order > PAGE_ALLOC_COSTLY_ORDER && !(gfp_mask & __GFP_REPEAT))
 		goto nopage;
 
-#ifndef CONFIG_DETECT_MEMALLOC_STALL_TASK
 	/* Make sure we know about allocations which stall for too long */
 	if (time_after(jiffies, alloc_start + stall_timeout)) {
 		warn_alloc(gfp_mask,
@@ -3746,7 +3743,6 @@ retry:
 			jiffies_to_msecs(jiffies-alloc_start), order);
 		stall_timeout += 10 * HZ;
 	}
-#endif
 
 	if (should_reclaim_retry(gfp_mask, order, ac, alloc_flags,
 				 did_some_progress > 0, &no_progress_loops))
@@ -3781,57 +3777,6 @@ nopage:
 got_pg:
 	return page;
 }
-
-#ifdef CONFIG_DETECT_MEMALLOC_STALL_TASK
-
-static DEFINE_PER_CPU_ALIGNED(int, memalloc_in_flight[2]);
-static u8 memalloc_active_index; /* Either 0 or 1. */
-
-/* Called periodically with sysctl_memalloc_task_timeout_secs interval. */
-bool memalloc_maybe_stalling(void)
-{
-	int cpu;
-	int sum = 0;
-	const u8 idx = memalloc_active_index ^ 1;
-
-	for_each_possible_cpu(cpu)
-		sum += per_cpu(memalloc_in_flight[idx], cpu);
-	if (sum)
-		return true;
-	memalloc_active_index ^= 1;
-	return false;
-}
-
-static void start_memalloc_timer(const gfp_t gfp_mask, const int order)
-{
-	struct memalloc_info *m = &current->memalloc;
-
-	/* We don't check for stalls for !__GFP_RECLAIM allocations. */
-	if (!(gfp_mask & __GFP_RECLAIM))
-		return;
-	/* We don't check for stalls for nested __GFP_RECLAIM allocations */
-	if (!m->valid) {
-		m->sequence++;
-		m->start = jiffies;
-		m->order = order;
-		m->gfp = gfp_mask;
-		m->idx = memalloc_active_index;
-		this_cpu_inc(memalloc_in_flight[m->idx]);
-	}
-	m->valid++;
-}
-
-static void stop_memalloc_timer(const gfp_t gfp_mask)
-{
-	struct memalloc_info *m = &current->memalloc;
-
-	if ((gfp_mask & __GFP_RECLAIM) && !--m->valid)
-		this_cpu_dec(memalloc_in_flight[m->idx]);
-}
-#else
-#define start_memalloc_timer(gfp_mask, order) do { } while (0)
-#define stop_memalloc_timer(gfp_mask) do { } while (0)
-#endif
 
 /*
  * This is the 'heart' of the zoned buddy allocator.
@@ -3914,9 +3859,7 @@ retry_cpuset:
 	 */
 	if (cpusets_enabled())
 		ac.nodemask = nodemask;
-	start_memalloc_timer(alloc_mask, order);
 	page = __alloc_pages_slowpath(alloc_mask, order, &ac);
-	stop_memalloc_timer(alloc_mask);
 
 no_zone:
 	/*
