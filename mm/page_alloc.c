@@ -3806,10 +3806,10 @@ static void start_memalloc_timer(const gfp_t gfp_mask, const int order)
 {
 	struct memalloc_info *m = &current->memalloc;
 
-	/* We don't check for stalls for !__GFP_DIRECT_RECLAIM allocations. */
-	if (!(gfp_mask & __GFP_DIRECT_RECLAIM))
+	/* We don't check for stalls for !__GFP_RECLAIM allocations. */
+	if (!(gfp_mask & __GFP_RECLAIM))
 		return;
-	/* Check based on outermost __GFP_DIRECT_RECLAIM allocations. */
+	/* We don't check for stalls for nested __GFP_RECLAIM allocations */
 	if (!m->valid) {
 		m->sequence++;
 		m->start = jiffies;
@@ -3825,7 +3825,7 @@ static void stop_memalloc_timer(const gfp_t gfp_mask)
 {
 	struct memalloc_info *m = &current->memalloc;
 
-	if ((gfp_mask & __GFP_DIRECT_RECLAIM) && !--m->valid)
+	if ((gfp_mask & __GFP_RECLAIM) && !--m->valid)
 		this_cpu_dec(memalloc_in_flight[m->idx]);
 }
 #else
