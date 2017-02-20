@@ -217,7 +217,7 @@ int fnic_fw_reset_handler(struct fnic *fnic)
 
 	/* wait for io cmpl */
 	while (atomic_read(&fnic->in_flight))
-		schedule_timeout(msecs_to_jiffies(1));
+		schedule_msec_hrtimeout((1));
 
 	spin_lock_irqsave(&fnic->wq_copy_lock[0], flags);
 
@@ -2189,7 +2189,7 @@ static int fnic_clean_pending_aborts(struct fnic *fnic,
 		ret = iter_data.ret;
 		goto clean_pending_aborts_end;
 	}
-	schedule_timeout(msecs_to_jiffies(2 * fnic->config.ed_tov));
+	schedule_msec_hrtimeout((2 * fnic->config.ed_tov));
 
 	/* walk again to check, if IOs are still pending in fw */
 	if (fnic_is_abts_pending(fnic, lr_sc))
@@ -2589,7 +2589,7 @@ retry_fw_reset:
 		     fnic->link_events) {
 		/* fw reset is in progress, poll for its completion */
 		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
-		schedule_timeout(msecs_to_jiffies(100));
+		schedule_msec_hrtimeout(100);
 		goto retry_fw_reset;
 	}
 
@@ -2638,7 +2638,7 @@ retry_fw_reset:
 	if (unlikely(fnic->state == FNIC_IN_FC_TRANS_ETH_MODE)) {
 		/* fw reset is in progress, poll for its completion */
 		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
-		schedule_timeout(msecs_to_jiffies(100));
+		schedule_msec_hrtimeout(100);
 		goto retry_fw_reset;
 	}
 	old_state = fnic->state;
