@@ -1,7 +1,7 @@
 VERSION = 4
 PATCHLEVEL = 10
 SUBLEVEL = 10
-EXTRAVERSION = -bfq
+EXTRAVERSION = -vrq-bfq_dtop-I.1
 NAME = Fearless Coyote
 
 # *DOCUMENTATION*
