@@ -111,7 +111,7 @@
 
 /* Constants used for minimum and  maximum */
 #ifdef CONFIG_LOCKUP_DETECTOR
-static int sixty = 60;
+static int sixty __read_only = 60;
 #endif
 
 #if defined(CONFIG_UNEVICTABLE_FILE)
@@ -146,15 +146,16 @@ unsigned long sysctl_unevictable_anon_kbytes_min __read_mostly =
 	CONFIG_UNEVICTABLE_ANON_KBYTES_MIN;
 #endif
 
-static int __maybe_unused neg_one = -1;
-static int __maybe_unused two = 2;
-static int __maybe_unused four = 4;
-static unsigned long zero_ul;
-static unsigned long one_ul = 1;
-static unsigned long long_max = LONG_MAX;
-static int one_hundred = 100;
-static int two_hundred = 200;
-static int one_thousand = 1000;
+static int __maybe_unused neg_one __read_only = -1;
+static int __maybe_unused two __read_only = 2;
+static int __maybe_unused four __read_only = 4;
+static unsigned long zero_ul __read_only;
+static unsigned long one_ul __read_only = 1;
+static unsigned long long_max __read_only = LONG_MAX;
+static int one_hundred __read_only = 100;
+static int two_hundred __read_only = 200;
+static int one_thousand __read_only = 1000;
+
 static int __maybe_unused zero = 0;
 static int __maybe_unused one = 1;
 #ifdef CONFIG_SCHED_ALT
@@ -162,21 +163,21 @@ extern int sched_yield_type;
 #endif
 extern int hrtimer_granularity_us;
 extern int hrtimeout_min_us;
-#if defined(CONFIG_PRINTK) || defined(CONFIG_SCHED_MUQSS)
+#ifdef CONFIG_PRINTK
 static int ten_thousand = 10000;
 #endif
 #ifdef CONFIG_PERF_EVENTS
-static int six_hundred_forty_kb = 640 * 1024;
+static int six_hundred_forty_kb __read_only = 640 * 1024;
 #endif
 
 /* this is needed for the proc_doulongvec_minmax of vm_dirty_bytes */
-static unsigned long dirty_bytes_min = 2 * PAGE_SIZE;
+static unsigned long dirty_bytes_min __read_only = 2 * PAGE_SIZE;
 
 /* this is needed for the proc_dointvec_minmax for [fs_]overflow UID and GID */
-static int maxolduid = 65535;
-static int minolduid;
+static int maxolduid __read_only = 65535;
+static int minolduid __read_only;
 
-static int ngroups_max = NGROUPS_MAX;
+static int ngroups_max __read_only = NGROUPS_MAX;
 static const int cap_last_cap = CAP_LAST_CAP;
 
 /*
@@ -184,7 +185,7 @@ static const int cap_last_cap = CAP_LAST_CAP;
  * and hung_task_check_interval_secs
  */
 #ifdef CONFIG_DETECT_HUNG_TASK
-static unsigned long hung_task_timeout_max = (LONG_MAX/HZ);
+static unsigned long hung_task_timeout_max __read_only = (LONG_MAX/HZ);
 #endif
 
 #ifdef CONFIG_INOTIFY_USER
@@ -230,8 +231,8 @@ int sysctl_legacy_va_layout;
 #endif
 
 #ifdef CONFIG_COMPACTION
-static int min_extfrag_threshold;
-static int max_extfrag_threshold = 1000;
+static int min_extfrag_threshold __read_only;
+static int max_extfrag_threshold __read_only = 1000;
 #endif
 
 #endif /* CONFIG_SYSCTL */
