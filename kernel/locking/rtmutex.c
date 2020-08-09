@@ -233,6 +233,9 @@ static inline int
 rt_mutex_waiter_less(struct rt_mutex_waiter *left,
 		     struct rt_mutex_waiter *right)
 {
+#ifdef CONFIG_SCHED_PDS
+	return (left->deadline < right->deadline);
+#else
 	if (left->prio < right->prio)
 		return 1;
 
@@ -248,12 +251,16 @@ rt_mutex_waiter_less(struct rt_mutex_waiter *left,
 #endif
 
 	return 0;
+#endif
 }
 
 static inline int
 rt_mutex_waiter_equal(struct rt_mutex_waiter *left,
 		      struct rt_mutex_waiter *right)
 {
+#ifdef CONFIG_SCHED_PDS
+	return (left->deadline == right->deadline);
+#else
 	if (left->prio != right->prio)
 		return 0;
 
@@ -269,6 +276,7 @@ rt_mutex_waiter_equal(struct rt_mutex_waiter *left,
 #endif
 
 	return 1;
+#endif
 }
 
 #define __node_2_waiter(node) \
