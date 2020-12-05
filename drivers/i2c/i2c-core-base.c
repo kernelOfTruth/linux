@@ -1520,7 +1520,7 @@ int i2c_handle_smbus_host_notify(struct i2c_adapter *adap, unsigned short addr)
 	if (irq <= 0)
 		return -ENXIO;
 
-	generic_handle_irq(irq);
+	generic_dispatch_irq(irq);
 
 	return 0;
 }

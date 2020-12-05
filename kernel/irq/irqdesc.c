@@ -676,6 +676,27 @@ int generic_handle_domain_irq(struct irq_domain *domain, unsigned int hwirq)
 }
 EXPORT_SYMBOL_GPL(generic_handle_domain_irq);
 
+/**
+ * generic_dispatch_irq - Dispatch an interrupt from an interrupt handler
+ * @irq:	The irq number to handle
+ *
+ * A wrapper around generic_handle_irq() which ensures that interrupts are
+ * disabled when the primary handler of the dispatched irq is invoked.
+ * This is useful for interrupt handlers with dispatching to be safe for
+ * the forced threaded case.
+ */
+int generic_dispatch_irq(unsigned int irq)
+{
+	unsigned long flags;
+	int ret;
+
+	local_irq_save(flags);
+	ret = generic_handle_irq(irq);
+	local_irq_restore(flags);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(generic_dispatch_irq);
+
 #ifdef CONFIG_HANDLE_DOMAIN_IRQ
 /**
  * handle_domain_irq - Invoke the handler for a HW irq belonging to a domain,
