@@ -93,11 +93,7 @@ static void _spk_do_catch_up(struct spk_synth *synth, int unicode)
 		spin_unlock_irqrestore(&speakup_info.spinlock, flags);
 		if (ch == '\n')
 			ch = synth->procspeech;
-		if (unicode)
-			ret = synth->io_ops->synth_out_unicode(synth, ch);
-		else
-			ret = synth->io_ops->synth_out(synth, ch);
-		if (!ret) {
+		if (!synth->io_ops->synth_out(synth, ch)) {
 			schedule_msec_hrtimeout(full_time_val);
 			continue;
 		}
