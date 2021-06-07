@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 5
 PATCHLEVEL = 12
-SUBLEVEL = 8
+SUBLEVEL = 9
 EXTRAVERSION = -zen-prjc-rt
-NAME = Crossing the Sliðr
+NAME = Frozen Wasteland
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
