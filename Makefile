@@ -748,7 +748,35 @@ KBUILD_CFLAGS	+= $(call cc-disable-warning, address-of-packed-member)
 ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 KBUILD_CFLAGS += -O2
 else ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
-KBUILD_CFLAGS += -O3
+KBUILD_CFLAGS += -O3 -fno-tree-loop-if-convert -fno-common \
+				-fipa-pta -fno-sched-interblock -fno-tree-copyrename \
+				-fno-peephole2 -fno-expensive-optimizations \
+				-fno-ipa-sra -fgcse-las -fno-schedule-insns \
+				-fno-tree-loop-distribute-patterns -fno-caller-saves \
+				-fno-optimize-strlen -fno-inline-functions-called-once \
+				-fno-tree-slsr -fno-tree-scev-cprop -funroll-loops \
+				-fno-sched-dep-count-heuristic -fno-tree-ccp \
+				-fno-predictive-commoning -fno-ipa-pure-const \
+				-fno-merge-constants -fno-tree-pta \
+				-fivopts -fdevirtualize-at-ltrans -fipa-pta \
+				-fno-caller-saves -fno-compare-elim -fno-cse-follow-jumps \
+				-fno-delayed-branch -fno-forward-propagate -fno-gcse-lm -fno-gcse-sm \
+				-fno-if-conversion -fno-indirect-inlining -fno-inline -fno-inline-functions \
+				-fno-inline-small-functions -fno-ipa-cp -fno-ipa-cp-clone \
+				-fno-ira-hoist-pressure -fno-ira-loop-pressure -fira-region=mixed \
+				-fira-algorithm=CB -fno-ira-share-save-slots -flimit-function-alignment \
+				-fno-live-range-shrinkage -fno-lra-remat -fno-move-loop-invariants \
+				-fno-peel-loops -fno-rename-registers -fno-reorder-blocks \
+				-freorder-blocks-algorithm=simple -freorder-blocks-and-partition \
+				-fno-reschedule-modulo-scheduled-loops -fno-sched-group-heuristic \
+				-fno-sched-interblock -fno-sched-last-insn-heuristic \
+				-fno-sched-pressure -fno-sched-spec-load -fno-sched2-use-superblocks \
+				-fno-schedule-fusion -fno-schedule-insns2 -fno-shrink-wrap \
+				-fno-split-loops -fno-split-paths -fno-tree-bit-ccp \
+				-fno-tree-dce -fno-tree-dominator-opts -fno-tree-dse \
+				-fno-tree-fre -fno-tree-loop-distribution -fno-tree-loop-ivcanon \
+				-fno-tree-partial-pre -fno-tree-pre -fno-tree-reassoc \
+				-fno-tree-slsr -fno-align-labels
 else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS += -Os
 endif
