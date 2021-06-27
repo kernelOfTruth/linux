@@ -2,7 +2,7 @@
 VERSION = 5
 PATCHLEVEL = 12
 SUBLEVEL = 13
-EXTRAVERSION = -zen-prjc-rt
+EXTRAVERSION = -zen-prjc-rt_t3
 NAME = Frozen Wasteland
 
 # *DOCUMENTATION*
