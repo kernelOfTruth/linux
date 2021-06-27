@@ -749,16 +749,22 @@ ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 KBUILD_CFLAGS += -O2
 else ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
 KBUILD_CFLAGS += -O3 -fno-tree-loop-if-convert -fno-common \
-				-fipa-pta -fno-sched-interblock -fno-tree-copyrename \
+				-fipa-pta -fno-sched-interblock \
 				-fno-peephole2 -fno-expensive-optimizations \
 				-fno-ipa-sra -fgcse-las -fno-schedule-insns \
 				-fno-tree-loop-distribute-patterns -fno-caller-saves \
-				-fno-optimize-strlen -fno-inline-functions-called-once \
+				-fno-inline-functions-called-once \
 				-fno-tree-slsr -fno-tree-scev-cprop -funroll-loops \
 				-fno-sched-dep-count-heuristic -fno-tree-ccp \
 				-fno-predictive-commoning -fno-ipa-pure-const \
 				-fno-merge-constants -fno-tree-pta \
-				-fivopts -fdevirtualize-at-ltrans -fipa-pta
+				-fivopts -fdevirtualize-at-ltrans \
+				-fno-conserve-stack -flive-range-shrinkage \
+				-fmodulo-sched -fno-peel-loops \
+				-fno-shrink-wrap -fno-tree-partial-pre -fno-tree-pre \
+				-fno-tree-reassoc -fvariable-expansion-in-unroller
+#				-foptimize-strlen # might be a good idea with FORTIFY_SOURCE
+KBUILD_CFLAGS += $(call cc-option, -fno-tree-loop-vectorize)
 else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS += -Os
 endif
