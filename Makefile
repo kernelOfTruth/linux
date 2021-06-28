@@ -762,12 +762,13 @@ KBUILD_CFLAGS += -O3 -fno-tree-loop-if-convert -fno-common \
 				-fno-conserve-stack -flive-range-shrinkage \
 				-fmodulo-sched -fno-peel-loops \
 				-fno-shrink-wrap -fno-tree-partial-pre -fno-tree-pre \
-				-fno-tree-reassoc -fvariable-expansion-in-unroller
-#				-foptimize-strlen # might be a good idea with FORTIFY_SOURCE
-KBUILD_CFLAGS += $(call cc-option, -fno-tree-loop-vectorize)
+				-fno-tree-reassoc -fvariable-expansion-in-unroller \
+				-fno-tree-loop-vectorize
 else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS += -Os
 endif
+# -foptimize-strlen # might be a good idea with FORTIFY_SOURCE, so keep in
+# -fno-tree-loop-vectorize
 
 # Tell gcc to never replace conditional load with a non-conditional one
 KBUILD_CFLAGS	+= $(call cc-option,--param=allow-store-data-races=0)
