@@ -756,14 +756,17 @@ KBUILD_CFLAGS += -O3 -fno-tree-loop-if-convert -fno-common \
 				-fno-inline-functions-called-once \
 				-fno-tree-slsr -fno-tree-scev-cprop -funroll-loops \
 				-fno-sched-dep-count-heuristic -fno-tree-ccp \
+				-fno-tree-bit-ccp \
 				-fno-predictive-commoning -fno-ipa-pure-const \
 				-fno-merge-constants -fno-tree-pta \
 				-fivopts -fdevirtualize-at-ltrans \
 				-fno-conserve-stack -flive-range-shrinkage \
 				-fmodulo-sched -fno-peel-loops \
-				-fno-shrink-wrap -fno-tree-partial-pre -fno-tree-pre \
+				-fno-shrink-wrap -fno-shrink-wrap-separate \
+				-fno-tree-partial-pre -fno-tree-pre \
 				-fno-tree-reassoc -fvariable-expansion-in-unroller \
-				-fno-tree-loop-vectorize
+				-fno-tree-loop-vectorize -fno-tree-loop-vectorize \
+				-fno-tree-slp-vectorize
 else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS += -Os
 endif
