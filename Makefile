@@ -754,9 +754,9 @@ KBUILD_CFLAGS += -O3 -fno-tree-loop-if-convert -fno-common \
 				-fno-tree-partial-pre -fno-tree-pre \
 				-fno-tree-reassoc -fvariable-expansion-in-unroller \
 				-fno-tree-loop-vectorize -fno-tree-loop-vectorize \
-				-fno-tree-slp-vectorize -ftracer -fgcse-after-reload \
-				-fdevirtualize-speculatively -fno-var-tracking-assignments \
-				-fno-var-tracking -ftree-coalesce-vars -fno-prefetch-loop-arrays
+				-fno-tree-slp-vectorize -fgcse-after-reload \
+				-fno-var-tracking-assignments \
+				-fno-var-tracking -fno-prefetch-loop-arrays
 else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS += -Os
 endif
