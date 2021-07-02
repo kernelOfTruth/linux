@@ -739,7 +739,7 @@ else ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
 KBUILD_CFLAGS += -O3 -fno-tree-loop-if-convert -fno-common \
 				-fipa-pta -fno-sched-interblock \
 				-fno-peephole2 -fno-expensive-optimizations \
-				-fno-ipa-sra -fgcse-las -fno-schedule-insns \
+				-fno-ipa-sra -fgcse -fgcse-las -fno-schedule-insns \
 				-fno-tree-loop-distribute-patterns -fno-caller-saves \
 				-fno-inline-functions-called-once \
 				-fno-tree-slsr -fno-tree-scev-cprop -funroll-loops \
@@ -754,7 +754,9 @@ KBUILD_CFLAGS += -O3 -fno-tree-loop-if-convert -fno-common \
 				-fno-tree-partial-pre -fno-tree-pre \
 				-fno-tree-reassoc -fvariable-expansion-in-unroller \
 				-fno-tree-loop-vectorize -fno-tree-loop-vectorize \
-				-fno-tree-slp-vectorize
+				-fno-tree-slp-vectorize -ftracer -fgcse-after-reload \
+				-fdevirtualize-speculatively -fno-var-tracking-assignments \
+				-fno-var-tracking -ftree-coalesce-vars -fno-prefetch-loop-arrays
 else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS += -Os
 endif
