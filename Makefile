@@ -2,7 +2,7 @@
 VERSION = 5
 PATCHLEVEL = 13
 SUBLEVEL = 0
-EXTRAVERSION = -zen
+EXTRAVERSION = -batmod-prjc-rt_t1
 NAME = The City on the Edge of Forever
 
 # *DOCUMENTATION*
