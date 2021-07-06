@@ -75,15 +75,10 @@ struct task_struct init_task
 	.stack		= init_stack,
 	.usage		= REFCOUNT_INIT(2),
 	.flags		= PF_KTHREAD,
-#ifdef CONFIG_SCHED_BMQ
+#ifdef CONFIG_SCHED_ALT
 	.prio		= DEFAULT_PRIO + MAX_PRIORITY_ADJ,
 	.static_prio	= DEFAULT_PRIO,
 	.normal_prio	= DEFAULT_PRIO + MAX_PRIORITY_ADJ,
-#endif
-#ifdef CONFIG_SCHED_PDS
-	.prio		= MAX_RT_PRIO,
-	.static_prio	= DEFAULT_PRIO,
-	.normal_prio	= MAX_RT_PRIO,
 #else
 	.prio		= MAX_PRIO - 20,
 	.static_prio	= MAX_PRIO - 20,
@@ -99,15 +94,13 @@ struct task_struct init_task
 		.fn = do_no_restart_syscall,
 	},
 #ifdef CONFIG_SCHED_ALT
+	.sq_node	= LIST_HEAD_INIT(init_task.sq_node),
 #ifdef CONFIG_SCHED_BMQ
 	.boost_prio	= 0,
-	.bmq_idx	= 15,
-	.bmq_node	= LIST_HEAD_INIT(init_task.bmq_node),
+	.sq_idx		= 15,
 #endif
 #ifdef CONFIG_SCHED_PDS
 	.deadline	= 0,
-	.sl_level	= 0,
-	.sl_node	= SKIPLIST_NODE_INIT(init_task.sl_node),
 #endif
 	.time_slice	= HZ,
 #else

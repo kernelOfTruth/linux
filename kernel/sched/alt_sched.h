@@ -50,11 +50,17 @@
 #include <trace/events/sched.h>
 
 #ifdef CONFIG_SCHED_BMQ
-#include "bmq.h"
+/* bits:
+ * RT(0-99), (Low prio adj range, nice width, high prio adj range) / 2, cpu idle task */
+#define SCHED_BITS	(MAX_RT_PRIO + NICE_WIDTH / 2 + MAX_PRIORITY_ADJ + 1)
 #endif
+
 #ifdef CONFIG_SCHED_PDS
-#include "pds.h"
-#endif
+/* bits: RT(0-99), reserved(100-127), NORMAL_PRIO_NUM, cpu idle task */
+#define SCHED_BITS	(MIN_NORMAL_PRIO + NORMAL_PRIO_NUM + 1)
+#endif /* CONFIG_SCHED_PDS */
+
+#define IDLE_TASK_SCHED_PRIO	(SCHED_BITS - 1)
 
 #ifdef CONFIG_SCHED_DEBUG
 # define SCHED_WARN_ON(x)	WARN_ONCE(x, #x)
@@ -131,6 +137,13 @@ static inline int task_on_rq_migrating(struct task_struct *p)
 #define WF_MIGRATED	0x04		/* internal use, task got migrated */
 #define WF_ON_CPU	0x08		/* Wakee is on_rq */
 
+#define SCHED_QUEUE_BITS	(SCHED_BITS - 1)
+
+struct sched_queue {
+	DECLARE_BITMAP(bitmap, SCHED_QUEUE_BITS);
+	struct list_head heads[SCHED_BITS];
+};
+
 /*
  * This is the main, per-CPU runqueue data structure.
  * This data should only be modified by the local cpu.
@@ -143,11 +156,9 @@ struct rq {
 	struct task_struct *idle, *stop, *skip;
 	struct mm_struct *prev_mm;
 
-#ifdef CONFIG_SCHED_BMQ
-	struct bmq queue;
-#endif
+	struct sched_queue	queue;
 #ifdef CONFIG_SCHED_PDS
-	struct skiplist_node sl_header;
+	u64			time_edge;
 #endif
 	unsigned long watermark;
 
