@@ -41,7 +41,6 @@ subdirectories.
    :maxdepth: 1
 
    apparmor
-   Brute
    LoadPin
    SELinux
    Smack
