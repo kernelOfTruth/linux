@@ -2,7 +2,6 @@
 TARGETS = arm64
 TARGETS += bpf
 TARGETS += breakpoints
-TARGETS += brute
 TARGETS += capabilities
 TARGETS += cgroup
 TARGETS += clone3
