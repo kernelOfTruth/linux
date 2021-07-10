@@ -126,6 +126,14 @@ struct scan_control {
 	/* The file pages on the current node are dangerously low */
 	unsigned int file_is_tiny:1;
 
+#if defined(CONFIG_UNEVICTABLE_ANON)
+	/* The anonymous pages on the current node are low */
+	unsigned int anon_is_low:1;
+
+	/* The anonymous pages on the current node are minimal */
+	unsigned int anon_is_min:1;
+#endif
+
 	/* Allocation order */
 	s8 order;
 
@@ -175,6 +183,11 @@ struct scan_control {
 #if defined(CONFIG_UNEVICTABLE_FILE)
 extern unsigned long sysctl_unevictable_file_kbytes_low;
 extern unsigned long sysctl_unevictable_file_kbytes_min;
+#endif
+
+#if defined(CONFIG_UNEVICTABLE_ANON)
+extern unsigned long sysctl_unevictable_anon_kbytes_low;
+extern unsigned long sysctl_unevictable_anon_kbytes_min;
 #endif
 
 /*
@@ -2635,6 +2648,14 @@ out:
 				scan = 0;
 		}
 #endif
+#if defined(CONFIG_UNEVICTABLE_ANON)
+		if (!file && scan) {
+			if (sc->anon_is_low)
+				scan = min(scan, SWAP_CLUSTER_MAX >> sc->priority);
+			else if (sc->anon_is_min)
+				scan = 0;
+		}
+#endif
 
 		nr[lru] = scan;
 	}
@@ -2882,7 +2903,7 @@ static void shrink_node_memcgs(pg_data_t *pgdat, struct scan_control *sc)
 	} while ((memcg = mem_cgroup_iter(target_memcg, memcg, NULL)));
 }
 
-#if defined(CONFIG_UNEVICTABLE_FILE)
+#if defined(CONFIG_UNEVICTABLE_FILE) || defined(CONFIG_UNEVICTABLE_ANON)
 #define K(x) ((x) << (PAGE_SHIFT - 10))
 #endif
 
@@ -2966,6 +2987,9 @@ again:
 #if defined(CONFIG_UNEVICTABLE_FILE)
 		unsigned long reclaimable_file, clean_file, dirty_file;
 #endif
+#if defined(CONFIG_UNEVICTABLE_ANON)
+		unsigned long reclaimable_anon;
+#endif
 		int z;
 
 		free = sum_zone_node_page_state(pgdat->node_id, NR_FREE_PAGES);
@@ -2974,6 +2998,11 @@ again:
 #if defined(CONFIG_UNEVICTABLE_FILE)
 		reclaimable_file = file + node_page_state(pgdat, NR_ISOLATED_FILE);
 		dirty_file = node_page_state(pgdat, NR_FILE_DIRTY);
+#endif
+#if defined(CONFIG_UNEVICTABLE_ANON)
+		reclaimable_anon = node_page_state(pgdat, NR_ACTIVE_ANON) +
+				   node_page_state(pgdat, NR_INACTIVE_ANON) +
+				   node_page_state(pgdat, NR_ISOLATED_ANON);
 #endif
 
 		for (z = 0; z < MAX_NR_ZONES; z++) {
@@ -3014,6 +3043,12 @@ again:
 			          K(clean_file) > sysctl_unevictable_file_kbytes_min;
 
 		sc->file_is_min = K(clean_file) <= sysctl_unevictable_file_kbytes_min;
+#endif
+#if defined(CONFIG_UNEVICTABLE_ANON)
+		sc->anon_is_low = K(reclaimable_anon) < sysctl_unevictable_anon_kbytes_low &&
+				  K(reclaimable_anon) > sysctl_unevictable_anon_kbytes_min;
+
+		sc->anon_is_min = K(reclaimable_anon) <= sysctl_unevictable_anon_kbytes_min;
 #endif
 	}
 

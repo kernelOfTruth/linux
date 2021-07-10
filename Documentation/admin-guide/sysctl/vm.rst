@@ -71,6 +71,8 @@ Currently, these files are in /proc/sys/vm:
 - swappiness
 - unevictable_file_kbytes_low
 - unevictable_file_kbytes_min
+- unevictable_anon_kbytes_low
+- unevictable_anon_kbytes_min
 - unprivileged_userfaultfd
 - user_reserve_kbytes
 - vfs_cache_pressure
@@ -912,6 +914,31 @@ This is the hard limit.
 Setting it to 0 effectively disables this feature.
 
 The default value is 128 MiB.
+
+
+unevictable_anon_kbytes_low
+===========================
+
+Keep some anonymous pages still mapped under memory pressure to avoid
+potential stalls that may occur due to swapping.
+This implements soft swapping throttling, and some anonymous pages can
+still be swapped out.
+
+Setting it to 0 effectively disables this feature.
+
+The default value is 64 MiB.
+
+
+unevictable_anon_kbytes_min
+===========================
+
+Keep all anonymous pages still mapped under memory pressure to avoid
+potential stalls that may occur due to swapping.
+This is the hard limit.
+
+Setting it to 0 effectively disables this feature.
+
+The default value is 32 MiB.
 
 
 user_reserve_kbytes
