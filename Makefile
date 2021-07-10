@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 5
 PATCHLEVEL = 13
-SUBLEVEL = 0
-EXTRAVERSION = -batmod-prjc-cacule-ll_t5
+SUBLEVEL = 1
+EXTRAVERSION = -batmod-prjc-cacule-ll_t6
 NAME = The City on the Edge of Forever
 
 # *DOCUMENTATION*
