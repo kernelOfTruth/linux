@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 5
 PATCHLEVEL = 13
-SUBLEVEL = 1
-EXTRAVERSION = -batmod-prjc-cacule-ll_t5-2
+SUBLEVEL = 2
+EXTRAVERSION = -batmod-prjc-cacule-ll_t7
 NAME = The City on the Edge of Forever
 
 # *DOCUMENTATION*
@@ -1058,7 +1058,7 @@ LDFLAGS_vmlinux	+= $(call ld-option, -X,)
 endif
 
 ifeq ($(CONFIG_RELR),y)
-LDFLAGS_vmlinux	+= --pack-dyn-relocs=relr
+LDFLAGS_vmlinux	+= --pack-dyn-relocs=relr --use-android-relr-tags
 endif
 
 # We never want expected sections to be placed heuristically by the
