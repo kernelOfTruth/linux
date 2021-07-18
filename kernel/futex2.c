@@ -89,11 +89,9 @@ struct futex_bucket {
 #define FUTEXV_WAITER_MASK (FUTEX_SIZE_MASK | FUTEX_SHARED_FLAG)
 
 #define is_object_shared ((futexv->objects[i].flags & FUTEX_SHARED_FLAG) ? true : false)
-#define object_size (futexv->objects[i].flags & FUTEX_SIZE_MASK)
 
-#define FUT_OFF_INODE    PAGE_SIZE
-#define FUT_OFF_MMSHARED (PAGE_SIZE << 1)
-#define FUT_OFF_SIZE     1
+#define FUT_OFF_INODE    1 /* We set bit 0 if key has a reference on inode */
+#define FUT_OFF_MMSHARED 2 /* We set bit 1 if key has a reference on mm */
 
 static struct futex_bucket *futex_table;
 static unsigned int futex2_hashsize;
@@ -323,7 +321,6 @@ again:
  * @uaddr:   futex user address
  * @key:     data that uniquely identifies a futex
  * @shared:  is this a shared futex?
- * @flags:   flags for the size
  *
  * For private futexes, each uaddr will be unique for a given mm_struct, and it
  * won't be freed for the life time of the process. For shared futexes, check
@@ -333,41 +330,21 @@ again:
  */
 static struct futex_bucket *futex_get_bucket(void __user *uaddr,
 					     struct futex_key *key,
-					     bool shared, unsigned int flags)
+					     bool shared)
 {
 	uintptr_t address = (uintptr_t)uaddr;
 	u32 hash_key;
 
-	size_t size;
-
-	switch (flags) {
-	case FUTEX_8:
-		size = sizeof(u8);
-		break;
-	case FUTEX_16:
-		size = sizeof(u16);
-		break;
-	case FUTEX_32:
-		size = sizeof(u32);
-		break;
-	case FUTEX_64:
-		size = sizeof(u64);
-		break;
-	default:
-		return ERR_PTR(-EINVAL);
-	}
-
 	/* Checking if uaddr is valid and accessible */
-	if (unlikely(!IS_ALIGNED(address, size)))
+	if (unlikely(!IS_ALIGNED(address, sizeof(u32))))
 		return ERR_PTR(-EINVAL);
-	if (unlikely(!access_ok(uaddr, size)))
+	if (unlikely(!access_ok(uaddr, sizeof(u32))))
 		return ERR_PTR(-EFAULT);
 
 	key->offset = address % PAGE_SIZE;
 	address -= key->offset;
 	key->pointer = (u64)address;
 	key->index = (unsigned long)current->mm;
-	key->offset |= FUT_OFF_SIZE << (size - sizeof(u8));
 
 	if (shared)
 		futex_get_shared_key(address, current->mm, key);
@@ -381,39 +358,18 @@ static struct futex_bucket *futex_get_bucket(void __user *uaddr,
 
 /**
  * futex_get_user - Get the userspace value on this address
- * @uval:	variable to store the value
- * @uaddr:	userspace address
- * @pagefault:	true if pagefault should be disabled
- * @flags:	flags for the size
+ * @uval:  variable to store the value
+ * @uaddr: userspace address
  *
  * Check the comment at futex_enqueue() for more information.
  */
-static int futex_get_user(u64 *uval, void __user *uaddr, unsigned int flags, bool pagefault)
+static int futex_get_user(u32 *uval, u32 __user *uaddr)
 {
 	int ret;
 
-	if (pagefault)
-		pagefault_disable();
-
-	switch (flags) {
-	case FUTEX_8:
-		ret = __get_user(*uval, (u8 __user *)uaddr);
-		break;
-	case FUTEX_16:
-		ret = __get_user(*uval, (u16 __user *)uaddr);
-		break;
-	case FUTEX_32:
-		ret = __get_user(*uval, (u32 __user *)uaddr);
-		break;
-	case FUTEX_64:
-		ret = __get_user(*uval, (u64 __user *)uaddr);
-		break;
-	default:
-		BUG();
-	}
-
-	if (pagefault)
-		pagefault_enable();
+	pagefault_disable();
+	ret = __get_user(*uval, uaddr);
+	pagefault_enable();
 
 	return ret;
 }
@@ -528,8 +484,8 @@ static int futex_enqueue(struct futex_waiter_head *futexv, unsigned int nr_futex
 			 int *awakened)
 {
 	int i, ret;
-	u64 uval, val;
-	void __user *uaddr;
+	u32 uval, val;
+	u32 __user *uaddr;
 	bool retry = false;
 	struct futex_bucket *bucket;
 
@@ -537,14 +493,13 @@ retry:
 	set_current_state(TASK_INTERRUPTIBLE);
 
 	for (i = 0; i < nr_futexes; i++) {
-		uaddr = futexv->objects[i].uaddr;
-		val = (u64)futexv->objects[i].val;
+		uaddr = (u32 __user *)futexv->objects[i].uaddr;
+		val = (u32)futexv->objects[i].val;
 
 		if (is_object_shared && retry) {
 			struct futex_bucket *tmp =
 				futex_get_bucket((void __user *)uaddr,
-						 &futexv->objects[i].key, true,
-						 object_size);
+						 &futexv->objects[i].key, true);
 			if (IS_ERR(tmp)) {
 				__set_current_state(TASK_RUNNING);
 				futex_dequeue_multiple(futexv, i);
@@ -558,7 +513,7 @@ retry:
 		bucket_inc_waiters(bucket);
 		spin_lock(&bucket->lock);
 
-		ret = futex_get_user(&uval, uaddr, object_size, true);
+		ret = futex_get_user(&uval, uaddr);
 
 		if (unlikely(ret)) {
 			spin_unlock(&bucket->lock);
@@ -570,7 +525,7 @@ retry:
 			if (*awakened >= 0)
 				return 1;
 
-			if (futex_get_user(&uval, uaddr, object_size, false))
+			if (__get_user(uval, uaddr))
 				return -EFAULT;
 
 			retry = true;
@@ -701,6 +656,9 @@ static long ksys_futex_wait(void __user *uaddr, u64 val, unsigned int flags,
 	if (flags & ~FUTEX2_MASK)
 		return -EINVAL;
 
+	if (size != FUTEX_32)
+		return -EINVAL;
+
 	futexv = &wait_single.futexv;
 	futexv->task = current;
 	futexv->hint = false;
@@ -709,13 +667,12 @@ static long ksys_futex_wait(void __user *uaddr, u64 val, unsigned int flags,
 	waiter->index = 0;
 	waiter->val = val;
 	waiter->uaddr = uaddr;
-	waiter->flags = flags;
 	memset(&wait_single.waiter.key, 0, sizeof(struct futex_key));
 
 	INIT_LIST_HEAD(&waiter->list);
 
 	/* Get an unlocked hash bucket */
-	waiter->bucket = futex_get_bucket(uaddr, &waiter->key, shared, size);
+	waiter->bucket = futex_get_bucket(uaddr, &waiter->key, shared);
 	if (IS_ERR(waiter->bucket))
 		return PTR_ERR(waiter->bucket);
 
@@ -771,7 +728,8 @@ static int compat_futex_parse_waitv(struct futex_waiter_head *futexv,
 		if (copy_from_user(&waitv, &uwaitv[i], sizeof(waitv)))
 			return -EFAULT;
 
-		if (waitv.flags & ~FUTEXV_WAITER_MASK)
+		if ((waitv.flags & ~FUTEXV_WAITER_MASK) ||
+		    (waitv.flags & FUTEX_SIZE_MASK) != FUTEX_32)
 			return -EINVAL;
 
 		futexv->objects[i].key.pointer = 0;
@@ -782,7 +740,7 @@ static int compat_futex_parse_waitv(struct futex_waiter_head *futexv,
 
 		bucket = futex_get_bucket(compat_ptr(waitv.uaddr),
 					  &futexv->objects[i].key,
-					  is_object_shared, object_size);
+					  is_object_shared);
 
 		if (IS_ERR(bucket))
 			return PTR_ERR(bucket);
@@ -847,7 +805,8 @@ static int futex_parse_waitv(struct futex_waiter_head *futexv,
 		if (copy_from_user(&waitv, &uwaitv[i], sizeof(waitv)))
 			return -EFAULT;
 
-		if (waitv.flags & ~FUTEXV_WAITER_MASK)
+		if ((waitv.flags & ~FUTEXV_WAITER_MASK) ||
+		    (waitv.flags & FUTEX_SIZE_MASK) != FUTEX_32)
 			return -EINVAL;
 
 		futexv->objects[i].key.pointer = 0;
@@ -857,7 +816,7 @@ static int futex_parse_waitv(struct futex_waiter_head *futexv,
 		futexv->objects[i].index  = i;
 
 		bucket = futex_get_bucket(waitv.uaddr, &futexv->objects[i].key,
-					  is_object_shared, object_size);
+					  is_object_shared);
 
 		if (IS_ERR(bucket))
 			return PTR_ERR(bucket);
@@ -988,7 +947,10 @@ SYSCALL_DEFINE3(futex_wake, void __user *, uaddr, unsigned int, nr_wake,
 	if (flags & ~FUTEX2_MASK)
 		return -EINVAL;
 
-	bucket = futex_get_bucket(uaddr, &waiter.key, shared, size);
+	if (size != FUTEX_32)
+		return -EINVAL;
+
+	bucket = futex_get_bucket(uaddr, &waiter.key, shared);
 	if (IS_ERR(bucket))
 		return PTR_ERR(bucket);
 
@@ -1025,30 +987,28 @@ static inline int __futex_requeue(struct futex_requeue rq1,
 	bool retry = false;
 	struct futex_bucket *b1, *b2;
 	DEFINE_WAKE_Q(wake_q);
-	u64 uval;
+	u32 uval;
 	int ret;
 	bool shared1 = (rq1.flags  & FUTEX_SHARED_FLAG) ? true : false;
 	bool shared2 = (rq2.flags  & FUTEX_SHARED_FLAG) ? true : false;
-	unsigned int size1 = (rq1.flags  & FUTEX_SIZE_MASK);
-	unsigned int size2 = (rq2.flags  & FUTEX_SIZE_MASK);
 
-	b1 = futex_get_bucket(rq1.uaddr, &w1.key, shared1, size1);
+	b1 = futex_get_bucket(rq1.uaddr, &w1.key, shared1);
 	if (IS_ERR(b1))
 		return PTR_ERR(b1);
 
-	b2 = futex_get_bucket(rq2.uaddr, &w2.key, shared2, size2);
+	b2 = futex_get_bucket(rq2.uaddr, &w2.key, shared2);
 	if (IS_ERR(b2))
 		return PTR_ERR(b2);
 
 retry:
 	if (shared1 && retry) {
-		b1 = futex_get_bucket(rq1.uaddr, &w1.key, shared1, size1);
+		b1 = futex_get_bucket(rq1.uaddr, &w1.key, shared1);
 		if (IS_ERR(b1))
 			return PTR_ERR(b1);
 	}
 
 	if (shared2 && retry) {
-		b2 = futex_get_bucket(rq2.uaddr, &w2.key, shared2, size2);
+		b2 = futex_get_bucket(rq2.uaddr, &w2.key, shared2);
 		if (IS_ERR(b2))
 			return PTR_ERR(b2);
 	}
@@ -1067,11 +1027,11 @@ retry:
 		spin_lock_nested(&b1->lock, SINGLE_DEPTH_NESTING);
 	}
 
-	ret = futex_get_user(&uval, rq1.uaddr, size1, true);
+	ret = futex_get_user(&uval, rq1.uaddr);
 
 	if (unlikely(ret)) {
 		futex_double_unlock(b1, b2);
-		if (futex_get_user(&uval, rq1.uaddr, size1, false))
+		if (__get_user(uval, (u32 __user *)rq1.uaddr))
 			return -EFAULT;
 
 		bucket_dec_waiters(b2);
@@ -1128,7 +1088,8 @@ static int compat_futex_parse_requeue(struct futex_requeue *rq,
 	if (copy_from_user(&tmp, uaddr, sizeof(tmp)))
 		return -EFAULT;
 
-	if (tmp.flags & ~FUTEXV_WAITER_MASK)
+	if (tmp.flags & ~FUTEXV_WAITER_MASK ||
+	    (tmp.flags & FUTEX_SIZE_MASK) != FUTEX_32)
 		return -EINVAL;
 
 	rq->uaddr = compat_ptr(tmp.uaddr);
@@ -1173,7 +1134,8 @@ static int futex_parse_requeue(struct futex_requeue *rq,
 	if (copy_from_user(rq, uaddr, sizeof(*rq)))
 		return -EFAULT;
 
-	if (rq->flags & ~FUTEXV_WAITER_MASK)
+	if (rq->flags & ~FUTEXV_WAITER_MASK ||
+	    (rq->flags & FUTEX_SIZE_MASK) != FUTEX_32)
 		return -EINVAL;
 
 	return 0;
