@@ -115,14 +115,6 @@ struct scan_control {
 	/* There is easily reclaimable cold cache in the current node */
 	unsigned int cache_trim_mode:1;
 
-#if defined(CONFIG_UNEVICTABLE_FILE)
-	/* The file pages on the current node are low */
-	unsigned int file_is_low:1;
-
-	/* The file pages on the current node are minimal */
-	unsigned int file_is_min:1;
-#endif
-
 	/* The file pages on the current node are dangerously low */
 	unsigned int file_is_tiny:1;
 
@@ -170,11 +162,6 @@ struct scan_control {
 	} while (0)
 #else
 #define prefetchw_prev_lru_page(_page, _base, _field) do { } while (0)
-#endif
-
-#if defined(CONFIG_UNEVICTABLE_FILE)
-extern unsigned long sysctl_unevictable_file_kbytes_low;
-extern unsigned long sysctl_unevictable_file_kbytes_min;
 #endif
 
 /*
@@ -2627,15 +2614,6 @@ out:
 			BUG();
 		}
 
-#if defined(CONFIG_UNEVICTABLE_FILE)
-		if (file && scan) {
-			if (sc->file_is_low)
-				scan = min(scan, SWAP_CLUSTER_MAX >> sc->priority);
-			else if (sc->file_is_min)
-				scan = 0;
-		}
-#endif
-
 		nr[lru] = scan;
 	}
 }
@@ -2882,10 +2860,6 @@ static void shrink_node_memcgs(pg_data_t *pgdat, struct scan_control *sc)
 	} while ((memcg = mem_cgroup_iter(target_memcg, memcg, NULL)));
 }
 
-#if defined(CONFIG_UNEVICTABLE_FILE)
-#define K(x) ((x) << (PAGE_SHIFT - 10))
-#endif
-
 static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 {
 	struct reclaim_state *reclaim_state = current->reclaim_state;
@@ -2963,18 +2937,11 @@ again:
 	if (!cgroup_reclaim(sc)) {
 		unsigned long total_high_wmark = 0;
 		unsigned long free, anon;
-#if defined(CONFIG_UNEVICTABLE_FILE)
-		unsigned long reclaimable_file, clean_file, dirty_file;
-#endif
 		int z;
 
 		free = sum_zone_node_page_state(pgdat->node_id, NR_FREE_PAGES);
 		file = node_page_state(pgdat, NR_ACTIVE_FILE) +
 			   node_page_state(pgdat, NR_INACTIVE_FILE);
-#if defined(CONFIG_UNEVICTABLE_FILE)
-		reclaimable_file = file + node_page_state(pgdat, NR_ISOLATED_FILE);
-		dirty_file = node_page_state(pgdat, NR_FILE_DIRTY);
-#endif
 
 		for (z = 0; z < MAX_NR_ZONES; z++) {
 			struct zone *zone = &pgdat->node_zones[z];
@@ -2995,26 +2962,6 @@ again:
 			file + free <= total_high_wmark &&
 			!(sc->may_deactivate & DEACTIVATE_ANON) &&
 			anon >> sc->priority;
-
-#if defined(CONFIG_UNEVICTABLE_FILE)
-		/*
-		 * node_page_state() sum can go out of sync since
-		 * all the values are not read at once
-		 */
-		if (unlikely(reclaimable_file < dirty_file))
-			/*
-			 * in this case assume the system does not have
-			 * clean file pages anymore
-			 */
-			clean_file = 0;
-		else
-			clean_file = reclaimable_file - dirty_file;
-
-		sc->file_is_low = K(clean_file) < sysctl_unevictable_file_kbytes_low &&
-			          K(clean_file) > sysctl_unevictable_file_kbytes_min;
-
-		sc->file_is_min = K(clean_file) <= sysctl_unevictable_file_kbytes_min;
-#endif
 	}
 
 	shrink_node_memcgs(pgdat, sc);
