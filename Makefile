@@ -754,24 +754,29 @@ KBUILD_CFLAGS	+= $(call cc-disable-warning, address-of-packed-member)
 ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 KBUILD_CFLAGS += -O2
 else ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
-KBUILD_CFLAGS += -O3 -fno-tree-loop-if-convert -fno-common \
+KBUILD_CFLAGS += -O3 -fno-common \
 				-fipa-pta -fno-sched-interblock \
+				-fipa-icf -fipa-icf-functions -fipa-icf-variables \
+				-fipa-stack-alignment \
 				-fno-peephole2 -fno-expensive-optimizations \
-				-fno-ipa-sra -fgcse -fgcse-las -fno-schedule-insns \
-				-fno-tree-loop-distribute-patterns -fno-caller-saves \
-				-fno-inline-functions-called-once \
-				-fno-tree-slsr -fno-tree-scev-cprop -funroll-loops \
-				-fno-sched-dep-count-heuristic -fno-tree-ccp \
-				-fno-tree-bit-ccp \
-				-fno-predictive-commoning -fno-ipa-pure-const \
-				-fno-merge-constants -fno-tree-pta \
-				-fivopts -fdevirtualize-at-ltrans \
+				-fno-ipa-sra -fgcse -fgcse-las \
+				-floop-unroll-and-jam -floop-nest-optimize \
+				-funswitch-loops -ftree-loop-im \
+				-ftree-loop-ivcanon \
+				-fcaller-saves \
+				-ftree-slsr -ftree-scev-cprop \
+				-fno-sched-dep-count-heuristic -ftree-ccp \
+				-ftree-bit-ccp \
+				-fmerge-constants -ftree-pta \
+				-fivopts \
 				-fno-conserve-stack -flive-range-shrinkage \
 				-fmodulo-sched -fno-peel-loops \
 				-fno-shrink-wrap -fno-shrink-wrap-separate \
 				-fno-tree-partial-pre -fno-tree-pre \
 				-fno-tree-reassoc -fvariable-expansion-in-unroller \
+				-fsplit-ivs-in-unroller \
 				-fno-tree-loop-vectorize -fno-tree-loop-vectorize \
+				-fno-tree-loop-if-convert \
 				-fno-tree-slp-vectorize -fgcse-after-reload \
 				-fno-var-tracking-assignments \
 				-fno-var-tracking -fno-prefetch-loop-arrays
