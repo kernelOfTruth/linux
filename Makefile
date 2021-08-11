@@ -755,13 +755,14 @@ ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 KBUILD_CFLAGS += -O2
 else ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
 KBUILD_CFLAGS += -O3 -fno-common \
-				-fipa-pta -fno-sched-interblock \
+				-fno-sched-interblock \
 				-fipa-icf -fipa-icf-functions -fipa-icf-variables \
 				-fipa-stack-alignment \
 				-fno-peephole2 -fno-expensive-optimizations \
 				-fno-ipa-sra -fgcse -fgcse-las \
-				-floop-unroll-and-jam -floop-nest-optimize \
-				-funswitch-loops -ftree-loop-im \
+				-floop-unroll-and-jam \
+				-fno-tree-loop-distribution -fno-tree-loop-distribute-patterns \
+				-funswitch-loops \
 				-ftree-loop-ivcanon \
 				-fcaller-saves \
 				-ftree-slsr -ftree-scev-cprop \
@@ -769,11 +770,16 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-ftree-bit-ccp \
 				-fmerge-constants -ftree-pta \
 				-fivopts \
-				-fno-conserve-stack -flive-range-shrinkage \
+				-fno-conserve-stack \
 				-fmodulo-sched -fno-peel-loops \
 				-fno-shrink-wrap -fno-shrink-wrap-separate \
 				-fno-tree-partial-pre -fno-tree-pre \
-				-fno-tree-reassoc -fvariable-expansion-in-unroller \
+				-fno-tree-reassoc \
+				-ftree-sink -ftree-ch -ftree-loop-im -fmove-loop-invariants \
+				-fgcse-sm \
+				-fno-sched-spec -fno-sched-spec-load -fno-sched-spec-load-dangerous \
+				-fsched-pressure \
+				-fvariable-expansion-in-unroller \
 				-fsplit-ivs-in-unroller \
 				-fno-tree-loop-vectorize -fno-tree-loop-vectorize \
 				-fno-tree-loop-if-convert \
