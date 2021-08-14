@@ -558,7 +558,11 @@ __debug_object_init(void *addr, const struct debug_obj_descr *descr, int onstack
 	unsigned long flags;
 
 #ifdef CONFIG_PREEMPT_RT
+#ifdef CONFIG_PREEMPT
+#ifdef CONFIG_PREEMPT_LL
 	if (preempt_count() == 0 && !irqs_disabled())
+#endif
+#endif
 #endif
 		fill_pool();
 
