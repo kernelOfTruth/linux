@@ -548,10 +548,6 @@ struct cfs_rq {
 	struct cacule_node	*head;
 	struct cacule_node	*tail;
 
-#ifdef CONFIG_CACULE_RDB
-	unsigned int		IS_head;
-#endif
-
 #else
 	struct sched_entity	*next;
 	struct sched_entity	*last;
