@@ -2039,7 +2039,7 @@ config SHUFFLE_PAGE_ALLOCATOR
 	  Say Y if unsure.
 
 config SLUB_CPU_PARTIAL
-	default y if !PREEMPT_RT
+	default y if !(PREEMPT_RT||PREEMPT||PREEMPT_LL)
 	depends on SLUB && SMP
 	bool "SLUB per cpu partial cache"
 	help
