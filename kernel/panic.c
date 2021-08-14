@@ -545,9 +545,13 @@ static u64 oops_id;
 static int init_oops_id(void)
 {
 #ifndef CONFIG_PREEMPT_RT
+#ifndef CONFIG_PREEMPT
+#ifndef CONFIG_PREEMPT_LL
 	if (!oops_id)
 		get_random_bytes(&oops_id, sizeof(oops_id));
 	else
+#endif
+#endif
 #endif
 		oops_id++;
 
