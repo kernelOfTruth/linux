@@ -294,7 +294,7 @@ config CGROUP_NET_CLASSID
 
 config NET_RX_BUSY_POLL
 	bool
-	default y if !PREEMPT_RT
+	default y if !(PREEMPT_RT||CONFIG_PREEMPT||CONFIG_PREEMPT_LL)
 
 config BQL
 	bool
