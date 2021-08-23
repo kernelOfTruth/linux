@@ -771,7 +771,7 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-fmerge-constants -ftree-pta \
 				-fivopts \
 				-fno-conserve-stack \
-				-fmodulo-sched -fno-peel-loops \
+				-fmodulo-sched \
 				-fno-shrink-wrap -fno-shrink-wrap-separate \
 				-fno-tree-partial-pre -fno-tree-pre \
 				-fno-tree-reassoc \
@@ -779,6 +779,7 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-fgcse-sm \
 				-fno-sched-spec -fno-sched-spec-load -fno-sched-spec-load-dangerous \
 				-fsched-pressure \
+				-funroll-loops -fpeel-loops -ftracer \
 				-fvariable-expansion-in-unroller \
 				-fsplit-ivs-in-unroller \
 				-fno-tree-loop-vectorize -fno-tree-loop-vectorize \
