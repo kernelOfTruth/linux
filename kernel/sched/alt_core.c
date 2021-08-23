@@ -67,7 +67,7 @@ __read_mostly int sysctl_resched_latency_warn_once = 1;
 #define sched_feat(x)	(0)
 #endif /* CONFIG_SCHED_DEBUG */
 
-#define ALT_SCHED_VERSION "v5.13-r2"
+#define ALT_SCHED_VERSION "v5.13-r3"
 
 /* rt_prio(prio) defined in include/linux/sched/rt.h */
 #define rt_task(p)		rt_prio((p)->prio)
@@ -3321,15 +3321,9 @@ void sched_exec(void)
 	struct task_struct *p = current;
 	unsigned long flags;
 	int dest_cpu;
-	struct rq *rq;
 
 	raw_spin_lock_irqsave(&p->pi_lock, flags);
-	rq = this_rq();
-
-	if (rq != task_rq(p) || rq->nr_running < 2)
-		goto unlock;
-
-	dest_cpu = select_task_rq(p);
+	dest_cpu = cpumask_any(p->cpus_ptr);
 	if (dest_cpu == smp_processor_id())
 		goto unlock;
 
