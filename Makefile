@@ -769,8 +769,12 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-fno-sched-dep-count-heuristic -ftree-ccp \
 				-ftree-bit-ccp \
 				-fmerge-constants -ftree-pta \
-				-fivopts \
-				-fconserve-stack \
+				-fconserve-stack -fcombine-stack-adjustments -fipa-stack-alignment -fno-defer-pop \
+				-fno-ira-hoist-pressure -fira-share-spill-slots -fno-ira-share-save-slots \
+				-fno-inline-small-functions -fno-ivopts \
+				-fno-peephole -fpeephole2 \
+				-fschedule-insns -fschedule-insns2 -fno-sched-group-heuristic -fsched-critical-path-heuristic -fno-sched-spec-insn-heuristic -fno-sched-rank-heuristic -fno-sched-dep-count-heuristic \
+				-fno-selective-scheduling -fno-selective-scheduling2 -fno-sel-sched-pipelining -fno-sel-sched-pipelining-outer-loops \
 				-fmodulo-sched \
 				-fno-shrink-wrap -fno-shrink-wrap-separate \
 				-fno-tree-partial-pre -fno-tree-pre \
@@ -779,6 +783,7 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-fgcse-sm \
 				-fno-sched-spec -fno-sched-spec-load -fno-sched-spec-load-dangerous \
 				-fsched-pressure \
+				-fira-region=all \
 				-funroll-loops -fpeel-loops -ftracer \
 				-fvariable-expansion-in-unroller \
 				-fsplit-ivs-in-unroller \
