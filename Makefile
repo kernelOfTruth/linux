@@ -770,7 +770,7 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-ftree-bit-ccp \
 				-fmerge-constants -ftree-pta \
 				-fivopts \
-				-fno-conserve-stack \
+				-fconserve-stack \
 				-fmodulo-sched \
 				-fno-shrink-wrap -fno-shrink-wrap-separate \
 				-fno-tree-partial-pre -fno-tree-pre \
