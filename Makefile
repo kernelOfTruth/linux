@@ -783,6 +783,7 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-fgcse-sm \
 				-fno-sched-spec -fno-sched-spec-load -fno-sched-spec-load-dangerous \
 				-fsched-pressure \
+				-fno-aggressive-loop-optimizations \
 				-fira-region=all \
 				-funroll-loops -fpeel-loops -ftracer \
 				-fvariable-expansion-in-unroller \
