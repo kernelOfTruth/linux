@@ -1111,6 +1111,12 @@ static inline void hrtick_rq_init(struct rq *rq)
 }
 #endif	/* CONFIG_SCHED_HRTICK */
 
+static inline int __normal_prio(int policy, int rt_prio, int nice)
+{
+	return rt_policy(policy) ? (MAX_RT_PRIO - 1 - rt_prio) :
+		NICE_TO_PRIO(nice) + MAX_PRIORITY_ADJ;
+}
+
 /*
  * Calculate the expected normal priority: i.e. priority
  * without taking RT-inheritance into account. Might be
@@ -1120,8 +1126,7 @@ static inline void hrtick_rq_init(struct rq *rq)
  */
 static inline int normal_prio(struct task_struct *p)
 {
-	return task_has_rt_policy(p) ? (MAX_RT_PRIO - 1 - p->rt_priority) :
-		p->static_prio + MAX_PRIORITY_ADJ;
+	return __normal_prio(p->policy, p->rt_priority, PRIO_TO_NICE(p->static_prio));
 }
 
 /*
@@ -2576,7 +2581,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		} else if (PRIO_TO_NICE(p->static_prio) < 0)
 			p->static_prio = NICE_TO_PRIO(0);
 
-		p->prio = p->normal_prio = normal_prio(p);
+		p->prio = p->normal_prio = p->static_prio;
 
 		/*
 		 * We don't need the reset flag anymore after the fork. It has
@@ -4597,6 +4602,11 @@ static inline void check_task_changed(struct task_struct *p, struct rq *rq)
 	}
 }
 
+static void __setscheduler_prio(struct task_struct *p, int prio)
+{
+	p->prio = prio;
+}
+
 #ifdef CONFIG_RT_MUTEXES
 
 static inline int __rt_effective_prio(struct task_struct *pi_task, int prio)
@@ -4678,7 +4688,8 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 	}
 
 	trace_sched_pi_setprio(p, pi_task);
-	p->prio = prio;
+
+	__setscheduler_prio(p, prio);
 
 	check_task_changed(p, rq);
 out_unlock:
@@ -4877,21 +4888,6 @@ static void __setscheduler_params(struct task_struct *p,
 	p->normal_prio = normal_prio(p);
 }
 
-/* Actually do priority change: must hold rq lock. */
-static void __setscheduler(struct rq *rq, struct task_struct *p,
-			   const struct sched_attr *attr, bool keep_boost)
-{
-	__setscheduler_params(p, attr);
-
-	/*
-	 * Keep a potential priority boosting if called from
-	 * sched_setscheduler().
-	 */
-	p->prio = normal_prio(p);
-	if (keep_boost)
-		p->prio = rt_effective_prio(p, p->prio);
-}
-
 /*
  * check the target process has a UID that matches the current process's
  */
@@ -4918,9 +4914,8 @@ static int __sched_setscheduler(struct task_struct *p,
 		.sched_nice	= 0,
 		.sched_priority = 99,
 	};
-	int newprio = MAX_RT_PRIO - 1 - attr->sched_priority;
-	int retval, oldpolicy = -1;
-	int policy = attr->sched_policy;
+	int oldpolicy = -1, policy = attr->sched_policy;
+	int retval, newprio;
 	struct callback_head *head;
 	unsigned long flags;
 	struct rq *rq;
@@ -4936,7 +4931,6 @@ static int __sched_setscheduler(struct task_struct *p,
 	if (unlikely(SCHED_DEADLINE == policy)) {
 		attr = &dl_squash_attr;
 		policy = attr->sched_policy;
-		newprio = MAX_RT_PRIO - 1 - attr->sched_priority;
 	}
 recheck:
 	/* Double check policy once rq lock held */
@@ -5054,6 +5048,7 @@ change:
 
 	p->sched_reset_on_fork = reset_on_fork;
 
+	newprio = __normal_prio(policy, attr->sched_priority, attr->sched_nice);
 	if (pi) {
 		/*
 		 * Take priority boosted tasks into account. If the new
@@ -5069,7 +5064,10 @@ change:
 		}
 	}
 
-	__setscheduler(rq, p, attr, pi);
+	if (!(attr->sched_flags & SCHED_FLAG_KEEP_PARAMS)) {
+		__setscheduler_params(p, attr);
+		__setscheduler_prio(p, newprio);
+	}
 
 	check_task_changed(p, rq);
 
