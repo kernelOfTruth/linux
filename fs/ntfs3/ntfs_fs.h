@@ -6,6 +6,9 @@
  */
 
 // clang-format off
+#ifndef _LINUX_NTFS3_NTFS_FS_H
+#define _LINUX_NTFS3_NTFS_FS_H
+
 #define MINUS_ONE_T			((size_t)(-1))
 /* Biggest MFT / smallest cluster */
 #define MAXIMUM_BYTES_PER_MFT		4096
@@ -18,6 +21,9 @@
 #define E_NTFS_FIXUP			555
 /* ntfs specific error code about resident->nonresident*/
 #define E_NTFS_NONRESIDENT		556
+/* ntfs specific error code about punch hole*/
+#define E_NTFS_NOTALIGNED		557
+
 
 /* sbi->flags */
 #define NTFS_FLAGS_NODISCARD		0x00000001
@@ -408,7 +414,7 @@ int attr_is_frame_compressed(struct ntfs_inode *ni, struct ATTRIB *attr,
 int attr_allocate_frame(struct ntfs_inode *ni, CLST frame, size_t compr_size,
 			u64 new_valid);
 int attr_collapse_range(struct ntfs_inode *ni, u64 vbo, u64 bytes);
-int attr_punch_hole(struct ntfs_inode *ni, u64 vbo, u64 bytes);
+int attr_punch_hole(struct ntfs_inode *ni, u64 vbo, u64 bytes, u32 *frame_size);
 
 /* functions from attrlist.c*/
 void al_destroy(struct ntfs_inode *ni);
@@ -597,13 +603,13 @@ int indx_used_bit(struct ntfs_index *indx, struct ntfs_inode *ni, size_t *bit);
 void fnd_clear(struct ntfs_fnd *fnd);
 static inline struct ntfs_fnd *fnd_get(void)
 {
-	return ntfs_zalloc(sizeof(struct ntfs_fnd));
+	return kzalloc(sizeof(struct ntfs_fnd), GFP_NOFS);
 }
 static inline void fnd_put(struct ntfs_fnd *fnd)
 {
 	if (fnd) {
 		fnd_clear(fnd);
-		ntfs_free(fnd);
+		kfree(fnd);
 	}
 }
 void indx_clear(struct ntfs_index *idx);
@@ -648,7 +654,7 @@ struct inode *ntfs_create_inode(struct user_namespace *mnt_userns,
 				struct inode *dir, struct dentry *dentry,
 				const struct cpu_str *uni, umode_t mode,
 				dev_t dev, const char *symname, u32 size,
-				int excl, struct ntfs_fnd *fnd);
+				struct ntfs_fnd *fnd);
 int ntfs_link_inode(struct inode *inode, struct dentry *dentry);
 int ntfs_unlink_inode(struct inode *dir, const struct dentry *dentry);
 void ntfs_evict_inode(struct inode *inode);
@@ -662,6 +668,7 @@ int fill_name_de(struct ntfs_sb_info *sbi, void *buf, const struct qstr *name,
 struct dentry *ntfs3_get_parent(struct dentry *child);
 
 extern const struct inode_operations ntfs_dir_inode_operations;
+extern const struct inode_operations ntfs_special_inode_operations;
 
 /* globals from record.c */
 int mi_get(struct ntfs_sb_info *sbi, CLST rno, struct mft_inode **mi);
@@ -799,6 +806,9 @@ int ntfs_permission(struct user_namespace *mnt_userns, struct inode *inode,
 ssize_t ntfs_listxattr(struct dentry *dentry, char *buffer, size_t size);
 extern const struct xattr_handler *ntfs_xattr_handlers[];
 
+int ntfs_save_wsl_perm(struct inode *inode);
+void ntfs_get_wsl_perm(struct inode *inode);
+
 /* globals from lznt.c */
 struct lznt *get_lznt_ctx(int level);
 size_t compress_lznt(const void *uncompressed, size_t uncompressed_size,
@@ -865,20 +875,20 @@ static inline void run_init(struct runs_tree *run)
 
 static inline struct runs_tree *run_alloc(void)
 {
-	return ntfs_zalloc(sizeof(struct runs_tree));
+	return kzalloc(sizeof(struct runs_tree), GFP_NOFS);
 }
 
 static inline void run_close(struct runs_tree *run)
 {
-	ntfs_vfree(run->runs);
+	kvfree(run->runs);
 	memset(run, 0, sizeof(*run));
 }
 
 static inline void run_free(struct runs_tree *run)
 {
 	if (run) {
-		ntfs_vfree(run->runs);
-		ntfs_free(run);
+		kvfree(run->runs);
+		kfree(run);
 	}
 }
 
@@ -890,7 +900,7 @@ static inline bool run_is_empty(struct runs_tree *run)
 /* NTFS uses quad aligned bitmaps */
 static inline size_t bitmap_size(size_t bits)
 {
-	return QuadAlign((bits + 7) >> 3);
+	return ALIGN((bits + 7) >> 3, 8);
 }
 
 #define _100ns2seconds 10000000
@@ -965,11 +975,6 @@ static inline struct buffer_head *ntfs_bread(struct super_block *sb,
 	return NULL;
 }
 
-static inline bool is_power_of2(size_t v)
-{
-	return v && !(v & (v - 1));
-}
-
 static inline struct ntfs_inode *ntfs_i(struct inode *inode)
 {
 	return container_of(inode, struct ntfs_inode, vfs_inode);
@@ -1039,15 +1044,15 @@ static inline void put_indx_node(struct indx_node *in)
 	if (!in)
 		return;
 
-	ntfs_free(in->index);
+	kfree(in->index);
 	nb_put(&in->nb);
-	ntfs_free(in);
+	kfree(in);
 }
 
 static inline void mi_clear(struct mft_inode *mi)
 {
 	nb_put(&mi->nb);
-	ntfs_free(mi->mrec);
+	kfree(mi->mrec);
 	mi->mrec = NULL;
 }
 
@@ -1083,3 +1088,5 @@ static inline void le64_sub_cpu(__le64 *var, u64 val)
 {
 	*var = cpu_to_le64(le64_to_cpu(*var) - val);
 }
+
+#endif /* _LINUX_NTFS3_NTFS_FS_H */

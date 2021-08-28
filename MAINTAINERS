@@ -13081,8 +13081,10 @@ F:	fs/ntfs/
 
 NTFS3 FILESYSTEM
 M:	Konstantin Komarov <almaz.alexandrovich@paragon-software.com>
+L:	ntfs3@lists.linux.dev
 S:	Supported
 W:	http://www.paragon-software.com/
+T:	git https://github.com/Paragon-Software-Group/linux-ntfs3.git
 F:	Documentation/filesystems/ntfs3.rst
 F:	fs/ntfs3/
 

@@ -104,4 +104,3 @@ https://www.paragon-software.com/home/ntfs-linux-professional/
 
 almaz.alexandrovich@paragon-software.com
 	- Direct e-mail address for feedback and requests on the NTFS3 implementation.
-
