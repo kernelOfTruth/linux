@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 5
 PATCHLEVEL = 13
-SUBLEVEL = 13
-EXTRAVERSION = -batmod-prjc-pds-rt-ll_t6
+SUBLEVEL = 14
+EXTRAVERSION = -batmod-hardened-prjc-rt-ll_t7
 NAME = The City on the Edge of Forever
 
 # *DOCUMENTATION*
