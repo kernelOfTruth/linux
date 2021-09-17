@@ -771,11 +771,7 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-fmerge-constants -ftree-pta \
 				-fconserve-stack -fcombine-stack-adjustments -fipa-stack-alignment -fno-defer-pop \
 				-fno-ira-hoist-pressure -fira-share-spill-slots -fno-ira-share-save-slots \
-				-fno-ivopts \
-				-fno-inline -fno-inline-small-functions -fno-indirect-inlining \
-				-fno-inline-functions -fno-inline-functions-called-once \
-				-fno-partial-inlining \
-				-fearly-inlining \
+				-fno-inline-small-functions -fno-ivopts \
 				-fno-peephole -fpeephole2 \
 				-fschedule-insns -fschedule-insns2 -fno-sched-group-heuristic -fsched-critical-path-heuristic -fno-sched-spec-insn-heuristic -fno-sched-rank-heuristic -fno-sched-dep-count-heuristic \
 				-fno-selective-scheduling -fno-selective-scheduling2 -fno-sel-sched-pipelining -fno-sel-sched-pipelining-outer-loops \
