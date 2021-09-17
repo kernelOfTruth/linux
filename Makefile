@@ -772,8 +772,7 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-fconserve-stack -fcombine-stack-adjustments -fipa-stack-alignment -fno-defer-pop \
 				-fno-ira-hoist-pressure -fira-share-spill-slots -fno-ira-share-save-slots \
 				-fno-ivopts \
-				-fno-inline -fno-inline-small-functions -fno-indirect-inlining \
-				-fno-inline-functions -fno-inline-functions-called-once \
+				-fno-inline-small-functions -fno-indirect-inlining \
 				-fno-partial-inlining \
 				-fearly-inlining \
 				-fno-peephole -fpeephole2 \
