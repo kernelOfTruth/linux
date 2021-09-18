@@ -752,9 +752,9 @@ KBUILD_CFLAGS	+= $(call cc-disable-warning, format-overflow)
 KBUILD_CFLAGS	+= $(call cc-disable-warning, address-of-packed-member)
 
 ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
-KBUILD_CFLAGS += -O2
+KBUILD_CFLAGS += -O2 -pipe
 else ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
-KBUILD_CFLAGS += -O3 -fno-common \
+KBUILD_CFLAGS += -O3 -fno-common -pipe \
 				-fno-sched-interblock \
 				-fipa-icf -fipa-icf-functions -fipa-icf-variables \
 				-fipa-stack-alignment \
@@ -794,7 +794,7 @@ KBUILD_CFLAGS += -O3 -fno-common \
 				-fno-var-tracking-assignments \
 				-fno-var-tracking -fno-prefetch-loop-arrays
 else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
-KBUILD_CFLAGS += -Os
+KBUILD_CFLAGS += -Os -pipe
 endif
 # -foptimize-strlen # might be a good idea with FORTIFY_SOURCE, so keep in
 # -fno-tree-loop-vectorize
