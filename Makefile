@@ -776,6 +776,7 @@ KBUILD_CFLAGS += -O3 -fno-common -pipe \
 				-fschedule-insns -fschedule-insns2 -fno-sched-group-heuristic -fsched-critical-path-heuristic -fno-sched-spec-insn-heuristic -fno-sched-rank-heuristic -fno-sched-dep-count-heuristic \
 				-fno-selective-scheduling -fno-selective-scheduling2 -fno-sel-sched-pipelining -fno-sel-sched-pipelining-outer-loops \
 				-fmodulo-sched \
+				-fno-align-functions -fno-align-loops \
 				-fno-shrink-wrap -fno-shrink-wrap-separate \
 				-fno-tree-partial-pre -fno-tree-pre \
 				-fno-tree-reassoc \
