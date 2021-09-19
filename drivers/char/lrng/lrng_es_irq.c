@@ -10,11 +10,12 @@
 #include <asm/irq_regs.h>
 #include <asm/ptrace.h>
 #include <crypto/hash.h>
+#include <linux/gcd.h>
 #include <linux/lrng.h>
 #include <linux/random.h>
 
 #include "lrng_internal.h"
-#include "lrng_sw_noise.h"
+#include "lrng_es_irq.h"
 
 /* Number of interrupts required for LRNG_DRNG_SECURITY_STRENGTH_BITS entropy */
 static u32 lrng_irq_entropy_bits = LRNG_IRQ_ENTROPY_BITS;
@@ -82,6 +83,94 @@ static DEFINE_PER_CPU(u8 [LRNG_POOL_SIZE], lrng_pcpu_pool)
  */
 static DEFINE_PER_CPU(spinlock_t, lrng_pcpu_lock);
 static DEFINE_PER_CPU(bool, lrng_pcpu_lock_init) = false;
+
+/* Number of time stamps analyzed to calculate a GCD */
+#define LRNG_GCD_WINDOW_SIZE	100
+static u32 lrng_gcd_history[LRNG_GCD_WINDOW_SIZE];
+static atomic_t lrng_gcd_history_ptr = ATOMIC_INIT(-1);
+
+/* The common divisor for all timestamps */
+static u32 lrng_gcd_timer = 0;
+
+static inline bool lrng_gcd_tested(void)
+{
+	return (lrng_gcd_timer != 0);
+}
+
+/* Set the GCD for use in IRQ ES - if 0, the GCD calculation is restarted. */
+static inline void _lrng_gcd_set(u32 running_gcd)
+{
+	lrng_gcd_timer = running_gcd;
+	mb();
+}
+
+static void lrng_gcd_set(u32 running_gcd)
+{
+	if (!lrng_gcd_tested()) {
+		_lrng_gcd_set(running_gcd);
+		pr_debug("Setting GCD to %u\n", running_gcd);
+	}
+}
+
+u32 lrng_gcd_analyze(u32 *history, size_t nelem)
+{
+	u32 running_gcd = 0;
+	size_t i;
+
+	/* Now perform the analysis on the accumulated time data. */
+	for (i = 0; i < nelem; i++) {
+		/*
+		 * NOTE: this would be the place to add more analysis on the
+		 * appropriateness of the timer like checking the presence
+		 * of sufficient variations in the timer.
+		 */
+
+		/*
+		 * This calculates the gcd of all the time values. that is
+		 * gcd(time_1, time_2, ..., time_nelem)
+		 *
+		 * Some timers increment by a fixed (non-1) amount each step.
+		 * This code checks for such increments, and allows the library
+		 * to output the number of such changes have occurred.
+		 */
+		running_gcd = (u32)gcd(history[i], running_gcd);
+
+		/* Zeroize data */
+		history[i] = 0;
+	}
+
+	return running_gcd;
+}
+
+static void jent_gcd_add_value(u32 time)
+{
+	u32 ptr = (u32)atomic_inc_return_relaxed(&lrng_gcd_history_ptr);
+
+	if (ptr < LRNG_GCD_WINDOW_SIZE) {
+		lrng_gcd_history[ptr] = time;
+	} else if (ptr == LRNG_GCD_WINDOW_SIZE) {
+		u32 gcd = lrng_gcd_analyze(lrng_gcd_history,
+					   LRNG_GCD_WINDOW_SIZE);
+
+		if (!gcd)
+			gcd = 1;
+
+		/*
+		 * Ensure that we have variations in the time stamp below the
+		 * given value. This is just a safety measure to prevent the GCD
+		 * becoming too large.
+		 */
+		if (gcd >= 1000) {
+			pr_warn("calculated GCD is larger than expected: %u\n",
+				gcd);
+			gcd = 1000;
+		}
+
+		/*  Adjust all deltas by the observed (small) common factor. */
+		lrng_gcd_set(gcd);
+		atomic_set(&lrng_gcd_history_ptr, 0);
+	}
+}
 
 /* Return boolean whether LRNG identified presence of high-resolution timer */
 bool lrng_pool_highres_timer(void)
@@ -161,6 +250,9 @@ core_initcall(lrng_init_time_source);
 void lrng_pcpu_reset(void)
 {
 	int cpu;
+
+	/* Trigger GCD calculation anew. */
+	_lrng_gcd_set(0);
 
 	for_each_online_cpu(cpu)
 		atomic_set(per_cpu_ptr(&lrng_pcpu_array_irqs, cpu), 0);
@@ -372,8 +464,8 @@ u32 lrng_pcpu_pool_hash(u8 *outbuf, u32 requested_bits, bool fully_seeded)
 	if (ret)
 		goto err;
 
-	requested_irqs = lrng_entropy_to_data(requested_bits) +
-			 lrng_compress_osr();
+	requested_irqs = lrng_entropy_to_data(requested_bits +
+					      lrng_compress_osr());
 
 	/*
 	 * Harvest entropy from each per-CPU hash state - even though we may
@@ -647,12 +739,14 @@ static inline void lrng_time_process(void)
 {
 	u32 now_time = random_get_entropy();
 
-	if (unlikely(!lrng_state_fully_seeded())) {
-		/* During boot time, we process the full time stamp */
+	if (unlikely(!lrng_gcd_tested())) {
+		/* When GCD is unknown, we process the full time stamp */
 		lrng_time_process_common(now_time, _lrng_pcpu_array_add_u32);
+		jent_gcd_add_value(now_time);
 	} else {
-		/* Runtime operation */
-		lrng_time_process_common(now_time & LRNG_DATA_SLOTSIZE_MASK,
+		/* GCD is known and applied */
+		lrng_time_process_common((now_time / lrng_gcd_timer) &
+					 LRNG_DATA_SLOTSIZE_MASK,
 					 lrng_pcpu_array_add_slot);
 	}
 

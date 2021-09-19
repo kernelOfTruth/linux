@@ -118,22 +118,17 @@ static int lrng_drng_switch(struct lrng_drng *drng_store,
 		pr_info("Entropy pool read-hash allocated for DRNG for NUMA node %d\n",
 			node);
 
-		if (lrng_state_min_seeded())
-			lrng_set_entropy_thresh(lrng_get_seed_entropy_osr());
-
 		/* Reseed if previous LRNG security strength was insufficient */
 		if (current_security_strength < lrng_security_strength())
 			drng_store->force_reseed = true;
 
 		/* Force oversampling seeding as we initialize DRNG */
-		if (IS_ENABLED(CONFIG_LRNG_OVERSAMPLE_ENTROPY_SOURCES)) {
-			drng_store->force_reseed = true;
-			drng_store->fully_seeded = false;
+		if (IS_ENABLED(CONFIG_LRNG_OVERSAMPLE_ENTROPY_SOURCES))
+			lrng_unset_fully_seeded(drng_store);
 
-			/* Block output interfaces until again fully seeded */
-			if (drng_store == lrng_drng_init_instance())
-				lrng_unset_operational();
-		}
+		if (lrng_state_min_seeded())
+			lrng_set_entropy_thresh(lrng_get_seed_entropy_osr(
+						drng_store->fully_seeded));
 
 		/* ChaCha20 serves as atomic instance left untouched. */
 		if (old_drng != &chacha20) {
