@@ -767,11 +767,52 @@ KBUILD_CFLAGS	+= $(call cc-disable-warning, format-overflow)
 KBUILD_CFLAGS	+= $(call cc-disable-warning, address-of-packed-member)
 
 ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
-KBUILD_CFLAGS += -O2
+KBUILD_CFLAGS += -O2 -pipe
 else ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
-KBUILD_CFLAGS += -O3
+KBUILD_CFLAGS += -O3 -fno-common -pipe \
+				-fno-sched-interblock \
+				-fipa-icf -fipa-icf-functions -fipa-icf-variables \
+				-fipa-stack-alignment \
+				-fno-peephole2 -fno-expensive-optimizations \
+				-fno-ipa-sra -fgcse -fgcse-las \
+				-floop-unroll-and-jam \
+				-fno-tree-loop-distribution -fno-tree-loop-distribute-patterns \
+				-funswitch-loops \
+				-ftree-loop-ivcanon \
+				-fcaller-saves \
+				-ftree-slsr -ftree-scev-cprop \
+				-fno-sched-dep-count-heuristic -ftree-ccp \
+				-ftree-bit-ccp \
+				-fmerge-constants -ftree-pta \
+				-fconserve-stack -fcombine-stack-adjustments -fipa-stack-alignment -fno-defer-pop \
+				-fno-ira-hoist-pressure -fira-share-spill-slots -fno-ira-share-save-slots \
+				-fno-inline-small-functions -fno-ivopts \
+				-fno-peephole -fpeephole2 \
+				-fschedule-insns -fschedule-insns2 -fno-sched-group-heuristic -fsched-critical-path-heuristic -fno-sched-spec-insn-heuristic -fno-sched-rank-heuristic -fno-sched-dep-count-heuristic \
+				-fno-selective-scheduling -fno-selective-scheduling2 -fno-sel-sched-pipelining -fno-sel-sched-pipelining-outer-loops \
+				-fmodulo-sched \
+				-fdevirtualize -fdevirtualize-speculatively -fdevirtualize-at-ltrans \
+				-fipa-cp-clone -fipa-pta \
+				-fno-align-functions -fno-align-loops \
+				-fno-shrink-wrap -fno-shrink-wrap-separate \
+				-fno-tree-partial-pre -fno-tree-pre \
+				-fno-tree-reassoc \
+				-ftree-sink -ftree-ch -ftree-loop-im -fmove-loop-invariants \
+				-fgcse-sm \
+				-fno-sched-spec -fno-sched-spec-load -fno-sched-spec-load-dangerous \
+				-fsched-pressure \
+				-fno-aggressive-loop-optimizations \
+				-fira-region=all \
+				-funroll-loops -fpeel-loops -ftracer \
+				-fvariable-expansion-in-unroller \
+				-fsplit-ivs-in-unroller \
+				-fno-tree-loop-vectorize -fno-tree-loop-vectorize \
+				-fno-tree-loop-if-convert \
+				-fno-tree-slp-vectorize -fgcse-after-reload \
+				-fno-var-tracking-assignments \
+				-fno-var-tracking -fno-prefetch-loop-arrays
 else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
-KBUILD_CFLAGS += -Os
+KBUILD_CFLAGS += -Os -pipe
 endif
 
 # Tell gcc to never replace conditional load with a non-conditional one
