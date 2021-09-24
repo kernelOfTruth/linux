@@ -17,6 +17,7 @@
 #include <linux/bio.h>
 #include <linux/sched/signal.h>
 #include <linux/migrate.h>
+#include <linux/sched/mm.h>
 #include "trace.h"
 
 #include "../internal.h"
@@ -1404,9 +1405,11 @@ iomap_do_writepage(struct page *page, struct writeback_control *wbc, void *data)
 {
 	struct iomap_writepage_ctx *wpc = data;
 	struct inode *inode = page->mapping->host;
+	unsigned int nofs_flag;
 	pgoff_t end_index;
 	u64 end_offset;
 	loff_t offset;
+	int ret;
 
 	trace_iomap_writepage(inode, page_offset(page), PAGE_SIZE);
 
@@ -1490,7 +1493,16 @@ iomap_do_writepage(struct page *page, struct writeback_control *wbc, void *data)
 		end_offset = offset;
 	}
 
-	return iomap_writepage_map(wpc, wbc, inode, page, end_offset);
+	/*
+	 * We can allocate memory here while doing writeback on behalf of
+	 * memory reclaim.  To avoid memory allocation deadlocks set the
+	 * task-wide nofs context for the following operations.
+	 */
+	nofs_flag = memalloc_nofs_save();
+	ret = iomap_writepage_map(wpc, wbc, inode, page, end_offset);
+	memalloc_nofs_restore(nofs_flag);
+
+	return ret;
 
 redirty:
 	redirty_page_for_writepage(wbc, page);
