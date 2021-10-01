@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 5
 PATCHLEVEL = 14
-SUBLEVEL = 7
-EXTRAVERSION = -batmod-prjc-t4
+SUBLEVEL = 9
+EXTRAVERSION = -batmod-prjc-t5
 NAME = Opossums on Parade
 
 # *DOCUMENTATION*
