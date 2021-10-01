@@ -2,7 +2,7 @@
 VERSION = 5
 PATCHLEVEL = 14
 SUBLEVEL = 9
-EXTRAVERSION = -batmod-prjc-t5
+EXTRAVERSION = -batmod-prjc-baby_s-t5
 NAME = Opossums on Parade
 
 # *DOCUMENTATION*
