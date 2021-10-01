@@ -27,12 +27,7 @@ obj-y += alt_core.o
 obj-$(CONFIG_SCHED_DEBUG) += alt_debug.o
 else
 obj-y += core.o
-ifdef CONFIG_BS_SCHED
-obj-y += bs.o
-else
-obj-y += fair.o
-endif
-obj-y += rt.o deadline.o
+obj-y += fair.o rt.o deadline.o
 obj-$(CONFIG_SMP) += cpudeadline.o stop_task.o
 obj-$(CONFIG_SCHED_AUTOGROUP) += autogroup.o
 endif
