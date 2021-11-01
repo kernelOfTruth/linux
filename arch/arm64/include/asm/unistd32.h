@@ -901,8 +901,6 @@ __SYSCALL(__NR_landlock_create_ruleset, sys_landlock_create_ruleset)
 __SYSCALL(__NR_landlock_add_rule, sys_landlock_add_rule)
 #define __NR_landlock_restrict_self 446
 __SYSCALL(__NR_landlock_restrict_self, sys_landlock_restrict_self)
-#define __NR_pmadv_ksm 447
-__SYSCALL(__NR_pmadv_ksm, sys_pmadv_ksm)
 
 /*
  * Please add new compat syscalls above this comment and update

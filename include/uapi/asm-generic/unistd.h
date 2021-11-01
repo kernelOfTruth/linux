@@ -878,11 +878,8 @@ __SYSCALL(__NR_landlock_restrict_self, sys_landlock_restrict_self)
 __SYSCALL(__NR_memfd_secret, sys_memfd_secret)
 #endif
 
-#define __NR_pmadv_ksm 448
-__SYSCALL(__NR_pmadv_ksm, sys_pmadv_ksm)
-
 #undef __NR_syscalls
-#define __NR_syscalls 449
+#define __NR_syscalls 448
 
 /*
  * 32 bit systems traditionally used different
