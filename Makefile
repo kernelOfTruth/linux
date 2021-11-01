@@ -2,7 +2,7 @@
 VERSION = 5
 PATCHLEVEL = 14
 SUBLEVEL = 0
-EXTRAVERSION = -pf8
+EXTRAVERSION = -pf8-patched
 NAME = Opossums on Parade
 
 # *DOCUMENTATION*
